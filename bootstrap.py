@@ -365,6 +365,10 @@ def install_dependencies(on_line, deps: list | None = None, force: bool = False)
         elapsed_str = f"{int(total_elapsed)}s"
     on_line(f"  [{total_deps}/{total_deps}] All packages installed  (total: {elapsed_str})", replace_last=True)
 
+    # Post-install: purge pip cache
+    on_line("  Purging pip cache...")
+    _cleanup_after_install(on_line)
+
 
 # ── relaunch ───────────────────────────────────────────────────────────────────
 
@@ -424,6 +428,10 @@ def run_install(on_line, on_done, on_error, repair_only: bool = False):
 
         # Step 3 — dependencies
         on_line("Step 3/3  Installing dependencies...")
+        on_line("  Removing obsolete packages...")
+        _uninstall_obsolete_packages(on_line)
+        on_line("  Cleaning stale .venv cache...")
+        _cleanup_venv_pycache(on_line)
         install_dependencies(on_line)
         on_line("")
 
@@ -581,6 +589,113 @@ def run_plain_text():
 
 
 # ── entry point ────────────────────────────────────────────────────────────────
+
+def _check_portable_python_version() -> bool:
+    """
+    Returns True if .python/ contains the expected PBS_VERSION.
+    If the version file is missing or wrong, returns False → caller should wipe .python/.
+    """
+    version_file = PYTHON_DIR / "python" / "VERSION"
+    if not version_file.exists():
+        # Try the pyvenv.cfg inside the python dir as fallback
+        cfg = PYTHON_DIR / "python" / "pyvenv.cfg"
+        if cfg.exists():
+            for line in cfg.read_text().splitlines():
+                if line.lower().startswith("version"):
+                    ver = line.split("=", 1)[1].strip()
+                    return ver.startswith(PBS_VERSION)
+        # No version info found — check the executable name
+        exe = _find_portable_python_exe()
+        if exe is None:
+            return False
+        try:
+            r = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=10)
+            return PBS_VERSION in r.stdout or PBS_VERSION in r.stderr
+        except Exception:
+            return False
+    try:
+        return version_file.read_text().strip().startswith(PBS_VERSION)
+    except Exception:
+        return False
+
+
+def _uninstall_obsolete_packages(on_line):
+    """
+    Removes packages installed in venv that are no longer in pyproject.toml.
+    Skips pip, setuptools, wheel (managed separately).
+    """
+    import json
+    py = str(venv_python())
+    required_names = set()
+    for dep in parse_pyproject():
+        name, _ = _parse_specifier(dep)
+        required_names.add(name)
+    # always keep these
+    keep_always = {'pip', 'setuptools', 'wheel', 'pkg_resources', 'distlib', 'platformdirs',
+                   'filelock', 'virtualenv', 'packaging'}
+
+    try:
+        r = subprocess.run(
+            [py, '-m', 'pip', 'list', '--format=json'],
+            capture_output=True, text=True, timeout=30)
+        installed = json.loads(r.stdout)
+    except Exception as exc:
+        on_line(f"  WARN cannot list packages for cleanup: {exc}")
+        return
+
+    to_remove = []
+    for pkg in installed:
+        norm = pkg['name'].lower().replace('-', '_').replace('.', '_')
+        if norm not in required_names and norm not in keep_always:
+            to_remove.append(pkg['name'])
+
+    if not to_remove:
+        on_line("  No obsolete packages to remove.")
+        return
+
+    on_line(f"  Removing {len(to_remove)} obsolete package(s): {', '.join(to_remove)}")
+    try:
+        r = subprocess.run(
+            [py, '-m', 'pip', 'uninstall', '-y'] + to_remove,
+            capture_output=True, text=True, timeout=120)
+        if r.returncode == 0:
+            on_line(f"  OK removed: {', '.join(to_remove)}")
+        else:
+            on_line(f"  WARN uninstall failed: {r.stderr.strip()[:200]}")
+    except Exception as exc:
+        on_line(f"  WARN uninstall error: {exc}")
+
+
+def _cleanup_venv_pycache(on_line):
+    """Remove stale __pycache__ dirs from .venv before installing new packages."""
+    import shutil
+    removed = 0
+    for pycache in VENV_DIR.rglob("__pycache__"):
+        try:
+            shutil.rmtree(pycache)
+            removed += 1
+        except Exception:
+            pass
+    if removed:
+        on_line(f"  Removed {removed} __pycache__ dirs from .venv")
+    else:
+        on_line("  No stale __pycache__ found")
+
+
+def _cleanup_after_install(on_line):
+    """Post-install: purge pip cache to free disk space."""
+    py = str(venv_python())
+    try:
+        r = subprocess.run(
+            [py, '-m', 'pip', 'cache', 'purge'],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            on_line("  pip cache purged")
+        else:
+            on_line(f"  WARN pip cache purge: {r.stderr.strip()[:100]}")
+    except Exception as exc:
+        on_line(f"  WARN pip cache purge failed: {exc}")
+
 
 def _quick_check_venv() -> list[str]:
     """
@@ -798,6 +913,10 @@ def _repair_worker(on_line, on_done, on_error, broken: list[str]):
         for dep in broken:
             on_line(f"  • {dep}")
         on_line("")
+        on_line("Removing obsolete packages...")
+        _uninstall_obsolete_packages(on_line)
+        on_line("Cleaning stale .venv cache...")
+        _cleanup_venv_pycache(on_line)
         install_dependencies(on_line, deps=broken, force=True)
         on_line("")
         on_line("Repair complete!  Starting SETS...")
@@ -844,6 +963,13 @@ def main():
         mod  = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return
+
+    # Check if portable Python version matches config — wipe if stale
+    if PYTHON_DIR.exists() and not _check_portable_python_version():
+        import shutil
+        print(f"[bootstrap] portable Python version mismatch (expected {PBS_VERSION}) — removing .python/ and .venv/", flush=True)
+        shutil.rmtree(PYTHON_DIR, ignore_errors=True)
+        shutil.rmtree(VENV_DIR, ignore_errors=True)
 
     # Venv exists — fast health-check before relaunching
     if venv_python().exists():

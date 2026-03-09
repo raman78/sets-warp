@@ -1153,28 +1153,7 @@ class SETS():
         self.widgets.progress_detail = progress_detail
         prog_inner.addWidget(progress_detail)
 
-        retry_frame = _QF()
-        retry_frame.setFixedHeight(36)
-        retry_frame.setStyleSheet(
-            f'QFrame {{'
-            f'  border: 1px solid {self.theme["defaults"].get("sets", "#cc8800")};'
-            f'  border-radius: 4px;'
-            f'  background: transparent;'
-            f'}}')
-        retry_inner = _VBL(retry_frame)
-        retry_inner.setContentsMargins(8, 2, 8, 2)
-        retry_inner.setSpacing(0)
-        retry_label = self.create_label('', 'hint_label')
-        retry_label.setAlignment(AHCENTER)
-        retry_label.setStyleSheet(
-            f'color: {self.theme["defaults"].get("sets", "#cc8800")};'
-            f'font-size: 13px;'
-            f'border: none;')
-        retry_inner.addWidget(retry_label)
-        retry_frame.hide()
-        self.widgets.retry_label = retry_label
-        self.widgets.retry_frame = retry_frame
-        prog_inner.addWidget(retry_frame)
+        # retry/failed frame removed — failures logged to sets_debug.log
 
         root.addLayout(_center_row(prog_frame))
 

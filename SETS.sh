@@ -17,6 +17,12 @@ export SETS_DIR="$SCRIPT_DIR"
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPYCACHEPREFIX="$SCRIPT_DIR/.pycache"
 
+# Clear stale compiled cache on every start — ensures code changes take effect
+# immediately without needing manual cleanup after updates.
+if [ -d "$SCRIPT_DIR/.pycache" ]; then
+    rm -rf "$SCRIPT_DIR/.pycache"
+fi
+
 VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python"
 
 # Always go through bootstrap — it does a fast venv health-check (~0.5s)

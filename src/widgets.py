@@ -357,6 +357,12 @@ class ItemButton(QFrame):
                 self._tooltip_label.setFixedWidth(tooltip_width)
                 self._tooltip_frame.move(position)
                 self._tooltip_frame.updateGeometry()
+                win = self.window().windowHandle()
+                if win:
+                    self._tooltip_frame.winId()  # ensure native handle exists
+                    handle = self._tooltip_frame.windowHandle()
+                    if handle and handle.transientParent() != win:
+                        handle.setTransientParent(win)
                 self._tooltip_frame.show()
         event.accept()
 
@@ -686,6 +692,12 @@ class TooltipLabel(QLabel):
         position.setY(position.y() + 1)
         self._tooltip.move(position)
         self._tooltip.updateGeometry()
+        win = self.window().windowHandle()
+        if win:
+            self._tooltip.winId()  # ensure native handle exists
+            handle = self._tooltip.windowHandle()
+            if handle and handle.transientParent() != win:
+                handle.setTransientParent(win)
         self._tooltip.show()
         event.accept()
 

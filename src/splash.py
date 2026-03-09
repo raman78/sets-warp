@@ -21,7 +21,7 @@ _state = {
     'current': 0,
     'total': 0,
     'hidden': True,
-    'failed_text': '',  # shown after sync if any files permanently failed
+
 }
 
 # Timer that polls _state and updates widgets — runs only in MainThread
@@ -68,9 +68,7 @@ def _poll(self):
             bar.hide()
         if detail is not None and detail.isVisible():
             detail.hide()
-        retry_frame = getattr(self.widgets, 'retry_frame', None)
-        if retry_frame is not None and retry_frame.isVisible():
-            retry_frame.hide()
+
         if lbl is not None and text and lbl.text() != text:
             lbl.setText(text)
         return
@@ -110,17 +108,7 @@ def _poll(self):
         if not detail.isVisible():
             detail.show()
 
-    # ── failed summary box — shown if any files permanently failed ───────
-    retry_lbl   = getattr(self.widgets, 'retry_label', None)
-    retry_frame = getattr(self.widgets, 'retry_frame', None)
-    failed_text = _state.get('failed_text', '')
-    if retry_lbl is not None and retry_lbl.text() != failed_text:
-        retry_lbl.setText(failed_text)
-    if retry_frame is not None:
-        if failed_text and not retry_frame.isVisible():
-            retry_frame.show()
-        elif not failed_text and retry_frame.isVisible():
-            retry_frame.hide()
+
 
 
 # ── public API (called from MainThread) ───────────────────────────────────────
@@ -130,7 +118,7 @@ def enter_splash(self):
     _state['text'] = 'Loading...'
     _state['hidden'] = True
     _state['total'] = 0
-    _state['failed_text'] = ''
+
     _eta['last_total'] = 0
     self.widgets.loading_label.setText('Loading...')
     if self.widgets.progress_bar is not None:

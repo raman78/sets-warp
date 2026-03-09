@@ -39,6 +39,10 @@ def browse_path(self, default_path: str = None, types: str = 'Any File (*.*)', s
     """
     Opens file dialog prompting the user to select a file.
 
+    Uses Qt's own (non-native) dialog so that:
+    - Ctrl+L opens a path bar for typing / pasting a directory path directly
+    - Hidden directories (starting with .) are toggleable via Ctrl+H
+
     Parameters:
     - :param default_path: path that the file dialog opens at
     - :param types: string containing all file extensions and their respective names that are
@@ -51,13 +55,50 @@ def browse_path(self, default_path: str = None, types: str = 'Any File (*.*)', s
     default_path = os.path.abspath(default_path)
     if not os.path.exists(os.path.dirname(default_path)):
         default_path = self.app_dir
-    if save:
-        file, filter = QFileDialog.getSaveFileName(self.window, 'Save...', default_path, types)
-        selected_extension = filter.rpartition('.')[2][:-1]
-        if file.rpartition('.')[2].lower() != selected_extension:
-            file += f".{selected_extension}"
+
+    # Use QFileDialog instance so DontUseNativeDialog works on Wayland too.
+    # Static methods (getSaveFileName/getOpenFileName) may ignore the flag
+    # when QT_QPA_PLATFORM=wayland; instantiating directly always works.
+    from PySide6.QtCore import QDir
+    dialog = QFileDialog(self.window)
+    dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+    dialog.setOption(QFileDialog.Option.HideNameFilterDetails, True)
+    # Always show hidden files and dirs (e.g. .config on NTFS or any mount)
+    dialog.setFilter(QDir.Filter.AllEntries | QDir.Filter.Hidden | QDir.Filter.NoDotAndDotDot)
+    dialog.setNameFilter(types)
+
+    # Restore last used directory (shared between save and open)
+    last_dir = self.settings.value('last_dialog_dir', '')
+    if last_dir and os.path.isdir(last_dir):
+        dialog.setDirectory(last_dir)
     else:
-        file, _ = QFileDialog.getOpenFileName(self.window, 'Open...', default_path, types)
+        dialog.setDirectory(os.path.dirname(default_path))
+
+    if save:
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+        dialog.selectFile(os.path.basename(default_path))
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            file = files[0] if files else ''
+            if file:
+                self.settings.setValue('last_dialog_dir', os.path.dirname(file))
+                filter = dialog.selectedNameFilter()
+                selected_extension = filter.rpartition('.')[2][:-1]
+                if selected_extension and file.rpartition('.')[2].lower() != selected_extension:
+                    file += f".{selected_extension}"
+        else:
+            file = ''
+    else:
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            file = files[0] if files else ''
+            if file:
+                self.settings.setValue('last_dialog_dir', os.path.dirname(file))
+        else:
+            file = ''
     return file
 
 

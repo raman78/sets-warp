@@ -34,7 +34,6 @@ from urllib.parse import quote_plus, unquote_plus
 
 from .constants import GITHUB_CACHE_URL, WIKI_IMAGE_URL
 from .setsdebug import log
-from .splash import _state as _splash_state
 
 GITHUB_API_TREE     = 'https://api.github.com/repos/STOCD/SETS-Data/git/trees/main?recursive=1'
 TREE_CACHE_FILENAME = 'github_tree_cache.json'
@@ -352,10 +351,6 @@ class SyncManager:
             'cargo_updated': cargo_was_updated,
         }
         log.info(f'SyncManager: complete — {report}')
-
-        _splash_state['failed_text'] = (
-            f'FAILED to download: {total_failed} / {len(tree)} — check logs'
-            if total_failed > 0 else '')
 
         if total_updated == 0 and total_failed == 0:
             prog('All assets up to date', 0, 0)
