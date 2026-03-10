@@ -695,6 +695,17 @@ def _cleanup_after_install(on_line):
             on_line(f"  WARN pip cache purge: {r.stderr.strip()[:100]}")
     except Exception as exc:
         on_line(f"  WARN pip cache purge failed: {exc}")
+    _setup_warp_dirs(on_line)
+
+
+def _setup_warp_dirs(on_line):
+    """Create WARP data directories inside the SETS installation if missing."""
+    for subdir in ('warp/models', 'warp/training_data/crops', 'warp/data'):
+        p = SETS_DIR / subdir
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            on_line(f"  WARN WARP dir {subdir}: {exc}")
 
 
 def _quick_check_venv() -> list[str]:

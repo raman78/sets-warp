@@ -30,6 +30,13 @@ from .widgets import (
 
 # only for developing; allows to terminate the qt event loop with keyboard interrupt
 from signal import signal, SIGINT, SIG_DFL
+
+# WARP — Screenshot-to-Build importer (optional; gracefully disabled if deps missing)
+try:
+    from warp.warp_button import inject_warp_buttons
+    _WARP_AVAILABLE = True
+except ImportError:
+    _WARP_AVAILABLE = False
 signal(SIGINT, SIG_DFL)
 
 
@@ -397,6 +404,11 @@ class SETS():
             'Settings': {'callback': lambda: self.switch_main_tab(5)},
         }
         menu_layout.addLayout(self.create_button_series(right_button_group), 0, 2, ARIGHT | ATOP)
+
+        # WARP import + WARP CORE trainer buttons (column 3)
+        if _WARP_AVAILABLE:
+            inject_warp_buttons(self, menu_layout)
+
         content_layout.addLayout(menu_layout, 0, 0, 1, 2)
         log.info('setup_main_layout: menu_layout OK')
 

@@ -21,7 +21,12 @@ dependencies = [
   "numpy",
   "requests_html",
   "lxml_html_clean",
-  "cssselect"
+  "cssselect",
+  # WARP — Screenshot-to-Build importer dependencies
+  "opencv-python-headless>=4.9",
+  "easyocr>=1.7",
+  "onnxruntime>=1.18",
+  "huggingface-hub>=0.22"
 ]
 dynamic = ["version"]
 
