@@ -288,10 +288,16 @@ class WarpImporter:
         self._app              = sets_app
         self._build_type       = build_type
         self._progress_callback = progress_callback
+        self._interrupt_check = None
         self._layout  = None
         self._matcher = None
         self._text    = None
         self._shipdb  = None
+        self._sync    = None   # WARPSyncClient — lazy init
+
+    def set_interrupt_check(self, fn):
+        # fn() returns True when processing should stop
+        self._interrupt_check = fn
 
     def process_folder(
         self,
@@ -312,6 +318,8 @@ class WarpImporter:
             pct = int(i / len(files) * 90)
             if progress_cb:
                 progress_cb(i, len(files), fpath.name)
+            if self._interrupt_check and self._interrupt_check():
+                break
             if self._progress_callback:
                 self._progress_callback(pct, fpath.name)
             try:
@@ -388,6 +396,11 @@ class WarpImporter:
                     source_file = source,
                     bbox        = bbox,
                 ))
+                # Contribute to community knowledge (non-blocking, only high-conf)
+                if conf >= TEMPLATE_CONF_THRESHOLD:
+                    sync = self._get_sync_client()
+                    if sync is not None:
+                        sync.contribute(crop, name, confirmed=False)
 
         return result
 
@@ -426,8 +439,20 @@ class WarpImporter:
     def _get_matcher(self):
         if self._matcher is None:
             from warp.recognition.icon_matcher import SETSIconMatcher
-            self._matcher = SETSIconMatcher(self._app)
+            self._matcher = SETSIconMatcher(self._app,
+                                            sync_client=self._get_sync_client())
         return self._matcher
+
+    def _get_sync_client(self):
+        if self._sync is None:
+            try:
+                from warp.knowledge.sync_client import WARPSyncClient
+                self._sync = WARPSyncClient()
+                log.info('WARP: sync client initialized')
+            except Exception as e:
+                log.warning(f'WARP: sync client unavailable: {e}')
+                self._sync = None
+        return self._sync
 
     def _get_text(self):
         if self._text is None:

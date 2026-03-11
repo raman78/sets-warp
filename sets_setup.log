@@ -1,0 +1,792 @@
+
+============================================================
+SETS Setup  2026-03-10 21:01:22
+============================================================
+[21:01:22] === SETS First-Time Setup ===
+[21:01:22] ROOT: /home/raman/Pobrane/sets_upgrade
+[21:01:22] 
+[21:01:22] Step 1/3  Downloading portable Python (~65 MB, one-time)...
+[21:01:22]   Downloading portable Python 3.13.2...
+[21:01:23]   Downloading... 0%
+[21:01:23]   Downloading... 1%
+[21:01:23]   Downloading... 2%
+[21:01:23]   Downloading... 3%
+[21:01:23]   Downloading... 4%
+[21:01:23]   Downloading... 5%
+[21:01:23]   Downloading... 6%
+[21:01:23]   Downloading... 7%
+[21:01:23]   Downloading... 8%
+[21:01:23]   Downloading... 9%
+[21:01:23]   Downloading... 10%
+[21:01:23]   Downloading... 11%
+[21:01:23]   Downloading... 12%
+[21:01:23]   Downloading... 13%
+[21:01:23]   Downloading... 14%
+[21:01:23]   Downloading... 15%
+[21:01:23]   Downloading... 16%
+[21:01:23]   Downloading... 17%
+[21:01:23]   Downloading... 18%
+[21:01:23]   Downloading... 19%
+[21:01:23]   Downloading... 20%
+[21:01:23]   Downloading... 21%
+[21:01:23]   Downloading... 22%
+[21:01:23]   Downloading... 23%
+[21:01:23]   Downloading... 24%
+[21:01:23]   Downloading... 25%
+[21:01:23]   Downloading... 26%
+[21:01:23]   Downloading... 27%
+[21:01:23]   Downloading... 28%
+[21:01:23]   Downloading... 29%
+[21:01:23]   Downloading... 30%
+[21:01:23]   Downloading... 31%
+[21:01:23]   Downloading... 32%
+[21:01:23]   Downloading... 33%
+[21:01:23]   Downloading... 34%
+[21:01:23]   Downloading... 35%
+[21:01:23]   Downloading... 36%
+[21:01:23]   Downloading... 37%
+[21:01:23]   Downloading... 38%
+[21:01:23]   Downloading... 39%
+[21:01:24]   Downloading... 40%
+[21:01:24]   Downloading... 41%
+[21:01:24]   Downloading... 42%
+[21:01:24]   Downloading... 43%
+[21:01:24]   Downloading... 44%
+[21:01:24]   Downloading... 45%
+[21:01:24]   Downloading... 46%
+[21:01:24]   Downloading... 47%
+[21:01:24]   Downloading... 48%
+[21:01:24]   Downloading... 49%
+[21:01:24]   Downloading... 50%
+[21:01:24]   Downloading... 51%
+[21:01:24]   Downloading... 52%
+[21:01:24]   Downloading... 53%
+[21:01:24]   Downloading... 54%
+[21:01:24]   Downloading... 55%
+[21:01:24]   Downloading... 56%
+[21:01:24]   Downloading... 57%
+[21:01:24]   Downloading... 58%
+[21:01:24]   Downloading... 59%
+[21:01:24]   Downloading... 60%
+[21:01:24]   Downloading... 61%
+[21:01:24]   Downloading... 62%
+[21:01:24]   Downloading... 63%
+[21:01:24]   Downloading... 64%
+[21:01:24]   Downloading... 65%
+[21:01:24]   Downloading... 66%
+[21:01:24]   Downloading... 67%
+[21:01:24]   Downloading... 68%
+[21:01:24]   Downloading... 69%
+[21:01:24]   Downloading... 70%
+[21:01:24]   Downloading... 71%
+[21:01:24]   Downloading... 72%
+[21:01:24]   Downloading... 73%
+[21:01:24]   Downloading... 74%
+[21:01:24]   Downloading... 75%
+[21:01:24]   Downloading... 76%
+[21:01:24]   Downloading... 77%
+[21:01:24]   Downloading... 78%
+[21:01:24]   Downloading... 79%
+[21:01:24]   Downloading... 80%
+[21:01:24]   Downloading... 81%
+[21:01:24]   Downloading... 82%
+[21:01:24]   Downloading... 83%
+[21:01:24]   Downloading... 84%
+[21:01:24]   Downloading... 85%
+[21:01:24]   Downloading... 86%
+[21:01:24]   Downloading... 87%
+[21:01:24]   Downloading... 88%
+[21:01:24]   Downloading... 89%
+[21:01:24]   Downloading... 90%
+[21:01:24]   Downloading... 91%
+[21:01:24]   Downloading... 92%
+[21:01:24]   Downloading... 93%
+[21:01:24]   Downloading... 94%
+[21:01:24]   Downloading... 95%
+[21:01:24]   Downloading... 96%
+[21:01:24]   Downloading... 97%
+[21:01:24]   Downloading... 98%
+[21:01:24]   Downloading... 99%
+[21:01:24]   Downloading... 100%
+[21:01:24]   Extracting...
+[21:01:25]   OK portable Python ready: /home/raman/Pobrane/sets_upgrade/.python/python/bin/python3.13
+[21:01:25] 
+[21:01:25] Step 2/3  Creating virtual environment...
+[21:01:25]   Creating virtual environment...
+[21:01:27]   OK virtual environment created
+[21:01:27] 
+[21:01:27] Step 3/3  Installing dependencies...
+[21:01:27]   Removing obsolete packages...
+[21:01:27]   No obsolete packages to remove.
+[21:01:27]   Cleaning stale .venv cache...
+[21:01:27]   No stale __pycache__ found
+[21:01:27]   Upgrading pip...
+[21:01:27]     Requirement already satisfied: pip in ./.venv/lib/python3.13/site-packages (24.3.1)
+[21:01:28]     Collecting pip
+[21:01:28]     Downloading pip-26.0.1-py3-none-any.whl.metadata (4.7 kB)
+[21:01:28]     Downloading pip-26.0.1-py3-none-any.whl (1.8 MB)
+[21:01:28]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 19.0 MB/s eta 0:00:00
+[21:01:28]     Installing collected packages: pip
+[21:01:28]     Attempting uninstall: pip
+[21:01:28]     Found existing installation: pip 24.3.1
+[21:01:28]     Uninstalling pip-24.3.1:
+[21:01:28]     Successfully uninstalled pip-24.3.1
+[21:01:28]     Successfully installed pip-26.0.1
+[21:01:28]   Installing 6 package(s)...
+[21:01:28]   [0/6] Installing PySide6...
+[21:01:29]     Collecting PySide6<6.10,>=6.7
+[21:01:29]     Downloading pyside6-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl.metadata (5.3 kB)
+[21:01:29]     Collecting shiboken6==6.9.3 (from PySide6<6.10,>=6.7)
+[21:01:29]     Downloading shiboken6-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+[21:01:29]     Collecting PySide6_Essentials==6.9.3 (from PySide6<6.10,>=6.7)
+[21:01:29]     Downloading pyside6_essentials-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl.metadata (3.6 kB)
+[21:01:29]     Collecting PySide6_Addons==6.9.3 (from PySide6<6.10,>=6.7)
+[21:01:30]     Downloading pyside6_addons-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl.metadata (4.0 kB)
+[21:01:30]     Downloading pyside6-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl (554 kB)
+[21:01:30]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 554.8/554.8 kB 10.4 MB/s  0:00:00
+[21:01:30]     Downloading pyside6_addons-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl (167.2 MB)
+[21:01:32]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 167.2/167.2 MB 73.2 MB/s  0:00:02
+[21:01:32]     Downloading pyside6_essentials-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl (97.5 MB)
+[21:01:33]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 97.5/97.5 MB 73.0 MB/s  0:00:01
+[21:01:33]     Downloading shiboken6-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl (204 kB)
+[21:01:34]     Installing collected packages: shiboken6, PySide6_Essentials, PySide6_Addons, PySide6
+[21:01:37]     Successfully installed PySide6-6.9.3 PySide6_Addons-6.9.3 PySide6_Essentials-6.9.3 shiboken6-6.9.3
+[21:01:37]   [1/6] Installing requests...  (~42s remaining)
+[21:01:37]     Collecting requests
+[21:01:38]     Downloading requests-2.32.5-py3-none-any.whl.metadata (4.9 kB)
+[21:01:38]     Collecting charset_normalizer<4,>=2 (from requests)
+[21:01:38]     Downloading charset_normalizer-3.4.5-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (39 kB)
+[21:01:38]     Collecting idna<4,>=2.5 (from requests)
+[21:01:38]     Downloading idna-3.11-py3-none-any.whl.metadata (8.4 kB)
+[21:01:38]     Collecting urllib3<3,>=1.21.1 (from requests)
+[21:01:38]     Downloading urllib3-2.6.3-py3-none-any.whl.metadata (6.9 kB)
+[21:01:38]     Collecting certifi>=2017.4.17 (from requests)
+[21:01:38]     Downloading certifi-2026.2.25-py3-none-any.whl.metadata (2.5 kB)
+[21:01:38]     Downloading requests-2.32.5-py3-none-any.whl (64 kB)
+[21:01:38]     Downloading charset_normalizer-3.4.5-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (195 kB)
+[21:01:38]     Downloading idna-3.11-py3-none-any.whl (71 kB)
+[21:01:38]     Downloading urllib3-2.6.3-py3-none-any.whl (131 kB)
+[21:01:38]     Downloading certifi-2026.2.25-py3-none-any.whl (153 kB)
+[21:01:38]     Installing collected packages: urllib3, idna, charset_normalizer, certifi, requests
+[21:01:38]     Successfully installed certifi-2026.2.25 charset_normalizer-3.4.5 idna-3.11 requests-2.32.5 urllib3-2.6.3
+[21:01:38]   [2/6] Installing numpy...  (~19s remaining)
+[21:01:39]     Collecting numpy
+[21:01:39]     Downloading numpy-2.4.3-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (6.6 kB)
+[21:01:39]     Downloading numpy-2.4.3-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (16.6 MB)
+[21:01:40]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 16.6/16.6 MB 59.4 MB/s  0:00:00
+[21:01:40]     Installing collected packages: numpy
+[21:01:41]     Successfully installed numpy-2.4.3
+[21:01:41]   [3/6] Installing requests_html...  (~12s remaining)
+[21:01:41]     Collecting requests_html
+[21:01:41]     Downloading requests_html-0.10.0-py3-none-any.whl.metadata (15 kB)
+[21:01:41]     Requirement already satisfied: requests in ./.venv/lib/python3.13/site-packages (from requests_html) (2.32.5)
+[21:01:41]     Collecting pyquery (from requests_html)
+[21:01:41]     Downloading pyquery-2.0.1-py3-none-any.whl.metadata (9.0 kB)
+[21:01:42]     Collecting fake-useragent (from requests_html)
+[21:01:42]     Downloading fake_useragent-2.2.0-py3-none-any.whl.metadata (17 kB)
+[21:01:42]     Collecting parse (from requests_html)
+[21:01:42]     Downloading parse-1.21.1-py2.py3-none-any.whl.metadata (21 kB)
+[21:01:42]     Collecting bs4 (from requests_html)
+[21:01:42]     Downloading bs4-0.0.2-py2.py3-none-any.whl.metadata (411 bytes)
+[21:01:42]     Collecting w3lib (from requests_html)
+[21:01:42]     Downloading w3lib-2.4.0-py3-none-any.whl.metadata (2.3 kB)
+[21:01:42]     Collecting pyppeteer>=0.0.14 (from requests_html)
+[21:01:42]     Downloading pyppeteer-2.0.0-py3-none-any.whl.metadata (7.1 kB)
+[21:01:42]     Collecting appdirs<2.0.0,>=1.4.3 (from pyppeteer>=0.0.14->requests_html)
+[21:01:42]     Downloading appdirs-1.4.4-py2.py3-none-any.whl.metadata (9.0 kB)
+[21:01:42]     Requirement already satisfied: certifi>=2023 in ./.venv/lib/python3.13/site-packages (from pyppeteer>=0.0.14->requests_html) (2026.2.25)
+[21:01:42]     Collecting importlib-metadata>=1.4 (from pyppeteer>=0.0.14->requests_html)
+[21:01:42]     Downloading importlib_metadata-8.7.1-py3-none-any.whl.metadata (4.7 kB)
+[21:01:42]     Collecting pyee<12.0.0,>=11.0.0 (from pyppeteer>=0.0.14->requests_html)
+[21:01:42]     Downloading pyee-11.1.1-py3-none-any.whl.metadata (2.8 kB)
+[21:01:42]     Collecting tqdm<5.0.0,>=4.42.1 (from pyppeteer>=0.0.14->requests_html)
+[21:01:42]     Downloading tqdm-4.67.3-py3-none-any.whl.metadata (57 kB)
+[21:01:42]     Collecting urllib3<2.0.0,>=1.25.8 (from pyppeteer>=0.0.14->requests_html)
+[21:01:42]     Downloading urllib3-1.26.20-py2.py3-none-any.whl.metadata (50 kB)
+[21:01:42]     Collecting websockets<11.0,>=10.0 (from pyppeteer>=0.0.14->requests_html)
+[21:01:42]     Downloading websockets-10.4.tar.gz (84 kB)
+[21:01:42]     Installing build dependencies: started
+[21:01:43]     Installing build dependencies: finished with status 'done'
+[21:01:43]     Getting requirements to build wheel: started
+[21:01:43]     Getting requirements to build wheel: finished with status 'done'
+[21:01:43]     Preparing metadata (pyproject.toml): started
+[21:01:44]     Preparing metadata (pyproject.toml): finished with status 'done'
+[21:01:44]     Collecting typing-extensions (from pyee<12.0.0,>=11.0.0->pyppeteer>=0.0.14->requests_html)
+[21:01:44]     Downloading typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+[21:01:44]     Collecting zipp>=3.20 (from importlib-metadata>=1.4->pyppeteer>=0.0.14->requests_html)
+[21:01:44]     Downloading zipp-3.23.0-py3-none-any.whl.metadata (3.6 kB)
+[21:01:44]     Collecting beautifulsoup4 (from bs4->requests_html)
+[21:01:44]     Downloading beautifulsoup4-4.14.3-py3-none-any.whl.metadata (3.8 kB)
+[21:01:44]     Collecting soupsieve>=1.6.1 (from beautifulsoup4->bs4->requests_html)
+[21:01:44]     Downloading soupsieve-2.8.3-py3-none-any.whl.metadata (4.6 kB)
+[21:01:44]     Collecting lxml>=2.1 (from pyquery->requests_html)
+[21:01:44]     Downloading lxml-6.0.2-cp313-cp313-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl.metadata (3.6 kB)
+[21:01:44]     Collecting cssselect>=1.2.0 (from pyquery->requests_html)
+[21:01:44]     Downloading cssselect-1.4.0-py3-none-any.whl.metadata (2.4 kB)
+[21:01:44]     Requirement already satisfied: charset_normalizer<4,>=2 in ./.venv/lib/python3.13/site-packages (from requests->requests_html) (3.4.5)
+[21:01:44]     Requirement already satisfied: idna<4,>=2.5 in ./.venv/lib/python3.13/site-packages (from requests->requests_html) (3.11)
+[21:01:44]     Downloading requests_html-0.10.0-py3-none-any.whl (13 kB)
+[21:01:44]     Downloading pyppeteer-2.0.0-py3-none-any.whl (82 kB)
+[21:01:44]     Downloading appdirs-1.4.4-py2.py3-none-any.whl (9.6 kB)
+[21:01:44]     Downloading pyee-11.1.1-py3-none-any.whl (15 kB)
+[21:01:44]     Downloading tqdm-4.67.3-py3-none-any.whl (78 kB)
+[21:01:44]     Downloading urllib3-1.26.20-py2.py3-none-any.whl (144 kB)
+[21:01:44]     Downloading importlib_metadata-8.7.1-py3-none-any.whl (27 kB)
+[21:01:45]     Downloading zipp-3.23.0-py3-none-any.whl (10 kB)
+[21:01:45]     Downloading bs4-0.0.2-py2.py3-none-any.whl (1.2 kB)
+[21:01:45]     Downloading beautifulsoup4-4.14.3-py3-none-any.whl (107 kB)
+[21:01:45]     Downloading soupsieve-2.8.3-py3-none-any.whl (37 kB)
+[21:01:45]     Downloading typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+[21:01:45]     Downloading fake_useragent-2.2.0-py3-none-any.whl (161 kB)
+[21:01:45]     Downloading parse-1.21.1-py2.py3-none-any.whl (19 kB)
+[21:01:45]     Downloading pyquery-2.0.1-py3-none-any.whl (22 kB)
+[21:01:45]     Downloading cssselect-1.4.0-py3-none-any.whl (18 kB)
+[21:01:45]     Downloading lxml-6.0.2-cp313-cp313-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl (5.2 MB)
+[21:01:45]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.2/5.2 MB 35.9 MB/s  0:00:00
+[21:01:45]     Downloading w3lib-2.4.0-py3-none-any.whl (21 kB)
+[21:01:45]     Building wheels for collected packages: websockets
+[21:01:45]     Building wheel for websockets (pyproject.toml): started
+[21:01:46]     Building wheel for websockets (pyproject.toml): finished with status 'done'
+[21:01:46]     Created wheel for websockets: filename=websockets-10.4-cp313-cp313-linux_x86_64.whl size=106588 sha256=b43a84a922ec4ef9b4f7344ae7ecbcce450c44a226e8739786647480ffc84a87
+[21:01:46]     Stored in directory: /home/raman/.cache/pip/wheels/f5/dd/43/5b7132085406a982d2e0dd808f0ffed137865c8a8c5c7a5e4b
+[21:01:46]     Successfully built websockets
+[21:01:46]     Installing collected packages: parse, appdirs, zipp, websockets, w3lib, urllib3, typing-extensions, tqdm, soupsieve, lxml, fake-useragent, cssselect, pyquery, pyee, importlib-metadata, beautifulsoup4, pyppeteer, bs4, requests_html
+[21:01:46]     Attempting uninstall: urllib3
+[21:01:46]     Found existing installation: urllib3 2.6.3
+[21:01:46]     Uninstalling urllib3-2.6.3:
+[21:01:46]     Successfully uninstalled urllib3-2.6.3
+[21:01:46]     Successfully installed appdirs-1.4.4 beautifulsoup4-4.14.3 bs4-0.0.2 cssselect-1.4.0 fake-useragent-2.2.0 importlib-metadata-8.7.1 lxml-6.0.2 parse-1.21.1 pyee-11.1.1 pyppeteer-2.0.0 pyquery-2.0.1 requests_html-0.10.0 soupsieve-2.8.3 tqdm-4.67.3 typing-extensions-4.15.0 urllib3-1.26.20 w3lib-2.4.0 websockets-10.4 zipp-3.23.0
+[21:01:46]   [4/6] Installing lxml_html_clean...  (~8s remaining)
+[21:01:47]     Collecting lxml_html_clean
+[21:01:47]     Downloading lxml_html_clean-0.4.4-py3-none-any.whl.metadata (2.4 kB)
+[21:01:47]     Requirement already satisfied: lxml in ./.venv/lib/python3.13/site-packages (from lxml_html_clean) (6.0.2)
+[21:01:47]     Downloading lxml_html_clean-0.4.4-py3-none-any.whl (14 kB)
+[21:01:47]     Installing collected packages: lxml_html_clean
+[21:01:47]     Successfully installed lxml_html_clean-0.4.4
+[21:01:47]   [5/6] Installing cssselect...  (~3s remaining)
+[21:01:47]     Requirement already satisfied: cssselect in ./.venv/lib/python3.13/site-packages (1.4.0)
+[21:01:47]   [6/6] All packages installed  (total: 18s)
+[21:01:47]   Purging pip cache...
+[21:01:48]   pip cache purged
+[21:01:48] 
+[21:01:48] Setup complete!  Starting SETS...
+
+
+============================================================
+SETS Setup  2026-03-10 22:33:25
+============================================================
+[22:33:26] === SETS First-Time Setup ===
+[22:33:26] ROOT: /home/raman/Pobrane/SETS-WARP
+[22:33:26] 
+[22:33:26] OK Portable Python already present: /home/raman/Pobrane/SETS-WARP/.python/python/bin/python3.13
+
+[22:33:26] Step 2/3  Creating virtual environment...
+[22:33:26]   Creating virtual environment...
+
+============================================================
+SETS Setup  2026-03-10 22:34:34
+============================================================
+[22:34:34] === SETS First-Time Setup ===
+[22:34:34] ROOT: /home/raman/Pobrane/SETS-WARP
+[22:34:34] 
+[22:34:34] Step 1/3  Downloading portable Python (~65 MB, one-time)...
+[22:34:34]   Downloading portable Python 3.13.2...
+[22:34:34]   Downloading... 0%
+[22:34:35]   Downloading... 1%
+[22:34:35]   Downloading... 2%
+[22:34:35]   Downloading... 3%
+[22:34:35]   Downloading... 4%
+[22:34:35]   Downloading... 5%
+[22:34:35]   Downloading... 6%
+[22:34:35]   Downloading... 7%
+[22:34:35]   Downloading... 8%
+[22:34:35]   Downloading... 9%
+[22:34:35]   Downloading... 10%
+[22:34:35]   Downloading... 11%
+[22:34:35]   Downloading... 12%
+[22:34:35]   Downloading... 13%
+[22:34:35]   Downloading... 14%
+[22:34:35]   Downloading... 15%
+[22:34:35]   Downloading... 16%
+[22:34:35]   Downloading... 17%
+[22:34:35]   Downloading... 18%
+[22:34:35]   Downloading... 19%
+[22:34:35]   Downloading... 20%
+[22:34:35]   Downloading... 21%
+[22:34:35]   Downloading... 22%
+[22:34:35]   Downloading... 23%
+[22:34:35]   Downloading... 24%
+[22:34:35]   Downloading... 25%
+[22:34:35]   Downloading... 26%
+[22:34:35]   Downloading... 27%
+[22:34:35]   Downloading... 28%
+[22:34:35]   Downloading... 29%
+[22:34:35]   Downloading... 30%
+[22:34:35]   Downloading... 31%
+[22:34:35]   Downloading... 32%
+[22:34:35]   Downloading... 33%
+[22:34:35]   Downloading... 34%
+[22:34:35]   Downloading... 35%
+[22:34:35]   Downloading... 36%
+[22:34:35]   Downloading... 37%
+[22:34:35]   Downloading... 38%
+[22:34:35]   Downloading... 39%
+[22:34:35]   Downloading... 40%
+[22:34:35]   Downloading... 41%
+[22:34:35]   Downloading... 42%
+[22:34:35]   Downloading... 43%
+[22:34:35]   Downloading... 44%
+[22:34:35]   Downloading... 45%
+[22:34:35]   Downloading... 46%
+[22:34:35]   Downloading... 47%
+[22:34:35]   Downloading... 48%
+[22:34:35]   Downloading... 49%
+[22:34:35]   Downloading... 50%
+[22:34:35]   Downloading... 51%
+[22:34:35]   Downloading... 52%
+[22:34:35]   Downloading... 53%
+[22:34:35]   Downloading... 54%
+[22:34:35]   Downloading... 55%
+[22:34:35]   Downloading... 56%
+[22:34:35]   Downloading... 57%
+[22:34:35]   Downloading... 58%
+[22:34:35]   Downloading... 59%
+[22:34:35]   Downloading... 60%
+[22:34:35]   Downloading... 61%
+[22:34:35]   Downloading... 62%
+[22:34:35]   Downloading... 63%
+[22:34:35]   Downloading... 64%
+[22:34:35]   Downloading... 65%
+[22:34:35]   Downloading... 66%
+[22:34:35]   Downloading... 67%
+[22:34:35]   Downloading... 68%
+[22:34:35]   Downloading... 69%
+[22:34:35]   Downloading... 70%
+[22:34:35]   Downloading... 71%
+[22:34:35]   Downloading... 72%
+[22:34:35]   Downloading... 73%
+[22:34:35]   Downloading... 74%
+[22:34:35]   Downloading... 75%
+[22:34:35]   Downloading... 76%
+[22:34:35]   Downloading... 77%
+[22:34:35]   Downloading... 78%
+[22:34:35]   Downloading... 79%
+[22:34:35]   Downloading... 80%
+[22:34:35]   Downloading... 81%
+[22:34:36]   Downloading... 82%
+[22:34:36]   Downloading... 83%
+[22:34:36]   Downloading... 84%
+[22:34:36]   Downloading... 85%
+[22:34:36]   Downloading... 86%
+[22:34:36]   Downloading... 87%
+[22:34:36]   Downloading... 88%
+[22:34:36]   Downloading... 89%
+[22:34:36]   Downloading... 90%
+[22:34:36]   Downloading... 91%
+[22:34:36]   Downloading... 92%
+[22:34:36]   Downloading... 93%
+[22:34:36]   Downloading... 94%
+[22:34:36]   Downloading... 95%
+[22:34:36]   Downloading... 96%
+[22:34:36]   Downloading... 97%
+[22:34:36]   Downloading... 98%
+[22:34:36]   Downloading... 99%
+[22:34:36]   Downloading... 100%
+[22:34:36]   Extracting...
+[22:34:37]   OK portable Python ready: /home/raman/Pobrane/SETS-WARP/.python/python/bin/python3.13
+[22:34:37] 
+[22:34:37] Step 2/3  Creating virtual environment...
+[22:34:37]   Creating virtual environment...
+[22:34:38]   OK virtual environment created
+[22:34:38] 
+[22:34:38] Step 3/3  Installing dependencies...
+[22:34:38]   Removing obsolete packages...
+[22:34:38]   No obsolete packages to remove.
+[22:34:38]   Cleaning stale .venv cache...
+[22:34:38]   No stale __pycache__ found
+[22:34:38]   Upgrading pip...
+[22:34:39]     Requirement already satisfied: pip in ./.venv/lib/python3.13/site-packages (24.3.1)
+[22:34:39]     Collecting pip
+[22:34:39]     Downloading pip-26.0.1-py3-none-any.whl.metadata (4.7 kB)
+[22:34:39]     Downloading pip-26.0.1-py3-none-any.whl (1.8 MB)
+[22:34:39]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 18.3 MB/s eta 0:00:00
+[22:34:39]     Installing collected packages: pip
+[22:34:39]     Attempting uninstall: pip
+[22:34:39]     Found existing installation: pip 24.3.1
+[22:34:39]     Uninstalling pip-24.3.1:
+[22:34:39]     Successfully uninstalled pip-24.3.1
+[22:34:40]     Successfully installed pip-26.0.1
+[22:34:40]   Installing 10 package(s)...
+[22:34:40]   [0/10] Installing PySide6...
+[22:34:40]     Collecting PySide6<6.10,>=6.7
+[22:34:41]     Downloading pyside6-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl.metadata (5.3 kB)
+[22:34:41]     Collecting shiboken6==6.9.3 (from PySide6<6.10,>=6.7)
+[22:34:41]     Downloading shiboken6-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+[22:34:41]     Collecting PySide6_Essentials==6.9.3 (from PySide6<6.10,>=6.7)
+[22:34:41]     Downloading pyside6_essentials-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl.metadata (3.6 kB)
+[22:34:41]     Collecting PySide6_Addons==6.9.3 (from PySide6<6.10,>=6.7)
+[22:34:41]     Downloading pyside6_addons-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl.metadata (4.0 kB)
+[22:34:41]     Downloading pyside6-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl (554 kB)
+[22:34:41]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 554.8/554.8 kB 11.0 MB/s  0:00:00
+[22:34:41]     Downloading pyside6_addons-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl (167.2 MB)
+[22:34:43]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 167.2/167.2 MB 73.4 MB/s  0:00:02
+[22:34:43]     Downloading pyside6_essentials-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl (97.5 MB)
+[22:34:45]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 97.5/97.5 MB 74.3 MB/s  0:00:01
+[22:34:45]     Downloading shiboken6-6.9.3-cp39-abi3-manylinux_2_28_x86_64.whl (204 kB)
+[22:34:45]     Installing collected packages: shiboken6, PySide6_Essentials, PySide6_Addons, PySide6
+[22:34:48]     Successfully installed PySide6-6.9.3 PySide6_Addons-6.9.3 PySide6_Essentials-6.9.3 shiboken6-6.9.3
+[22:34:48]   [1/10] Installing requests...  (~1m 14s remaining)
+[22:34:49]     Collecting requests
+[22:34:49]     Downloading requests-2.32.5-py3-none-any.whl.metadata (4.9 kB)
+[22:34:49]     Collecting charset_normalizer<4,>=2 (from requests)
+[22:34:49]     Downloading charset_normalizer-3.4.5-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (39 kB)
+[22:34:49]     Collecting idna<4,>=2.5 (from requests)
+[22:34:49]     Downloading idna-3.11-py3-none-any.whl.metadata (8.4 kB)
+[22:34:49]     Collecting urllib3<3,>=1.21.1 (from requests)
+[22:34:49]     Downloading urllib3-2.6.3-py3-none-any.whl.metadata (6.9 kB)
+[22:34:49]     Collecting certifi>=2017.4.17 (from requests)
+[22:34:49]     Downloading certifi-2026.2.25-py3-none-any.whl.metadata (2.5 kB)
+[22:34:49]     Downloading requests-2.32.5-py3-none-any.whl (64 kB)
+[22:34:49]     Downloading charset_normalizer-3.4.5-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (195 kB)
+[22:34:49]     Downloading idna-3.11-py3-none-any.whl (71 kB)
+[22:34:49]     Downloading urllib3-2.6.3-py3-none-any.whl (131 kB)
+[22:34:49]     Downloading certifi-2026.2.25-py3-none-any.whl (153 kB)
+[22:34:50]     Installing collected packages: urllib3, idna, charset_normalizer, certifi, requests
+[22:34:50]     Successfully installed certifi-2026.2.25 charset_normalizer-3.4.5 idna-3.11 requests-2.32.5 urllib3-2.6.3
+[22:34:50]   [2/10] Installing numpy...  (~38s remaining)
+[22:34:50]     Collecting numpy
+[22:34:50]     Downloading numpy-2.4.3-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (6.6 kB)
+[22:34:50]     Downloading numpy-2.4.3-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (16.6 MB)
+[22:34:51]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 16.6/16.6 MB 59.4 MB/s  0:00:00
+[22:34:51]     Installing collected packages: numpy
+[22:34:52]     Successfully installed numpy-2.4.3
+[22:34:52]   [3/10] Installing requests_html...  (~28s remaining)
+[22:34:52]     Collecting requests_html
+[22:34:53]     Downloading requests_html-0.10.0-py3-none-any.whl.metadata (15 kB)
+[22:34:53]     Requirement already satisfied: requests in ./.venv/lib/python3.13/site-packages (from requests_html) (2.32.5)
+[22:34:53]     Collecting pyquery (from requests_html)
+[22:34:53]     Downloading pyquery-2.0.1-py3-none-any.whl.metadata (9.0 kB)
+[22:34:53]     Collecting fake-useragent (from requests_html)
+[22:34:53]     Downloading fake_useragent-2.2.0-py3-none-any.whl.metadata (17 kB)
+[22:34:53]     Collecting parse (from requests_html)
+[22:34:53]     Downloading parse-1.21.1-py2.py3-none-any.whl.metadata (21 kB)
+[22:34:53]     Collecting bs4 (from requests_html)
+[22:34:53]     Downloading bs4-0.0.2-py2.py3-none-any.whl.metadata (411 bytes)
+[22:34:53]     Collecting w3lib (from requests_html)
+[22:34:53]     Downloading w3lib-2.4.0-py3-none-any.whl.metadata (2.3 kB)
+[22:34:53]     Collecting pyppeteer>=0.0.14 (from requests_html)
+[22:34:53]     Downloading pyppeteer-2.0.0-py3-none-any.whl.metadata (7.1 kB)
+[22:34:53]     Collecting appdirs<2.0.0,>=1.4.3 (from pyppeteer>=0.0.14->requests_html)
+[22:34:53]     Downloading appdirs-1.4.4-py2.py3-none-any.whl.metadata (9.0 kB)
+[22:34:53]     Requirement already satisfied: certifi>=2023 in ./.venv/lib/python3.13/site-packages (from pyppeteer>=0.0.14->requests_html) (2026.2.25)
+[22:34:53]     Collecting importlib-metadata>=1.4 (from pyppeteer>=0.0.14->requests_html)
+[22:34:53]     Downloading importlib_metadata-8.7.1-py3-none-any.whl.metadata (4.7 kB)
+[22:34:53]     Collecting pyee<12.0.0,>=11.0.0 (from pyppeteer>=0.0.14->requests_html)
+[22:34:53]     Downloading pyee-11.1.1-py3-none-any.whl.metadata (2.8 kB)
+[22:34:53]     Collecting tqdm<5.0.0,>=4.42.1 (from pyppeteer>=0.0.14->requests_html)
+[22:34:53]     Downloading tqdm-4.67.3-py3-none-any.whl.metadata (57 kB)
+[22:34:53]     Collecting urllib3<2.0.0,>=1.25.8 (from pyppeteer>=0.0.14->requests_html)
+[22:34:53]     Downloading urllib3-1.26.20-py2.py3-none-any.whl.metadata (50 kB)
+[22:34:54]     Collecting websockets<11.0,>=10.0 (from pyppeteer>=0.0.14->requests_html)
+[22:34:54]     Downloading websockets-10.4.tar.gz (84 kB)
+[22:34:54]     Installing build dependencies: started
+[22:34:55]     Installing build dependencies: finished with status 'done'
+[22:34:55]     Getting requirements to build wheel: started
+[22:34:55]     Getting requirements to build wheel: finished with status 'done'
+[22:34:55]     Preparing metadata (pyproject.toml): started
+[22:34:55]     Preparing metadata (pyproject.toml): finished with status 'done'
+[22:34:55]     Collecting typing-extensions (from pyee<12.0.0,>=11.0.0->pyppeteer>=0.0.14->requests_html)
+[22:34:55]     Downloading typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+[22:34:55]     Collecting zipp>=3.20 (from importlib-metadata>=1.4->pyppeteer>=0.0.14->requests_html)
+[22:34:55]     Downloading zipp-3.23.0-py3-none-any.whl.metadata (3.6 kB)
+[22:34:55]     Collecting beautifulsoup4 (from bs4->requests_html)
+[22:34:55]     Downloading beautifulsoup4-4.14.3-py3-none-any.whl.metadata (3.8 kB)
+[22:34:55]     Collecting soupsieve>=1.6.1 (from beautifulsoup4->bs4->requests_html)
+[22:34:56]     Downloading soupsieve-2.8.3-py3-none-any.whl.metadata (4.6 kB)
+[22:34:56]     Collecting lxml>=2.1 (from pyquery->requests_html)
+[22:34:56]     Downloading lxml-6.0.2-cp313-cp313-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl.metadata (3.6 kB)
+[22:34:56]     Collecting cssselect>=1.2.0 (from pyquery->requests_html)
+[22:34:56]     Downloading cssselect-1.4.0-py3-none-any.whl.metadata (2.4 kB)
+[22:34:56]     Requirement already satisfied: charset_normalizer<4,>=2 in ./.venv/lib/python3.13/site-packages (from requests->requests_html) (3.4.5)
+[22:34:56]     Requirement already satisfied: idna<4,>=2.5 in ./.venv/lib/python3.13/site-packages (from requests->requests_html) (3.11)
+[22:34:56]     Downloading requests_html-0.10.0-py3-none-any.whl (13 kB)
+[22:34:56]     Downloading pyppeteer-2.0.0-py3-none-any.whl (82 kB)
+[22:34:56]     Downloading appdirs-1.4.4-py2.py3-none-any.whl (9.6 kB)
+[22:34:56]     Downloading pyee-11.1.1-py3-none-any.whl (15 kB)
+[22:34:56]     Downloading tqdm-4.67.3-py3-none-any.whl (78 kB)
+[22:34:56]     Downloading urllib3-1.26.20-py2.py3-none-any.whl (144 kB)
+[22:34:56]     Downloading importlib_metadata-8.7.1-py3-none-any.whl (27 kB)
+[22:34:56]     Downloading zipp-3.23.0-py3-none-any.whl (10 kB)
+[22:34:56]     Downloading bs4-0.0.2-py2.py3-none-any.whl (1.2 kB)
+[22:34:56]     Downloading beautifulsoup4-4.14.3-py3-none-any.whl (107 kB)
+[22:34:56]     Downloading soupsieve-2.8.3-py3-none-any.whl (37 kB)
+[22:34:56]     Downloading typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+[22:34:56]     Downloading fake_useragent-2.2.0-py3-none-any.whl (161 kB)
+[22:34:56]     Downloading parse-1.21.1-py2.py3-none-any.whl (19 kB)
+[22:34:56]     Downloading pyquery-2.0.1-py3-none-any.whl (22 kB)
+[22:34:56]     Downloading cssselect-1.4.0-py3-none-any.whl (18 kB)
+[22:34:56]     Downloading lxml-6.0.2-cp313-cp313-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl (5.2 MB)
+[22:34:56]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.2/5.2 MB 37.4 MB/s  0:00:00
+[22:34:57]     Downloading w3lib-2.4.0-py3-none-any.whl (21 kB)
+[22:34:57]     Building wheels for collected packages: websockets
+[22:34:57]     Building wheel for websockets (pyproject.toml): started
+[22:34:57]     Building wheel for websockets (pyproject.toml): finished with status 'done'
+[22:34:57]     Created wheel for websockets: filename=websockets-10.4-cp313-cp313-linux_x86_64.whl size=106583 sha256=96b817ee69d06e226ae04e65dd24dc82de66289d9bb514de4d7c81f00a6eafd2
+[22:34:57]     Stored in directory: /home/raman/.cache/pip/wheels/f5/dd/43/5b7132085406a982d2e0dd808f0ffed137865c8a8c5c7a5e4b
+[22:34:57]     Successfully built websockets
+[22:34:57]     Installing collected packages: parse, appdirs, zipp, websockets, w3lib, urllib3, typing-extensions, tqdm, soupsieve, lxml, fake-useragent, cssselect, pyquery, pyee, importlib-metadata, beautifulsoup4, pyppeteer, bs4, requests_html
+[22:34:57]     Attempting uninstall: urllib3
+[22:34:57]     Found existing installation: urllib3 2.6.3
+[22:34:57]     Uninstalling urllib3-2.6.3:
+[22:34:57]     Successfully uninstalled urllib3-2.6.3
+[22:34:57]     Successfully installed appdirs-1.4.4 beautifulsoup4-4.14.3 bs4-0.0.2 cssselect-1.4.0 fake-useragent-2.2.0 importlib-metadata-8.7.1 lxml-6.0.2 parse-1.21.1 pyee-11.1.1 pyppeteer-2.0.0 pyquery-2.0.1 requests_html-0.10.0 soupsieve-2.8.3 tqdm-4.67.3 typing-extensions-4.15.0 urllib3-1.26.20 w3lib-2.4.0 websockets-10.4 zipp-3.23.0
+[22:34:57]   [4/10] Installing lxml_html_clean...  (~26s remaining)
+[22:34:58]     Collecting lxml_html_clean
+[22:34:58]     Downloading lxml_html_clean-0.4.4-py3-none-any.whl.metadata (2.4 kB)
+[22:34:58]     Requirement already satisfied: lxml in ./.venv/lib/python3.13/site-packages (from lxml_html_clean) (6.0.2)
+[22:34:58]     Downloading lxml_html_clean-0.4.4-py3-none-any.whl (14 kB)
+[22:34:58]     Installing collected packages: lxml_html_clean
+[22:34:58]     Successfully installed lxml_html_clean-0.4.4
+[22:34:58]   [5/10] Installing cssselect...  (~18s remaining)
+[22:34:59]     Requirement already satisfied: cssselect in ./.venv/lib/python3.13/site-packages (1.4.0)
+[22:34:59]   [6/10] Installing opencv-python-headless...  (~12s remaining)
+[22:34:59]     Collecting opencv-python-headless>=4.9
+[22:34:59]     Downloading opencv_python_headless-4.13.0.92-cp37-abi3-manylinux_2_28_x86_64.whl.metadata (19 kB)
+[22:34:59]     Requirement already satisfied: numpy>=2 in ./.venv/lib/python3.13/site-packages (from opencv-python-headless>=4.9) (2.4.3)
+[22:34:59]     Downloading opencv_python_headless-4.13.0.92-cp37-abi3-manylinux_2_28_x86_64.whl (60.4 MB)
+[22:35:00]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 60.4/60.4 MB 69.6 MB/s  0:00:00
+[22:35:00]     Installing collected packages: opencv-python-headless
+[22:35:01]     Successfully installed opencv-python-headless-4.13.0.92
+[22:35:01]   [7/10] Installing easyocr...  (~9s remaining)
+[22:35:02]     Collecting easyocr>=1.7
+[22:35:02]     Downloading easyocr-1.7.2-py3-none-any.whl.metadata (10 kB)
+[22:35:02]     Collecting torch (from easyocr>=1.7)
+[22:35:02]     Downloading torch-2.10.0-cp313-cp313-manylinux_2_28_x86_64.whl.metadata (31 kB)
+[22:35:02]     Collecting torchvision>=0.5 (from easyocr>=1.7)
+[22:35:02]     Downloading torchvision-0.25.0-cp313-cp313-manylinux_2_28_x86_64.whl.metadata (5.4 kB)
+[22:35:02]     Requirement already satisfied: opencv-python-headless in ./.venv/lib/python3.13/site-packages (from easyocr>=1.7) (4.13.0.92)
+[22:35:02]     Collecting scipy (from easyocr>=1.7)
+[22:35:02]     Downloading scipy-1.17.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (62 kB)
+[22:35:02]     Requirement already satisfied: numpy in ./.venv/lib/python3.13/site-packages (from easyocr>=1.7) (2.4.3)
+[22:35:02]     Collecting Pillow (from easyocr>=1.7)
+[22:35:02]     Downloading pillow-12.1.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (8.8 kB)
+[22:35:02]     Collecting scikit-image (from easyocr>=1.7)
+[22:35:02]     Downloading scikit_image-0.26.0-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (15 kB)
+[22:35:02]     Collecting python-bidi (from easyocr>=1.7)
+[22:35:02]     Downloading python_bidi-0.6.7-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.9 kB)
+[22:35:03]     Collecting PyYAML (from easyocr>=1.7)
+[22:35:03]     Downloading pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+[22:35:03]     Collecting Shapely (from easyocr>=1.7)
+[22:35:03]     Downloading shapely-2.1.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (6.8 kB)
+[22:35:03]     Collecting pyclipper (from easyocr>=1.7)
+[22:35:03]     Downloading pyclipper-1.4.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (8.6 kB)
+[22:35:03]     Collecting ninja (from easyocr>=1.7)
+[22:35:03]     Downloading ninja-1.13.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (5.1 kB)
+[22:35:03]     Collecting filelock (from torch->easyocr>=1.7)
+[22:35:03]     Downloading filelock-3.25.1-py3-none-any.whl.metadata (2.0 kB)
+[22:35:03]     Requirement already satisfied: typing-extensions>=4.10.0 in ./.venv/lib/python3.13/site-packages (from torch->easyocr>=1.7) (4.15.0)
+[22:35:03]     Collecting setuptools (from torch->easyocr>=1.7)
+[22:35:03]     Using cached setuptools-82.0.1-py3-none-any.whl.metadata (6.5 kB)
+[22:35:03]     Collecting sympy>=1.13.3 (from torch->easyocr>=1.7)
+[22:35:03]     Downloading sympy-1.14.0-py3-none-any.whl.metadata (12 kB)
+[22:35:03]     Collecting networkx>=2.5.1 (from torch->easyocr>=1.7)
+[22:35:03]     Downloading networkx-3.6.1-py3-none-any.whl.metadata (6.8 kB)
+[22:35:03]     Collecting jinja2 (from torch->easyocr>=1.7)
+[22:35:03]     Downloading jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+[22:35:03]     Collecting fsspec>=0.8.5 (from torch->easyocr>=1.7)
+[22:35:03]     Downloading fsspec-2026.2.0-py3-none-any.whl.metadata (10 kB)
+[22:35:03]     Collecting cuda-bindings==12.9.4 (from torch->easyocr>=1.7)
+[22:35:03]     Downloading cuda_bindings-12.9.4-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (2.6 kB)
+[22:35:03]     Collecting nvidia-cuda-nvrtc-cu12==12.8.93 (from torch->easyocr>=1.7)
+[22:35:03]     Downloading nvidia_cuda_nvrtc_cu12-12.8.93-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl.metadata (1.7 kB)
+[22:35:03]     Collecting nvidia-cuda-runtime-cu12==12.8.90 (from torch->easyocr>=1.7)
+[22:35:03]     Downloading nvidia_cuda_runtime_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.7 kB)
+[22:35:03]     Collecting nvidia-cuda-cupti-cu12==12.8.90 (from torch->easyocr>=1.7)
+[22:35:03]     Downloading nvidia_cuda_cupti_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.7 kB)
+[22:35:04]     Collecting nvidia-cudnn-cu12==9.10.2.21 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_cudnn_cu12-9.10.2.21-py3-none-manylinux_2_27_x86_64.whl.metadata (1.8 kB)
+[22:35:04]     Collecting nvidia-cublas-cu12==12.8.4.1 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_cublas_cu12-12.8.4.1-py3-none-manylinux_2_27_x86_64.whl.metadata (1.7 kB)
+[22:35:04]     Collecting nvidia-cufft-cu12==11.3.3.83 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_cufft_cu12-11.3.3.83-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.7 kB)
+[22:35:04]     Collecting nvidia-curand-cu12==10.3.9.90 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_curand_cu12-10.3.9.90-py3-none-manylinux_2_27_x86_64.whl.metadata (1.7 kB)
+[22:35:04]     Collecting nvidia-cusolver-cu12==11.7.3.90 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_cusolver_cu12-11.7.3.90-py3-none-manylinux_2_27_x86_64.whl.metadata (1.8 kB)
+[22:35:04]     Collecting nvidia-cusparse-cu12==12.5.8.93 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_cusparse_cu12-12.5.8.93-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.8 kB)
+[22:35:04]     Collecting nvidia-cusparselt-cu12==0.7.1 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_cusparselt_cu12-0.7.1-py3-none-manylinux2014_x86_64.whl.metadata (7.0 kB)
+[22:35:04]     Collecting nvidia-nccl-cu12==2.27.5 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_nccl_cu12-2.27.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.0 kB)
+[22:35:04]     Collecting nvidia-nvshmem-cu12==3.4.5 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_nvshmem_cu12-3.4.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.1 kB)
+[22:35:04]     Collecting nvidia-nvtx-cu12==12.8.90 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_nvtx_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.8 kB)
+[22:35:04]     Collecting nvidia-nvjitlink-cu12==12.8.93 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_nvjitlink_cu12-12.8.93-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl.metadata (1.7 kB)
+[22:35:04]     Collecting nvidia-cufile-cu12==1.13.1.3 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading nvidia_cufile_cu12-1.13.1.3-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.7 kB)
+[22:35:04]     Collecting triton==3.6.0 (from torch->easyocr>=1.7)
+[22:35:04]     Downloading triton-3.6.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (1.7 kB)
+[22:35:04]     Collecting cuda-pathfinder~=1.1 (from cuda-bindings==12.9.4->torch->easyocr>=1.7)
+[22:35:04]     Downloading cuda_pathfinder-1.4.1-py3-none-any.whl.metadata (1.9 kB)
+[22:35:04]     Collecting mpmath<1.4,>=1.1.0 (from sympy>=1.13.3->torch->easyocr>=1.7)
+[22:35:04]     Downloading mpmath-1.3.0-py3-none-any.whl.metadata (8.6 kB)
+[22:35:05]     Collecting MarkupSafe>=2.0 (from jinja2->torch->easyocr>=1.7)
+[22:35:05]     Downloading markupsafe-3.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)
+[22:35:05]     Collecting imageio!=2.35.0,>=2.33 (from scikit-image->easyocr>=1.7)
+[22:35:05]     Downloading imageio-2.37.3-py3-none-any.whl.metadata (9.7 kB)
+[22:35:05]     Collecting tifffile>=2022.8.12 (from scikit-image->easyocr>=1.7)
+[22:35:05]     Downloading tifffile-2026.3.3-py3-none-any.whl.metadata (31 kB)
+[22:35:05]     Collecting packaging>=21 (from scikit-image->easyocr>=1.7)
+[22:35:05]     Downloading packaging-26.0-py3-none-any.whl.metadata (3.3 kB)
+[22:35:05]     Collecting lazy-loader>=0.4 (from scikit-image->easyocr>=1.7)
+[22:35:05]     Downloading lazy_loader-0.5-py3-none-any.whl.metadata (5.9 kB)
+[22:35:05]     Downloading easyocr-1.7.2-py3-none-any.whl (2.9 MB)
+[22:35:05]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.9/2.9 MB 28.9 MB/s  0:00:00
+[22:35:05]     Downloading torchvision-0.25.0-cp313-cp313-manylinux_2_28_x86_64.whl (8.1 MB)
+[22:35:05]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 8.1/8.1 MB 66.4 MB/s  0:00:00
+[22:35:05]     Downloading torch-2.10.0-cp313-cp313-manylinux_2_28_x86_64.whl (915.7 MB)
+[22:35:18]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 915.7/915.7 MB 65.5 MB/s  0:00:12
+[22:35:18]     Downloading cuda_bindings-12.9.4-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (11.9 MB)
+[22:35:18]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 11.9/11.9 MB 73.2 MB/s  0:00:00
+[22:35:18]     Downloading nvidia_cublas_cu12-12.8.4.1-py3-none-manylinux_2_27_x86_64.whl (594.3 MB)
+[22:35:26]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 594.3/594.3 MB 68.7 MB/s  0:00:08
+[22:35:26]     Downloading nvidia_cuda_cupti_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (10.2 MB)
+[22:35:26]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10.2/10.2 MB 72.5 MB/s  0:00:00
+[22:35:26]     Downloading nvidia_cuda_nvrtc_cu12-12.8.93-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl (88.0 MB)
+[22:35:27]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 88.0/88.0 MB 74.7 MB/s  0:00:01
+[22:35:27]     Downloading nvidia_cuda_runtime_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (954 kB)
+[22:35:27]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 954.8/954.8 kB 50.5 MB/s  0:00:00
+[22:35:27]     Downloading nvidia_cudnn_cu12-9.10.2.21-py3-none-manylinux_2_27_x86_64.whl (706.8 MB)
+[22:35:37]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 706.8/706.8 MB 66.6 MB/s  0:00:09
+[22:35:37]     Downloading nvidia_cufft_cu12-11.3.3.83-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (193.1 MB)
+[22:35:39]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 193.1/193.1 MB 74.4 MB/s  0:00:02
+[22:35:40]     Downloading nvidia_cufile_cu12-1.13.1.3-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (1.2 MB)
+[22:35:40]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 55.0 MB/s  0:00:00
+[22:35:40]     Downloading nvidia_curand_cu12-10.3.9.90-py3-none-manylinux_2_27_x86_64.whl (63.6 MB)
+[22:35:40]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 63.6/63.6 MB 74.6 MB/s  0:00:00
+[22:35:40]     Downloading nvidia_cusolver_cu12-11.7.3.90-py3-none-manylinux_2_27_x86_64.whl (267.5 MB)
+[22:35:44]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 267.5/267.5 MB 74.5 MB/s  0:00:03
+[22:35:44]     Downloading nvidia_cusparse_cu12-12.5.8.93-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (288.2 MB)
+[22:35:48]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 288.2/288.2 MB 73.6 MB/s  0:00:03
+[22:35:48]     Downloading nvidia_cusparselt_cu12-0.7.1-py3-none-manylinux2014_x86_64.whl (287.2 MB)
+[22:35:52]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 287.2/287.2 MB 73.6 MB/s  0:00:03
+[22:35:52]     Downloading nvidia_nccl_cu12-2.27.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (322.3 MB)
+[22:35:56]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 322.3/322.3 MB 72.6 MB/s  0:00:04
+[22:35:56]     Downloading nvidia_nvjitlink_cu12-12.8.93-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl (39.3 MB)
+[22:35:57]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 39.3/39.3 MB 73.7 MB/s  0:00:00
+[22:35:57]     Downloading nvidia_nvshmem_cu12-3.4.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (139.1 MB)
+[22:35:59]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 139.1/139.1 MB 74.6 MB/s  0:00:01
+[22:35:59]     Downloading nvidia_nvtx_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (89 kB)
+[22:35:59]     Downloading triton-3.6.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (188.3 MB)
+[22:36:01]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 188.3/188.3 MB 74.3 MB/s  0:00:02
+[22:36:01]     Downloading cuda_pathfinder-1.4.1-py3-none-any.whl (43 kB)
+[22:36:01]     Downloading fsspec-2026.2.0-py3-none-any.whl (202 kB)
+[22:36:01]     Downloading networkx-3.6.1-py3-none-any.whl (2.1 MB)
+[22:36:01]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 63.4 MB/s  0:00:00
+[22:36:01]     Downloading pillow-12.1.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (7.0 MB)
+[22:36:02]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.0/7.0 MB 68.3 MB/s  0:00:00
+[22:36:02]     Downloading sympy-1.14.0-py3-none-any.whl (6.3 MB)
+[22:36:02]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.3/6.3 MB 63.1 MB/s  0:00:00
+[22:36:02]     Downloading mpmath-1.3.0-py3-none-any.whl (536 kB)
+[22:36:02]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 536.2/536.2 kB 31.6 MB/s  0:00:00
+[22:36:02]     Downloading filelock-3.25.1-py3-none-any.whl (26 kB)
+[22:36:02]     Downloading jinja2-3.1.6-py3-none-any.whl (134 kB)
+[22:36:02]     Downloading markupsafe-3.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)
+[22:36:02]     Downloading ninja-1.13.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (180 kB)
+[22:36:02]     Downloading pyclipper-1.4.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (972 kB)
+[22:36:02]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 972.1/972.1 kB 47.9 MB/s  0:00:00
+[22:36:02]     Downloading python_bidi-0.6.7-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (300 kB)
+[22:36:02]     Downloading pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (801 kB)
+[22:36:02]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 801.6/801.6 kB 43.1 MB/s  0:00:00
+[22:36:02]     Downloading scikit_image-0.26.0-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (13.7 MB)
+[22:36:02]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.7/13.7 MB 70.8 MB/s  0:00:00
+[22:36:02]     Downloading imageio-2.37.3-py3-none-any.whl (317 kB)
+[22:36:02]     Downloading lazy_loader-0.5-py3-none-any.whl (8.0 kB)
+[22:36:02]     Downloading packaging-26.0-py3-none-any.whl (74 kB)
+[22:36:02]     Downloading scipy-1.17.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (35.2 MB)
+[22:36:03]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 35.2/35.2 MB 73.6 MB/s  0:00:00
+[22:36:03]     Downloading tifffile-2026.3.3-py3-none-any.whl (243 kB)
+[22:36:03]     Using cached setuptools-82.0.1-py3-none-any.whl (1.0 MB)
+[22:36:03]     Downloading shapely-2.1.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (3.1 MB)
+[22:36:03]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.1/3.1 MB 67.3 MB/s  0:00:00
+[22:36:05]     Installing collected packages: python-bidi, nvidia-cusparselt-cu12, mpmath, triton, tifffile, sympy, Shapely, setuptools, scipy, PyYAML, pyclipper, Pillow, packaging, nvidia-nvtx-cu12, nvidia-nvshmem-cu12, nvidia-nvjitlink-cu12, nvidia-nccl-cu12, nvidia-curand-cu12, nvidia-cufile-cu12, nvidia-cuda-runtime-cu12, nvidia-cuda-nvrtc-cu12, nvidia-cuda-cupti-cu12, nvidia-cublas-cu12, ninja, networkx, MarkupSafe, fsspec, filelock, cuda-pathfinder, nvidia-cusparse-cu12, nvidia-cufft-cu12, nvidia-cudnn-cu12, lazy-loader, jinja2, imageio, cuda-bindings, scikit-image, nvidia-cusolver-cu12, torch, torchvision, easyocr
+[22:36:53]     Successfully installed MarkupSafe-3.0.3 Pillow-12.1.1 PyYAML-6.0.3 Shapely-2.1.2 cuda-bindings-12.9.4 cuda-pathfinder-1.4.1 easyocr-1.7.2 filelock-3.25.1 fsspec-2026.2.0 imageio-2.37.3 jinja2-3.1.6 lazy-loader-0.5 mpmath-1.3.0 networkx-3.6.1 ninja-1.13.0 nvidia-cublas-cu12-12.8.4.1 nvidia-cuda-cupti-cu12-12.8.90 nvidia-cuda-nvrtc-cu12-12.8.93 nvidia-cuda-runtime-cu12-12.8.90 nvidia-cudnn-cu12-9.10.2.21 nvidia-cufft-cu12-11.3.3.83 nvidia-cufile-cu12-1.13.1.3 nvidia-curand-cu12-10.3.9.90 nvidia-cusolver-cu12-11.7.3.90 nvidia-cusparse-cu12-12.5.8.93 nvidia-cusparselt-cu12-0.7.1 nvidia-nccl-cu12-2.27.5 nvidia-nvjitlink-cu12-12.8.93 nvidia-nvshmem-cu12-3.4.5 nvidia-nvtx-cu12-12.8.90 packaging-26.0 pyclipper-1.4.0 python-bidi-0.6.7 scikit-image-0.26.0 scipy-1.17.1 setuptools-82.0.1 sympy-1.14.0 tifffile-2026.3.3 torch-2.10.0 torchvision-0.25.0 triton-3.6.0
+[22:36:53]   [8/10] Installing onnxruntime...  (~33s remaining)
+[22:36:54]     Collecting onnxruntime>=1.18
+[22:36:54]     Downloading onnxruntime-1.24.3-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (5.1 kB)
+[22:36:54]     Collecting flatbuffers (from onnxruntime>=1.18)
+[22:36:54]     Downloading flatbuffers-25.12.19-py2.py3-none-any.whl.metadata (1.0 kB)
+[22:36:54]     Requirement already satisfied: numpy>=1.21.6 in ./.venv/lib/python3.13/site-packages (from onnxruntime>=1.18) (2.4.3)
+[22:36:54]     Requirement already satisfied: packaging in ./.venv/lib/python3.13/site-packages (from onnxruntime>=1.18) (26.0)
+[22:36:54]     Collecting protobuf (from onnxruntime>=1.18)
+[22:36:54]     Downloading protobuf-7.34.0-cp310-abi3-manylinux2014_x86_64.whl.metadata (595 bytes)
+[22:36:54]     Requirement already satisfied: sympy in ./.venv/lib/python3.13/site-packages (from onnxruntime>=1.18) (1.14.0)
+[22:36:54]     Requirement already satisfied: mpmath<1.4,>=1.1.0 in ./.venv/lib/python3.13/site-packages (from sympy->onnxruntime>=1.18) (1.3.0)
+[22:36:54]     Downloading onnxruntime-1.24.3-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (17.2 MB)
+[22:36:54]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 17.2/17.2 MB 59.7 MB/s  0:00:00
+[22:36:54]     Downloading flatbuffers-25.12.19-py2.py3-none-any.whl (26 kB)
+[22:36:54]     Downloading protobuf-7.34.0-cp310-abi3-manylinux2014_x86_64.whl (324 kB)
+[22:36:54]     Installing collected packages: flatbuffers, protobuf, onnxruntime
+[22:36:55]     Successfully installed flatbuffers-25.12.19 onnxruntime-1.24.3 protobuf-7.34.0
+[22:36:55]   [9/10] Installing huggingface-hub...  (~15s remaining)
+[22:36:56]     Collecting huggingface-hub>=0.22
+[22:36:56]     Downloading huggingface_hub-1.6.0-py3-none-any.whl.metadata (13 kB)
+[22:36:56]     Requirement already satisfied: filelock>=3.10.0 in ./.venv/lib/python3.13/site-packages (from huggingface-hub>=0.22) (3.25.1)
+[22:36:56]     Requirement already satisfied: fsspec>=2023.5.0 in ./.venv/lib/python3.13/site-packages (from huggingface-hub>=0.22) (2026.2.0)
+[22:36:56]     Collecting hf-xet<2.0.0,>=1.3.2 (from huggingface-hub>=0.22)
+[22:36:56]     Downloading hf_xet-1.3.2-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (4.9 kB)
+[22:36:56]     Collecting httpx<1,>=0.23.0 (from huggingface-hub>=0.22)
+[22:36:56]     Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+[22:36:56]     Requirement already satisfied: packaging>=20.9 in ./.venv/lib/python3.13/site-packages (from huggingface-hub>=0.22) (26.0)
+[22:36:56]     Requirement already satisfied: pyyaml>=5.1 in ./.venv/lib/python3.13/site-packages (from huggingface-hub>=0.22) (6.0.3)
+[22:36:56]     Requirement already satisfied: tqdm>=4.42.1 in ./.venv/lib/python3.13/site-packages (from huggingface-hub>=0.22) (4.67.3)
+[22:36:56]     Collecting typer (from huggingface-hub>=0.22)
+[22:36:56]     Downloading typer-0.24.1-py3-none-any.whl.metadata (16 kB)
+[22:36:56]     Requirement already satisfied: typing-extensions>=4.1.0 in ./.venv/lib/python3.13/site-packages (from huggingface-hub>=0.22) (4.15.0)
+[22:36:56]     Collecting anyio (from httpx<1,>=0.23.0->huggingface-hub>=0.22)
+[22:36:56]     Downloading anyio-4.12.1-py3-none-any.whl.metadata (4.3 kB)
+[22:36:56]     Requirement already satisfied: certifi in ./.venv/lib/python3.13/site-packages (from httpx<1,>=0.23.0->huggingface-hub>=0.22) (2026.2.25)
+[22:36:56]     Collecting httpcore==1.* (from httpx<1,>=0.23.0->huggingface-hub>=0.22)
+[22:36:56]     Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+[22:36:56]     Requirement already satisfied: idna in ./.venv/lib/python3.13/site-packages (from httpx<1,>=0.23.0->huggingface-hub>=0.22) (3.11)
+[22:36:56]     Collecting h11>=0.16 (from httpcore==1.*->httpx<1,>=0.23.0->huggingface-hub>=0.22)
+[22:36:56]     Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+[22:36:56]     Collecting click>=8.2.1 (from typer->huggingface-hub>=0.22)
+[22:36:56]     Downloading click-8.3.1-py3-none-any.whl.metadata (2.6 kB)
+[22:36:56]     Collecting shellingham>=1.3.0 (from typer->huggingface-hub>=0.22)
+[22:36:56]     Downloading shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)
+[22:36:56]     Collecting rich>=12.3.0 (from typer->huggingface-hub>=0.22)
+[22:36:56]     Downloading rich-14.3.3-py3-none-any.whl.metadata (18 kB)
+[22:36:56]     Collecting annotated-doc>=0.0.2 (from typer->huggingface-hub>=0.22)
+[22:36:57]     Downloading annotated_doc-0.0.4-py3-none-any.whl.metadata (6.6 kB)
+[22:36:57]     Collecting markdown-it-py>=2.2.0 (from rich>=12.3.0->typer->huggingface-hub>=0.22)
+[22:36:57]     Downloading markdown_it_py-4.0.0-py3-none-any.whl.metadata (7.3 kB)
+[22:36:57]     Collecting pygments<3.0.0,>=2.13.0 (from rich>=12.3.0->typer->huggingface-hub>=0.22)
+[22:36:57]     Downloading pygments-2.19.2-py3-none-any.whl.metadata (2.5 kB)
+[22:36:57]     Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=12.3.0->typer->huggingface-hub>=0.22)
+[22:36:57]     Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+[22:36:57]     Downloading huggingface_hub-1.6.0-py3-none-any.whl (612 kB)
+[22:36:57]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 612.9/612.9 kB 9.4 MB/s  0:00:00
+[22:36:57]     Downloading hf_xet-1.3.2-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.2 MB)
+[22:36:57]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.2/4.2 MB 28.5 MB/s  0:00:00
+[22:36:57]     Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+[22:36:57]     Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+[22:36:57]     Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+[22:36:57]     Downloading anyio-4.12.1-py3-none-any.whl (113 kB)
+[22:36:57]     Downloading typer-0.24.1-py3-none-any.whl (56 kB)
+[22:36:57]     Downloading annotated_doc-0.0.4-py3-none-any.whl (5.3 kB)
+[22:36:57]     Downloading click-8.3.1-py3-none-any.whl (108 kB)
+[22:36:57]     Downloading rich-14.3.3-py3-none-any.whl (310 kB)
+[22:36:57]     Downloading pygments-2.19.2-py3-none-any.whl (1.2 MB)
+[22:36:57]     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 55.9 MB/s  0:00:00
+[22:36:57]     Downloading markdown_it_py-4.0.0-py3-none-any.whl (87 kB)
+[22:36:57]     Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+[22:36:57]     Downloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+[22:36:57]     Installing collected packages: shellingham, pygments, mdurl, hf-xet, h11, click, anyio, annotated-doc, markdown-it-py, httpcore, rich, httpx, typer, huggingface-hub
+[22:36:58]     Successfully installed annotated-doc-0.0.4 anyio-4.12.1 click-8.3.1 h11-0.16.0 hf-xet-1.3.2 httpcore-1.0.9 httpx-0.28.1 huggingface-hub-1.6.0 markdown-it-py-4.0.0 mdurl-0.1.2 pygments-2.19.2 rich-14.3.3 shellingham-1.5.4 typer-0.24.1
+[22:36:58]   [10/10] All packages installed  (total: 2m 18s)
+[22:36:58]   Purging pip cache...
+[22:36:59]   pip cache purged

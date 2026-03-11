@@ -100,8 +100,10 @@ class _ImportWorker(QThread):
                 sets_app=self._sets_app,
                 progress_callback=lambda p, m: self.progress.emit(p, m),
             )
+            importer.set_interrupt_check(self.isInterruptionRequested)
             result = importer.process_folder(self._folder)
-            self.finished.emit(result)
+            if not self.isInterruptionRequested():
+                self.finished.emit(result)
         except Exception as exc:
             log.exception('WARP import worker error')
             self.error.emit(str(exc))
@@ -121,7 +123,8 @@ class WarpDialog(QDialog):
         super().__init__(parent)
         self._sets = sets_app
         self._settings = QSettings()
-        self._folder: Path | None = None
+        last = self._settings.value(_SETTINGS_KEY_LAST_DIR, '')
+        self._folder: Path | None = Path(last) if last and Path(last).is_dir() else None
         self._build_type = 'SPACE'
         self._worker: _ImportWorker | None = None
         self._import_result: ImportResult | None = None
@@ -131,6 +134,11 @@ class WarpDialog(QDialog):
         self.setMinimumHeight(420)
         self.setModal(True)
         self._build_ui()
+        if self._folder:
+            self._folder_label.setText(str(self._folder))
+            self._folder_label.setStyleSheet(
+                'color:#eee;background:#111;border:1px solid #3a6a9c;'
+                'border-radius:3px;padding:3px 7px;')
 
     # ── UI construction ────────────────────────────────────────────────────
 
@@ -168,7 +176,7 @@ class WarpDialog(QDialog):
         footer.addWidget(self._btn_next)
         root.addLayout(footer)
 
-        self._btn_cancel.clicked.connect(self.reject)
+        self._btn_cancel.clicked.connect(self._on_cancel)
         self._btn_next.clicked.connect(self._on_next)
 
     def _make_page_select(self) -> QWidget:
@@ -248,7 +256,6 @@ class WarpDialog(QDialog):
     def _start_import(self):
         self._stack.setCurrentIndex(1)
         self._btn_next.setEnabled(False)
-        self._btn_back.setVisible(False)
         self._progress_bar.setValue(0)
         self._progress_label.setText('Starting…')
 
@@ -257,6 +264,12 @@ class WarpDialog(QDialog):
         self._worker.finished.connect(self._on_import_done)
         self._worker.error.connect(self._on_import_error)
         self._worker.start()
+
+    def _on_cancel(self):
+        if self._worker and self._worker.isRunning():
+            self._worker.requestInterruption()
+            self._worker.wait(2000)
+        self.reject()
 
     def _on_progress(self, pct: int, msg: str):
         self._progress_bar.setValue(pct)
@@ -281,7 +294,6 @@ class WarpDialog(QDialog):
     def _on_import_error(self, msg: str):
         self._stack.setCurrentIndex(0)
         self._btn_next.setEnabled(True)
-        self._btn_cancel.setEnabled(True)
         QMessageBox.critical(self, 'WARP — Analysis Error', msg)
 
 
@@ -361,7 +373,8 @@ class WarpDialog(QDialog):
         return {
             'item':      ri.name,
             'rarity':    rarity,
-            'modifiers': [default_mark] + [None] * 4,
+            'mark':      default_mark,
+            'modifiers': [None] * 4,
         }
 
     # ── Folder picker ──────────────────────────────────────────────────────
@@ -378,7 +391,7 @@ class WarpDialog(QDialog):
             dlg.setDirectory(last)
         # Make file list read-only: user can see images but only dirs are selectable
         from PySide6.QtWidgets import QListView, QTreeView
-        for view in dlg.findChildren((QListView, QTreeView)):
+        for view in dlg.findChildren(QListView) + dlg.findChildren(QTreeView):
             view.setSelectionMode(view.SelectionMode.NoSelection)
         if dlg.exec():
             files = dlg.selectedFiles()

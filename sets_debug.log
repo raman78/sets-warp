@@ -1,0 +1,323 @@
+13:25:21.770  [INFO ]  [MainThread]  === setsdebug initialized  pid=20871  log=/home/raman/Pobrane/SETS-WARP/sets_debug.log ===
+13:25:21.907  [INFO ]  [MainThread]  app.py: module-level imports done
+13:25:21.936  [INFO ]  [MainThread]  SETS.__init__: no cf_clearance in .env — wiki downloads may be blocked
+13:25:21.939  [INFO ]  [MainThread]  SETS.__init__: CargoManager OK
+13:25:21.941  [INFO ]  [MainThread]  SETS.__init__: ImageManager OK
+13:25:21.957  [INFO ]  [MainThread]  SETS.__init__: create_main_window OK
+13:25:21.967  [INFO ]  [MainThread]  SETS.__init__: cache_icons OK
+13:25:21.969  [INFO ]  [MainThread]  SETS.__init__: cache_item_aliases OK
+13:25:21.971  [INFO ]  [MainThread]  SETS.__init__: empty_build OK
+13:25:21.979  [INFO ]  [MainThread]  SETS.__init__: ExportWindow OK
+13:25:21.981  [INFO ]  [MainThread]  setup_main_layout: start
+13:25:21.983  [INFO ]  [MainThread]  setup_main_layout: base layout OK
+13:25:21.989  [INFO ]  [MainThread]  setup_main_layout: banner ImageLabel created
+13:25:21.992  [INFO ]  [MainThread]  setup_main_layout: tabber OK
+13:25:21.995  [INFO ]  [MainThread]  setup_main_layout: calling setup_splash
+13:25:22.019  [INFO ]  [MainThread]  setup_main_layout: setup_splash OK
+13:25:22.023  [INFO ]  [MainThread]  setup_main_layout: menu_layout OK
+13:25:22.026  [INFO ]  [MainThread]  setup_main_layout: calling setup_ship_frame
+13:25:22.032  [INFO ]  [MainThread]  setup_main_layout: setup_ship_frame OK
+13:25:22.034  [INFO ]  [MainThread]  setup_main_layout: calling setup_character_frame
+13:25:22.041  [INFO ]  [MainThread]  setup_main_layout: setup_character_frame OK
+13:25:22.049  [INFO ]  [MainThread]  setup_main_layout: sidebar OK
+13:25:22.052  [INFO ]  [MainThread]  setup_main_layout: calling setup_build_frames
+13:25:22.054  [INFO ]  [MainThread]  setup_build_frames: setup_space_build_frame
+13:25:22.100  [INFO ]  [MainThread]  setup_build_frames: setup_ground_build_frame
+13:25:22.145  [INFO ]  [MainThread]  setup_build_frames: cache_skills
+13:25:22.147  [INFO ]  [MainThread]  setup_build_frames: setup_space_skill_frame
+13:25:22.150  [INFO ]  [MainThread]  setup_space_skill_frame: rank=0
+13:25:22.159  [INFO ]  [MainThread]  setup_space_skill_frame: rank=1
+13:25:22.167  [INFO ]  [MainThread]  setup_space_skill_frame: rank=2
+13:25:22.175  [INFO ]  [MainThread]  setup_space_skill_frame: rank=3
+13:25:22.182  [INFO ]  [MainThread]  setup_space_skill_frame: rank=4
+13:25:22.210  [INFO ]  [MainThread]  setup_build_frames: setup_ground_skill_frame
+13:25:22.222  [INFO ]  [MainThread]  setup_build_frames: DONE
+13:25:22.224  [INFO ]  [MainThread]  setup_main_layout: setup_build_frames OK
+13:25:22.226  [INFO ]  [MainThread]  setup_main_layout: calling setup_settings_frame
+13:25:22.242  [INFO ]  [MainThread]  setup_main_layout: setup_settings_frame OK
+13:25:22.286  [INFO ]  [MainThread]  setup_main_layout: DONE
+13:25:22.288  [INFO ]  [MainThread]  SETS.__init__: setup_main_layout OK
+13:25:22.300  [INFO ]  [MainThread]  SETS.__init__: Picker OK
+13:25:22.312  [INFO ]  [MainThread]  SETS.__init__: ItemEditor OK
+13:25:22.315  [INFO ]  [MainThread]  SETS.__init__: ShipSelector OK
+13:25:22.319  [INFO ]  [MainThread]  SETS.__init__: context_menu OK
+13:25:22.322  [INFO ]  [MainThread]  SETS.__init__: window.show() OK
+13:25:22.324  [INFO ]  [MainThread]  init_backend: enter_splash
+13:25:22.327  [INFO ]  [MainThread]  init_backend: load_build_file
+13:25:22.329  [INFO ]  [MainThread]  init_backend: launching populate_cache thread
+13:25:22.331  [INFO ]  [MainThread]  SETS.__init__: init_backend launched
+13:25:22.331  [INFO ]  [Dummy-1]  populate_cache: start
+13:25:22.352  [INFO ]  [Dummy-1]  populate_cache: load_cargo_cache returned True
+13:25:22.355  [INFO ]  [Dummy-1]  populate_cache: starting SyncManager
+13:25:22.358  [INFO ]  [Dummy-1]  SyncManager: tree cache 113min old — refreshing
+13:25:23.351  [INFO ]  [Dummy-1]  SyncManager: tree fetched — 4699 files
+13:25:23.436  [INFO ]  [Dummy-1]  SyncManager [Item Icons]: 1/4001 need download
+13:25:23.970  [WARN ]  [sync-T1]  SyncManager [Item Icons] T-1: FAILED (1 attempt) — Sniper+%28starship%29.png
+13:25:23.979  [INFO ]  [Dummy-1]  SyncManager [Item Icons]: done — 0 updated, 1 FAILED
+13:25:24.230  [INFO ]  [Dummy-1]  SyncManager [Ship Images]: 0/689 need download
+13:25:24.242  [INFO ]  [Dummy-1]  SyncManager [Cargo Data]: 0/7 need download
+13:25:24.244  [INFO ]  [Dummy-1]  SyncManager: complete — {'checked': 4699, 'updated': 0, 'failed': 1, 'cargo_updated': False}
+13:25:24.247  [INFO ]  [Dummy-1]  populate_cache: sync done — {'checked': 4699, 'updated': 0, 'failed': 1, 'cargo_updated': False}
+13:25:24.249  [INFO ]  [Dummy-1]  populate_cache: calling download_images
+13:25:24.260  [INFO ]  [Dummy-1]  download_images: ship images on disk=689, total=783, missing=1
+13:25:24.262  [INFO ]  [Dummy-1]  download_images: total=1 (icons=0, boff=0, skill=0, ships=1)
+13:25:24.266  [INFO ]  [Dummy-1]  download_images: step 1/1 — Ship Images (1 files)
+13:25:24.270  [INFO ]  [Thread-2 (download_image_chunk)]  download_ship_image: trying GitHub: 'https://github.com/STOCD/SETS-Data/raw/refs/heads/main/ship_images/Federation_Advanced_Heavy_Cruiser.png%25E2%2580%258E'
+13:25:24.904  [INFO ]  [Thread-2 (download_image_chunk)]  download_ship_image: github 404 size=301365
+13:25:24.913  [INFO ]  [Thread-2 (download_image_chunk)]  download_ship_image: trying wiki: 'https://stowiki.net/wiki/Special:FilePath/Federation_Advanced_Heavy_Cruiser.png%E2%80%8E'
+13:25:25.064  [INFO ]  [Thread-2 (download_image_chunk)]  download_ship_image: wiki 403 size=3392
+13:25:25.073  [INFO ]  [Thread-2 (download_image_chunk)]  download_ship_image: both sources failed for 'Federation_Advanced_Heavy_Cruiser.png\u200e'
+13:25:25.076  [INFO ]  [Dummy-1]  download_images: step 1 done, failed=1
+13:25:25.079  [INFO ]  [Dummy-1]  populate_cache: download_images done
+13:25:25.082  [INFO ]  [Dummy-1]  populate_cache: calling load_base_images
+13:25:25.085  [INFO ]  [Dummy-1]  load_base_images: overlays start
+13:25:25.091  [INFO ]  [Dummy-1]  load_base_images: overlays done
+13:25:25.094  [INFO ]  [Dummy-1]  load_base_images: loading 113 skill images
+13:25:25.096  [DEBUG]  [Dummy-1]  load_base_images: skill image [0/113] Engineering_Skill_1_R1
+13:25:25.098  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_1_R1.png
+13:25:25.100  [DEBUG]  [Dummy-1]  load_base_images: skill image [1/113] Engineering_Skill_1_R2
+13:25:25.102  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_1_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_1_R2.png
+13:25:25.104  [DEBUG]  [Dummy-1]  load_base_images: skill image [2/113] Engineering_Skill_1_R3
+13:25:25.106  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_1_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_1_R3.png
+13:25:25.108  [DEBUG]  [Dummy-1]  load_base_images: skill image [3/113] Engineering_Skill_2_R1
+13:25:25.110  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_2_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_2_R1.png
+13:25:25.112  [DEBUG]  [Dummy-1]  load_base_images: skill image [4/113] Engineering_Skill_2_R2
+13:25:25.114  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_2_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_2_R2.png
+13:25:25.116  [DEBUG]  [Dummy-1]  load_base_images: skill image [5/113] Engineering_Skill_2_R3
+13:25:25.118  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_2_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_2_R3.png
+13:25:25.120  [DEBUG]  [Dummy-1]  load_base_images: skill image [6/113] Science_Skill_1_R1
+13:25:25.122  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_1_R1.png
+13:25:25.124  [DEBUG]  [Dummy-1]  load_base_images: skill image [7/113] Science_Skill_1_R2
+13:25:25.126  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_1_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_1_R2.png
+13:25:25.128  [DEBUG]  [Dummy-1]  load_base_images: skill image [8/113] Science_Skill_1_R3
+13:25:25.130  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_1_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_1_R3.png
+13:25:25.132  [DEBUG]  [Dummy-1]  load_base_images: skill image [9/113] Science_Skill_2_R1
+13:25:25.134  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_2_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_2_R1.png
+13:25:25.136  [DEBUG]  [Dummy-1]  load_base_images: skill image [10/113] Science_Skill_2_R2
+13:25:25.138  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_2_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_2_R2.png
+13:25:25.140  [DEBUG]  [Dummy-1]  load_base_images: skill image [11/113] Science_Skill_2_R2
+13:25:25.142  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_2_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_2_R2.png
+13:25:25.144  [DEBUG]  [Dummy-1]  load_base_images: skill image [12/113] Tactical_Skill_1_R1
+13:25:25.146  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R1.png
+13:25:25.148  [DEBUG]  [Dummy-1]  load_base_images: skill image [13/113] Tactical_Skill_1_R2
+13:25:25.150  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R2.png
+13:25:25.152  [DEBUG]  [Dummy-1]  load_base_images: skill image [14/113] Tactical_Skill_1_R3
+13:25:25.154  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R3.png
+13:25:25.156  [DEBUG]  [Dummy-1]  load_base_images: skill image [15/113] Tactical_Skill_1_R1
+13:25:25.158  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R1.png
+13:25:25.160  [DEBUG]  [Dummy-1]  load_base_images: skill image [16/113] Tactical_Skill_1_R2
+13:25:25.162  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R2.png
+13:25:25.164  [DEBUG]  [Dummy-1]  load_base_images: skill image [17/113] Tactical_Skill_1_R3
+13:25:25.166  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R3.png
+13:25:25.168  [DEBUG]  [Dummy-1]  load_base_images: skill image [18/113] Engineering_Skill_3_R1
+13:25:25.170  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_3_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_3_R1.png
+13:25:25.172  [DEBUG]  [Dummy-1]  load_base_images: skill image [19/113] Engineering_Skill_3_R2
+13:25:25.175  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_3_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_3_R2.png
+13:25:25.177  [DEBUG]  [Dummy-1]  load_base_images: skill image [20/113] Engineering_Skill_4
+13:25:25.179  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_4' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_4.png
+13:25:25.181  [DEBUG]  [Dummy-1]  load_base_images: skill image [21/113] Engineering_Skill_4_R1
+13:25:25.183  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_4_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_4_R1.png
+13:25:25.185  [DEBUG]  [Dummy-1]  load_base_images: skill image [22/113] Engineering_Skill_4_R2
+13:25:25.187  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_4_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_4_R2.png
+13:25:25.189  [DEBUG]  [Dummy-1]  load_base_images: skill image [23/113] Engineering_Skill_4_R2
+13:25:25.191  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_4_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_4_R2.png
+13:25:25.193  [DEBUG]  [Dummy-1]  load_base_images: skill image [24/113] Science_Skill_3_R1
+13:25:25.195  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_3_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_3_R1.png
+13:25:25.197  [DEBUG]  [Dummy-1]  load_base_images: skill image [25/113] Science_Skill_3_R2
+13:25:25.199  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_3_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_3_R2.png
+13:25:25.201  [DEBUG]  [Dummy-1]  load_base_images: skill image [26/113] Science_Skill_2_R2
+13:25:25.203  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_2_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_2_R2.png
+13:25:25.205  [DEBUG]  [Dummy-1]  load_base_images: skill image [27/113] Science_Skill_3_R1
+13:25:25.207  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_3_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_3_R1.png
+13:25:25.209  [DEBUG]  [Dummy-1]  load_base_images: skill image [28/113] Science_Skill_3_R2
+13:25:25.211  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_3_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_3_R2.png
+13:25:25.213  [DEBUG]  [Dummy-1]  load_base_images: skill image [29/113] Science_Skill_4
+13:25:25.215  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_4' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_4.png
+13:25:25.217  [DEBUG]  [Dummy-1]  load_base_images: skill image [30/113] Tactical_Skill_2_R1
+13:25:25.219  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_2_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_2_R1.png
+13:25:25.221  [DEBUG]  [Dummy-1]  load_base_images: skill image [31/113] Tactical_Skill_2_R2
+13:25:25.223  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_2_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_2_R2.png
+13:25:25.225  [DEBUG]  [Dummy-1]  load_base_images: skill image [32/113] Tactical_Skill_2_R3
+13:25:25.227  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_2_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_2_R3.png
+13:25:25.229  [DEBUG]  [Dummy-1]  load_base_images: skill image [33/113] Tactical_Skill_3_R1
+13:25:25.231  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_3_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_3_R1.png
+13:25:25.233  [DEBUG]  [Dummy-1]  load_base_images: skill image [34/113] Tactical_Skill_3_R2
+13:25:25.235  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_3_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_3_R2.png
+13:25:25.237  [DEBUG]  [Dummy-1]  load_base_images: skill image [35/113] Tactical_Skill_3_R2
+13:25:25.239  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_3_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_3_R2.png
+13:25:25.241  [DEBUG]  [Dummy-1]  load_base_images: skill image [36/113] Engineering_Skill_2_R1
+13:25:25.243  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_2_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_2_R1.png
+13:25:25.245  [DEBUG]  [Dummy-1]  load_base_images: skill image [37/113] Engineering_Skill_2_R2
+13:25:25.247  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_2_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_2_R2.png
+13:25:25.249  [DEBUG]  [Dummy-1]  load_base_images: skill image [38/113] Engineering_Skill_2_R2
+13:25:25.251  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_2_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_2_R2.png
+13:25:25.253  [DEBUG]  [Dummy-1]  load_base_images: skill image [39/113] Engineering_Skill_1_R1
+13:25:25.255  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_1_R1.png
+13:25:25.257  [DEBUG]  [Dummy-1]  load_base_images: skill image [40/113] Engineering_Skill_1_R2
+13:25:25.259  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_1_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_1_R2.png
+13:25:25.261  [DEBUG]  [Dummy-1]  load_base_images: skill image [41/113] Engineering_Skill_1_R3
+13:25:25.263  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_1_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_1_R3.png
+13:25:25.265  [DEBUG]  [Dummy-1]  load_base_images: skill image [42/113] Science_Skill_1_R1
+13:25:25.267  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_1_R1.png
+13:25:25.269  [DEBUG]  [Dummy-1]  load_base_images: skill image [43/113] Science_Skill_1_R2
+13:25:25.271  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_1_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_1_R2.png
+13:25:25.273  [DEBUG]  [Dummy-1]  load_base_images: skill image [44/113] Science_Skill_1_R3
+13:25:25.275  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_1_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_1_R3.png
+13:25:25.277  [DEBUG]  [Dummy-1]  load_base_images: skill image [45/113] Science_Skill_2_R1
+13:25:25.279  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_2_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_2_R1.png
+13:25:25.281  [DEBUG]  [Dummy-1]  load_base_images: skill image [46/113] Science_Skill_2_R2
+13:25:25.283  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_2_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_2_R2.png
+13:25:25.285  [DEBUG]  [Dummy-1]  load_base_images: skill image [47/113] Science_Skill_2_R3
+13:25:25.287  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_2_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_2_R3.png
+13:25:25.289  [DEBUG]  [Dummy-1]  load_base_images: skill image [48/113] Tactical_Skill_1_R1
+13:25:25.291  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R1.png
+13:25:25.293  [DEBUG]  [Dummy-1]  load_base_images: skill image [49/113] Tactical_Skill_1_R2
+13:25:25.295  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R2.png
+13:25:25.297  [DEBUG]  [Dummy-1]  load_base_images: skill image [50/113] Tactical_Skill_1_R3
+13:25:25.299  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R3.png
+13:25:25.301  [DEBUG]  [Dummy-1]  load_base_images: skill image [51/113] Tactical_Skill_1_R1
+13:25:25.303  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R1.png
+13:25:25.305  [DEBUG]  [Dummy-1]  load_base_images: skill image [52/113] Tactical_Skill_1_R2
+13:25:25.307  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R2.png
+13:25:25.309  [DEBUG]  [Dummy-1]  load_base_images: skill image [53/113] Tactical_Skill_1_R3
+13:25:25.311  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R3.png
+13:25:25.313  [DEBUG]  [Dummy-1]  load_base_images: skill image [54/113] Engineering_Skill_3_R1
+13:25:25.315  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_3_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_3_R1.png
+13:25:25.317  [DEBUG]  [Dummy-1]  load_base_images: skill image [55/113] Engineering_Skill_5_R2
+13:25:25.319  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_5_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_5_R2.png
+13:25:25.321  [DEBUG]  [Dummy-1]  load_base_images: skill image [56/113] Engineering_Skill_1_R2
+13:25:25.323  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_1_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_1_R2.png
+13:25:25.325  [DEBUG]  [Dummy-1]  load_base_images: skill image [57/113] Engineering_Skill_3_R1
+13:25:25.327  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_3_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_3_R1.png
+13:25:25.329  [DEBUG]  [Dummy-1]  load_base_images: skill image [58/113] Engineering_Skill_4_R2
+13:25:25.331  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_4_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_4_R2.png
+13:25:25.333  [DEBUG]  [Dummy-1]  load_base_images: skill image [59/113] Engineering_Skill_6_R2
+13:25:25.335  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_6_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_6_R2.png
+13:25:25.337  [DEBUG]  [Dummy-1]  load_base_images: skill image [60/113] Science_Skill_4_R1
+13:25:25.339  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_4_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_4_R1.png
+13:25:25.341  [DEBUG]  [Dummy-1]  load_base_images: skill image [61/113] Science_Skill_4_R1
+13:25:25.343  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_4_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_4_R1.png
+13:25:25.345  [DEBUG]  [Dummy-1]  load_base_images: skill image [62/113] Science_Skill_4_R3
+13:25:25.347  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_4_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_4_R3.png
+13:25:25.349  [DEBUG]  [Dummy-1]  load_base_images: skill image [63/113] Science_Skill_4_R1
+13:25:25.351  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_4_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_4_R1.png
+13:25:25.353  [DEBUG]  [Dummy-1]  load_base_images: skill image [64/113] Science_Skill_4_R2
+13:25:25.355  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_4_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_4_R2.png
+13:25:25.357  [DEBUG]  [Dummy-1]  load_base_images: skill image [65/113] Science_Skill_4_R3
+13:25:25.359  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_4_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_4_R3.png
+13:25:25.361  [DEBUG]  [Dummy-1]  load_base_images: skill image [66/113] Tactical_Skill_3_R1
+13:25:25.363  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_3_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_3_R1.png
+13:25:25.365  [DEBUG]  [Dummy-1]  load_base_images: skill image [67/113] Tactical_Skill_3_R2
+13:25:25.367  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_3_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_3_R2.png
+13:25:25.369  [DEBUG]  [Dummy-1]  load_base_images: skill image [68/113] Tactical_Skill_3_R3
+13:25:25.371  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_3_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_3_R3.png
+13:25:25.373  [DEBUG]  [Dummy-1]  load_base_images: skill image [69/113] Tactical_Skill_4_R1
+13:25:25.375  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_4_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_4_R1.png
+13:25:25.377  [DEBUG]  [Dummy-1]  load_base_images: skill image [70/113] Tactical_Skill_4_R2
+13:25:25.379  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_4_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_4_R2.png
+13:25:25.381  [DEBUG]  [Dummy-1]  load_base_images: skill image [71/113] Tactical_Skill_4_R3
+13:25:25.383  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_4_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_4_R3.png
+13:25:25.385  [DEBUG]  [Dummy-1]  load_base_images: skill image [72/113] Engineering_Skill_3_R1
+13:25:25.387  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_3_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_3_R1.png
+13:25:25.389  [DEBUG]  [Dummy-1]  load_base_images: skill image [73/113] Engineering_Skill_3_R2
+13:25:25.391  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_3_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_3_R2.png
+13:25:25.393  [DEBUG]  [Dummy-1]  load_base_images: skill image [74/113] Engineering_Skill_3_R2
+13:25:25.395  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_3_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_3_R2.png
+13:25:25.397  [DEBUG]  [Dummy-1]  load_base_images: skill image [75/113] Engineering_Skill_4_R1
+13:25:25.399  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_4_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_4_R1.png
+13:25:25.401  [DEBUG]  [Dummy-1]  load_base_images: skill image [76/113] Engineering_Skill_4_R2
+13:25:25.403  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_4_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_4_R2.png
+13:25:25.405  [DEBUG]  [Dummy-1]  load_base_images: skill image [77/113] Engineering_Skill_4_R3
+13:25:25.407  [DEBUG]  [Dummy-1]  retrieve_image: 'Engineering_Skill_4_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Engineering_Skill_4_R3.png
+13:25:25.409  [DEBUG]  [Dummy-1]  load_base_images: skill image [78/113] Science_Skill_5_R1
+13:25:25.411  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_5_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_5_R1.png
+13:25:25.413  [DEBUG]  [Dummy-1]  load_base_images: skill image [79/113] Science_Skill_5_R2
+13:25:25.415  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_5_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_5_R2.png
+13:25:25.417  [DEBUG]  [Dummy-1]  load_base_images: skill image [80/113] Science_Skill_5_R3
+13:25:25.419  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_5_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_5_R3.png
+13:25:25.421  [DEBUG]  [Dummy-1]  load_base_images: skill image [81/113] Science_Skill_6_R1
+13:25:25.423  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_6_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_6_R1.png
+13:25:25.425  [DEBUG]  [Dummy-1]  load_base_images: skill image [82/113] Science_Skill_1_R1
+13:25:25.427  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_1_R1.png
+13:25:25.429  [DEBUG]  [Dummy-1]  load_base_images: skill image [83/113] Science_Skill_4_R1
+13:25:25.431  [DEBUG]  [Dummy-1]  retrieve_image: 'Science_Skill_4_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Science_Skill_4_R1.png
+13:25:25.433  [DEBUG]  [Dummy-1]  load_base_images: skill image [84/113] Tactical_Skill_3_R1
+13:25:25.435  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_3_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_3_R1.png
+13:25:25.437  [DEBUG]  [Dummy-1]  load_base_images: skill image [85/113] Tactical_Skill_5_R1
+13:25:25.439  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_5_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_5_R1.png
+13:25:25.441  [DEBUG]  [Dummy-1]  load_base_images: skill image [86/113] Tactical_Skill_1_R1
+13:25:25.443  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_1_R1.png
+13:25:25.445  [DEBUG]  [Dummy-1]  load_base_images: skill image [87/113] Tactical_Skill_5_R1
+13:25:25.447  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_5_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_5_R1.png
+13:25:25.449  [DEBUG]  [Dummy-1]  load_base_images: skill image [88/113] Tactical_Skill_5_R2
+13:25:25.451  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_5_R2' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_5_R2.png
+13:25:25.453  [DEBUG]  [Dummy-1]  load_base_images: skill image [89/113] Tactical_Skill_5_R3
+13:25:25.455  [DEBUG]  [Dummy-1]  retrieve_image: 'Tactical_Skill_5_R3' -> /home/raman/Pobrane/SETS-WARP/.config/images/Tactical_Skill_5_R3.png
+13:25:25.457  [DEBUG]  [Dummy-1]  load_base_images: skill image [90/113] Ground_Skill_1_R1
+13:25:25.459  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_1_R1.png
+13:25:25.461  [DEBUG]  [Dummy-1]  load_base_images: skill image [91/113] Ground_Skill_1_R2_icon
+13:25:25.463  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_1_R2_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_1_R2_icon.png
+13:25:25.465  [DEBUG]  [Dummy-1]  load_base_images: skill image [92/113] Ground_Skill_2_R1_icon
+13:25:25.467  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_2_R1_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_2_R1_icon.png
+13:25:25.469  [DEBUG]  [Dummy-1]  load_base_images: skill image [93/113] Ground_Skill_2_R2_icon
+13:25:25.471  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_2_R2_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_2_R2_icon.png
+13:25:25.473  [DEBUG]  [Dummy-1]  load_base_images: skill image [94/113] Ground_Skill_3_R1_icon
+13:25:25.475  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_3_R1_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_3_R1_icon.png
+13:25:25.477  [DEBUG]  [Dummy-1]  load_base_images: skill image [95/113] Ground_Skill_3_R2_icon
+13:25:25.479  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_3_R2_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_3_R2_icon.png
+13:25:25.481  [DEBUG]  [Dummy-1]  load_base_images: skill image [96/113] Ground_Skill_4_R1_icon
+13:25:25.483  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_4_R1_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_4_R1_icon.png
+13:25:25.485  [DEBUG]  [Dummy-1]  load_base_images: skill image [97/113] Ground_Skill_4_R2_icon
+13:25:25.487  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_4_R2_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_4_R2_icon.png
+13:25:25.489  [DEBUG]  [Dummy-1]  load_base_images: skill image [98/113] Ground_Skill_3_R1_icon
+13:25:25.491  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_3_R1_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_3_R1_icon.png
+13:25:25.493  [DEBUG]  [Dummy-1]  load_base_images: skill image [99/113] Ground_Skill_3_R2_icon
+13:25:25.495  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_3_R2_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_3_R2_icon.png
+13:25:25.497  [DEBUG]  [Dummy-1]  load_base_images: skill image [100/113] Ground_Skill_2_R1_icon
+13:25:25.499  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_2_R1_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_2_R1_icon.png
+13:25:25.501  [DEBUG]  [Dummy-1]  load_base_images: skill image [101/113] Ground_Skill_2_R2_icon
+13:25:25.503  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_2_R2_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_2_R2_icon.png
+13:25:25.505  [DEBUG]  [Dummy-1]  load_base_images: skill image [102/113] Ground_Skill_5_R1_icon
+13:25:25.507  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_5_R1_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_5_R1_icon.png
+13:25:25.509  [DEBUG]  [Dummy-1]  load_base_images: skill image [103/113] Ground_Skill_5_R2_icon
+13:25:25.511  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_5_R2_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_5_R2_icon.png
+13:25:25.513  [DEBUG]  [Dummy-1]  load_base_images: skill image [104/113] Ground_Skill_3_R1_icon
+13:25:25.515  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_3_R1_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_3_R1_icon.png
+13:25:25.517  [DEBUG]  [Dummy-1]  load_base_images: skill image [105/113] Ground_Skill_3_R2_icon
+13:25:25.519  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_3_R2_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_3_R2_icon.png
+13:25:25.521  [DEBUG]  [Dummy-1]  load_base_images: skill image [106/113] Ground_Skill_1_R1
+13:25:25.523  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_1_R1' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_1_R1.png
+13:25:25.525  [DEBUG]  [Dummy-1]  load_base_images: skill image [107/113] Ground_Skill_1_R2_icon
+13:25:25.527  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_1_R2_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_1_R2_icon.png
+13:25:25.529  [DEBUG]  [Dummy-1]  load_base_images: skill image [108/113] Ground_Skill_2_R1_icon
+13:25:25.531  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_2_R1_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_2_R1_icon.png
+13:25:25.533  [DEBUG]  [Dummy-1]  load_base_images: skill image [109/113] Ground_Skill_2_R2_icon
+13:25:25.535  [DEBUG]  [Dummy-1]  retrieve_image: 'Ground_Skill_2_R2_icon' -> /home/raman/Pobrane/SETS-WARP/.config/images/Ground_Skill_2_R2_icon.png
+13:25:25.538  [INFO ]  [Dummy-1]  load_base_images: special image Focused Frenzy
+13:25:25.541  [DEBUG]  [Dummy-1]  retrieve_image: 'Focused Frenzy' -> /home/raman/Pobrane/SETS-WARP/.config/images/Focused+Frenzy.png
+13:25:25.543  [INFO ]  [Dummy-1]  load_base_images: special image Probability Manipulation
+13:25:25.546  [DEBUG]  [Dummy-1]  retrieve_image: 'Probability Manipulation' -> /home/raman/Pobrane/SETS-WARP/.config/images/Probability+Manipulation.png
+13:25:25.548  [INFO ]  [Dummy-1]  load_base_images: special image EPS Corruption
+13:25:25.551  [DEBUG]  [Dummy-1]  retrieve_image: 'EPS Corruption' -> /home/raman/Pobrane/SETS-WARP/.config/images/EPS+Corruption.png
+13:25:25.553  [INFO ]  [Dummy-1]  load_base_images: DONE
+13:25:25.556  [INFO ]  [Dummy-1]  populate_cache: DONE
+13:25:25.559  [INFO ]  [MainThread]  finish_backend_init: start
+13:25:25.562  [INFO ]  [MainThread]  finish_backend_init: insert_cargo_data
+13:25:25.566  [INFO ]  [MainThread]  finish_backend_init: slot_skill_images
+13:25:25.568  [INFO ]  [MainThread]  finish_backend_init: load_build
+13:25:25.571  [INFO ]  [Dummy-3]  ImageManager.get_ship_image: 'Fed Ship Achilles.png' -> /home/raman/Pobrane/SETS-WARP/.config/ship_images/Fed+Ship+Achilles.png
+13:25:25.571  [DEBUG]  [MainThread]  image: 'Advanced Disruptor Beam Array' loaded from disk OK
+13:25:25.576  [INFO ]  [MainThread]  slot_equipment: [space][fore_weapons][0] = 'Advanced Disruptor Beam Array' | image null=False size=49x64
+13:25:25.578  [DEBUG]  [MainThread]  image: 'Advanced Fleet Dual Plasma Beam Bank' loaded from disk OK
+13:25:25.578  [INFO ]  [Dummy-3]  ImageManager.get_ship_image: loaded from disk size=1920x1080
+13:25:25.581  [INFO ]  [MainThread]  slot_equipment: [space][fore_weapons][1] = 'Advanced Fleet Dual Plasma Beam Bank' | image null=False size=49x64
+13:25:25.585  [DEBUG]  [MainThread]  image: 'Advanced Fleet Plasma Mine Launcher' loaded from disk OK
+13:25:25.588  [INFO ]  [MainThread]  slot_equipment: [space][aft_weapons][1] = 'Advanced Fleet Plasma Mine Launcher' | image null=False size=49x64
+13:25:25.590  [DEBUG]  [MainThread]  image: 'Console - Universal - Enhanced Tholian Web Generator' loaded from disk OK
+13:25:25.593  [INFO ]  [MainThread]  slot_equipment: [space][tac_consoles][0] = 'Console - Universal - Enhanced Tholian Web Generator' | image null=False size=49x64
+13:25:25.595  [INFO ]  [MainThread]  slot_equipment: [space][tac_consoles][1] = 'Console - Universal - Enhanced Tholian Web Generator' | image null=False size=49x64
+13:25:25.597  [INFO ]  [MainThread]  slot_equipment: [space][tac_consoles][2] = 'Console - Universal - Enhanced Tholian Web Generator' | image null=False size=49x64
+13:25:25.600  [INFO ]  [MainThread]  finish_backend_init: load_images (thread)
+13:25:25.603  [INFO ]  [MainThread]  finish_backend_init: exit_splash
+13:25:25.609  [INFO ]  [MainThread]  finish_backend_init: DONE
+13:25:49.505  [INFO ]  [MainThread]  slot_equipment: [space][tac_consoles][0] = 'Console - Universal - Force Translator' | image null=False size=49x64
