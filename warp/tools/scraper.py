@@ -1,394 +1,556 @@
-# warp/tools/scraper.py
-# Scraper for external STO data sources.
-# Run this ONCE locally to build the WARP icon+item database.
+# warp/tools/scraper.py  — v5  (final, structures confirmed)
 #
-# Sources:
-#   1. vger.stobuilds.com  — structured JSON with item names + icon URLs
-#      /starship-traits, /space-equipment, /ground-equipment, /personal-traits
-#   2. stowiki.net         — wiki pages for item details + additional icons
-#   3. SETS icon cache     — already-downloaded icons (no re-download needed)
+# Confirmed SETS cargo structures:
+#   equipment.json       list[{Page, name, rarity, type, ...}]         3987 items
+#   traits.json          list[{Page, name, type, environment, ...}]     540 items
+#   starship_traits.json list[{Page, name, short, type, obtained, ...}] 347 items
+#   doffs.json           list[{spec, _pageName, shipdutytype, ...}]     273 items
+#   ship_list.json       list[{Page, name, image, tier, type, ...}]     783 ships
+#   boff_abilities.json  dict{space/ground/all: {profession: [rank_dicts]}}
+#   modifiers.json       list[{modifier, type, stats, available}]       (not items)
 #
-# Output:
-#   warp/data/item_db.json          — {item_name: {slot, type, wiki_url, ...}}
-#   warp/data/icons/<name>.png      — downloaded icon images (for ML training)
+# name fields contain HTML entities (&#34; = ", &quot; = ") — decoded on read.
+# Page fields also contain entities — decoded for wiki URLs.
 #
-# Usage (run from SETS root):
-#   python -m warp.tools.scraper [--output warp/data] [--sets-images .config/images]
-#
-# Respects rate limits: 0.5s delay between requests.
+# Run from SETS root:
+#   python -m warp.tools.scraper
+#   python -m warp.tools.scraper --skip-icons --skip-vger
 
 from __future__ import annotations
-
-import json
-import time
-import hashlib
-import argparse
-import logging
+import json, re, time, argparse, logging, sys, shutil
+from html import unescape
 from pathlib import Path
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import quote_plus
 
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(levelname)s  %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(levelname)-7s %(message)s',
+                    handlers=[logging.StreamHandler(sys.stdout)])
 
-# ── Source URLs ────────────────────────────────────────────────────────────────
-
-VGER_BASE   = 'https://vger.stobuilds.com'
-STOWIKI_API = 'https://stowiki.net/w/api.php'
-STOWIKI_IMG = 'https://stowiki.net/wiki/Special:FilePath/{filename}'
-
+VGER_BASE  = 'https://vger.stobuilds.com'
 VGER_PAGES = {
-    'starship_traits': f'{VGER_BASE}/starship-traits',
-    'space_equipment': f'{VGER_BASE}/space-equipment',
-    'ground_equipment':f'{VGER_BASE}/ground-equipment',
-    'personal_traits': f'{VGER_BASE}/personal-traits',
+    'starship_traits': (f'{VGER_BASE}/starship-traits', 'starship_traits'),
+    'personal_traits': (f'{VGER_BASE}/personal-traits', 'traits'),
+    'space_equipment': (f'{VGER_BASE}/space-equipment', 'space'),
+    'ground_equipment':(f'{VGER_BASE}/ground-equipment','ground'),
 }
 
-# vger JSON API endpoints (returns JSON if Accept: application/json)
-VGER_API = {
-    'starship_traits': f'{VGER_BASE}/api/starship-traits',
-    'space_equipment': f'{VGER_BASE}/api/space-equipment',
-    'ground_equipment':f'{VGER_BASE}/api/ground-equipment',
-    'personal_traits': f'{VGER_BASE}/api/personal-traits',
+# equipment.json 'type' → WARP/SETS build_key
+EQUIPMENT_TYPES = {
+    'Body Armor':               'armor',
+    'EV Suit':                  'ev_suit',
+    'Experimental Weapon':      'experimental',
+    'Ground Device':            'ground_devices',
+    'Ground Weapon':            'weapons',
+    'Hangar Bay':               'hangars',
+    'Impulse Engine':           'engines',
+    'Kit':                      'kit',
+    'Kit Module':               'kit_modules',
+    'Personal Shield':          'personal_shield',
+    'Ship Aft Weapon':          'aft_weapons',
+    'Ship Deflector Dish':      'deflector',
+    'Ship Device':              'devices',
+    'Ship Engineering Console': 'eng_consoles',
+    'Ship Fore Weapon':         'fore_weapons',
+    'Ship Science Console':     'sci_consoles',
+    'Ship Secondary Deflector': 'sec_def',
+    'Ship Shields':             'shield',
+    'Ship Tactical Console':    'tac_consoles',
+    'Ship Weapon':              'fore_weapons',
+    'Singularity Engine':       'core',
+    'Universal Console':        'uni_consoles',
+    'Warp Engine':              'core',
 }
 
-REQUEST_DELAY = 0.5   # seconds between requests
+# traits.json 'type' values → WARP category
+TRAIT_TYPE_MAP = {
+    'char':   'traits',
+    'spec':   'traits',
+    'boff':   'traits',
+    'rep':    'rep_traits',
+    'active': 'active_rep_traits',
+}
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+}
+REQ_DELAY  = 0.3
+ICON_DELAY = 0.15
+_NAME_RE   = re.compile(r'^[A-Z\"\'][A-Za-z0-9 \'\"\-\/\(\)\[\]:,\.&!]{1,89}$')
+
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Build WARP icon+item database from external STO sources')
-    parser.add_argument('--output', default='warp/data',
-                        help='Output directory (default: warp/data)')
-    parser.add_argument('--sets-images', default='.config/images',
-                        help='SETS downloaded images directory')
-    parser.add_argument('--skip-download', action='store_true',
-                        help='Skip icon downloads (index only)')
-    parser.add_argument('--stowiki-only', action='store_true',
-                        help='Only scrape stowiki (skip vger)')
-    parser.add_argument('--vger-only', action='store_true',
-                        help='Only scrape vger (skip stowiki)')
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description='Build WARP item DB from SETS cargo + vger')
+    ap.add_argument('--output',      default='warp/data')
+    ap.add_argument('--cargo',       default='.config/cargo')
+    ap.add_argument('--sets-images', default='.config/images')
+    ap.add_argument('--skip-icons',  action='store_true')
+    ap.add_argument('--skip-vger',   action='store_true')
+    ap.add_argument('--skip-github', action='store_true')
+    args = ap.parse_args()
 
-    output_dir     = Path(args.output)
-    icons_dir      = output_dir / 'icons'
-    sets_img_dir   = Path(args.sets_images)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    icons_dir.mkdir(parents=True, exist_ok=True)
+    out_dir  = Path(args.output);    out_dir.mkdir(parents=True, exist_ok=True)
+    icon_dir = out_dir / 'icons';    icon_dir.mkdir(exist_ok=True)
+    cargo_dir = Path(args.cargo)
+    img_dir   = Path(args.sets_images)
+
+    import requests
+    s = requests.Session(); s.headers.update(HEADERS)
 
     item_db: dict[str, dict] = {}
+    icon_q:  dict[str, str]  = {}
 
-    # ── Step 1: Copy from SETS image cache ────────────────────────────────
-    log.info('Step 1: importing from SETS image cache…')
-    sets_count = import_from_sets_cache(sets_img_dir, icons_dir)
-    log.info(f'  {sets_count} icons copied from SETS cache')
+    # 1 ── SETS images
+    log.info('Step 1: SETS image cache')
+    n = _copy_images(img_dir, icon_dir)
+    log.info(f'  {n} icons copied')
 
-    # ── Step 2: Scrape vger.stobuilds.com ─────────────────────────────────
-    if not args.stowiki_only:
-        log.info('Step 2: scraping vger.stobuilds.com…')
-        vger_items = scrape_vger(icons_dir, args.skip_download)
-        item_db.update(vger_items)
-        log.info(f'  {len(vger_items)} items from vger')
+    # 2 ── SETS cargo  (PRIMARY — 5000+ items already on disk)
+    log.info('Step 2: SETS cargo cache')
+    _read_cargo(cargo_dir, item_db)
+    log.info(f'  {len(item_db)} items loaded')
 
-    # ── Step 3: Scrape stowiki.net ─────────────────────────────────────────
-    if not args.vger_only:
-        log.info('Step 3: scraping stowiki.net…')
-        wiki_items = scrape_stowiki(item_db.keys(), icons_dir, args.skip_download)
-        # Merge: add wiki data to existing entries, add new entries
-        for name, data in wiki_items.items():
-            if name in item_db:
-                item_db[name].update({k: v for k, v in data.items() if v})
+    # 3 ── vger JS chunks  (icon URLs + any extra items)
+    if not args.skip_vger:
+        log.info('Step 3: vger JS chunks')
+        vi, vc = _scrape_vger_js(s)
+        new = 0
+        for name, data in vi.items():
+            if name not in item_db:
+                item_db[name] = data; new += 1
             else:
-                item_db[name] = data
-        log.info(f'  {len(wiki_items)} items from stowiki')
-
-    # ── Step 4: Save ──────────────────────────────────────────────────────
-    db_path = output_dir / 'item_db.json'
-    with open(db_path, 'w', encoding='utf-8') as f:
-        json.dump(item_db, f, indent=2, ensure_ascii=False)
-    log.info(f'Saved {len(item_db)} items → {db_path}')
-    log.info(f'Icons directory: {icons_dir}  ({len(list(icons_dir.glob("*.png")))} PNGs)')
-
-
-# ── SETS cache import ──────────────────────────────────────────────────────────
-
-def import_from_sets_cache(sets_img_dir: Path, icons_dir: Path) -> int:
-    """
-    Copies existing SETS icons (already downloaded) to warp/data/icons/.
-    Filenames are kept as-is (quote_plus encoded).
-    Returns count of copied files.
-    """
-    if not sets_img_dir.exists():
-        log.warning(f'  SETS images dir not found: {sets_img_dir}')
-        return 0
-    count = 0
-    for png in sets_img_dir.glob('*.png'):
-        dest = icons_dir / png.name
-        if not dest.exists():
-            import shutil
-            shutil.copy2(png, dest)
-            count += 1
-    return count
-
-
-# ── vger scraper ───────────────────────────────────────────────────────────────
-
-def scrape_vger(icons_dir: Path, skip_download: bool) -> dict[str, dict]:
-    """
-    Scrapes vger.stobuilds.com for item listings.
-    Tries JSON API first; falls back to HTML parsing.
-    """
-    import requests
-    session = requests.Session()
-    session.headers.update({
-        'Accept': 'application/json, text/html',
-        'User-Agent': 'SETS-WARP/0.1 (github.com/STOCD/SETS)'
-    })
-
-    items: dict[str, dict] = {}
-
-    # Map vger slot name → SETS build_key
-    SLOT_CATEGORY = {
-        'starship_traits': 'starship_traits',
-        'space_equipment': 'space',
-        'ground_equipment':'ground',
-        'personal_traits': 'traits',
-    }
-
-    for category, url in VGER_PAGES.items():
-        log.info(f'  vger: {category}')
-        try:
-            # Try JSON endpoint
-            api_url = VGER_API.get(category, url)
-            resp = session.get(api_url, timeout=15)
-            if resp.headers.get('content-type', '').startswith('application/json'):
-                data = resp.json()
-                parsed = _parse_vger_json(data, category, SLOT_CATEGORY[category])
-            else:
-                # Fall back to HTML scraping
-                parsed = _parse_vger_html(resp.text, category, SLOT_CATEGORY[category], url)
-
-            # Download icons
-            if not skip_download:
-                for name, entry in parsed.items():
-                    icon_url = entry.get('icon_url')
-                    if icon_url:
-                        _download_icon(session, icon_url, name, icons_dir)
-                        time.sleep(REQUEST_DELAY)
-
-            items.update(parsed)
-        except Exception as e:
-            log.warning(f'  vger {category} failed: {e}')
-        time.sleep(REQUEST_DELAY)
-
-    return items
-
-
-def _parse_vger_json(data, category: str, slot_category: str) -> dict[str, dict]:
-    """Parse vger JSON API response."""
-    items = {}
-    if isinstance(data, list):
-        entries = data
-    elif isinstance(data, dict):
-        entries = data.get('items') or data.get('data') or list(data.values())
+                if data.get('icon_url') and not item_db[name].get('icon_url'):
+                    item_db[name]['icon_url'] = data['icon_url']
+                if data.get('wiki_url') and not item_db[name].get('wiki_url'):
+                    item_db[name]['wiki_url'] = data['wiki_url']
+        icon_q.update(vc)
+        log.info(f'  {new} new, {len(vc)} icon URLs from vger')
     else:
-        return items
+        log.info('Step 3: vger skipped')
 
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get('name') or entry.get('Name') or entry.get('title')
-        if not name:
-            continue
-        items[name] = {
-            'name':       name,
-            'category':   slot_category,
-            'wiki_url':   entry.get('url') or entry.get('wiki') or '',
-            'icon_url':   entry.get('icon') or entry.get('image') or '',
-            'rarity':     entry.get('rarity') or '',
-            'type':       entry.get('type') or entry.get('slot') or '',
-            'source':     f'vger:{category}',
-        }
-    return items
+    # 4 ── GitHub fallback (only if cargo was empty)
+    if not args.skip_github and len(item_db) < 100:
+        log.info('Step 4: STOCD GitHub (fallback)')
+        gi, gc = _scrape_github(s)
+        for name, data in gi.items():
+            if name not in item_db: item_db[name] = data
+        icon_q.update({k: v for k, v in gc.items() if k not in icon_q})
+        log.info(f'  {len(gi)} items from GitHub')
+    else:
+        log.info(f'Step 4: GitHub skipped ({len(item_db)} items already)')
+
+    # 5 ── icon downloads
+    for name, data in item_db.items():
+        if data.get('icon_url') and not (icon_dir/(quote_plus(name)+'.png')).exists():
+            icon_q[name] = data['icon_url']
+
+    if not args.skip_icons and icon_q:
+        log.info(f'Step 5: downloading {len(icon_q)} missing icons')
+        ok = _download_icons(s, icon_q, icon_dir)
+        log.info(f'  {ok}/{len(icon_q)} downloaded')
+    else:
+        log.info(f'Step 5: icons skipped ({len(icon_q)} queued)')
+
+    # 6 ── save
+    db = out_dir / 'item_db.json'
+    db.write_text(json.dumps(item_db, indent=2, ensure_ascii=False, sort_keys=True))
+    log.info(f'Saved {len(item_db)} items → {db}')
+    log.info(f'Icons: {len(list(icon_dir.glob("*.png")))} PNGs in {icon_dir}')
+    _print_summary(item_db)
 
 
-def _parse_vger_html(html: str, category: str, slot_category: str, base_url: str) -> dict[str, dict]:
-    """Parse vger HTML page to extract item names and icon URLs."""
-    items = {}
-    try:
-        from lxml import html as lhtml
-        tree  = lhtml.fromstring(html)
-        # vger pages have item cards — adapt selectors to actual structure
-        # Common patterns: <div class="item-name">, <img class="item-icon">
-        for card in tree.cssselect('.item-card, .trait-card, .equipment-card, [data-item-name]'):
-            name_el = card.cssselect('.item-name, .name, h3, h4')
-            name    = name_el[0].text_content().strip() if name_el else ''
-            if not name:
-                name = card.get('data-item-name', '')
-            if not name:
-                continue
-            img_el   = card.cssselect('img')
-            icon_url = ''
-            if img_el:
-                src = img_el[0].get('src') or img_el[0].get('data-src') or ''
-                if src:
-                    icon_url = urljoin(base_url, src)
-            items[name] = {
+# ── Cargo readers ──────────────────────────────────────────────────────────────
+
+def _h(s: str | None) -> str:
+    """Decode HTML entities from cargo strings."""
+    return unescape(str(s)) if s else ''
+
+
+def _wiki_url(page: str) -> str:
+    return f'https://stowiki.net/wiki/{quote_plus(_h(page).replace(" ", "_"))}'
+
+
+def _read_cargo(cargo_dir: Path, out: dict):
+    if not cargo_dir.exists():
+        log.warning(f'  cargo not found: {cargo_dir}  (run SETS once first)')
+        return
+    files = sorted(cargo_dir.glob('*.json'))
+    log.info(f'  files: {[f.name for f in files]}')
+
+    # ── equipment.json ─────────────────────────────────────────────────────────
+    # list[{Page, name, rarity, type, ...}]
+    p = cargo_dir / 'equipment.json'
+    if p.exists():
+        rows = json.loads(p.read_text(encoding='utf-8'))
+        n = 0
+        for row in rows:
+            name = _h(row.get('name'))
+            if not name: continue
+            eq_type = _h(row.get('type', ''))
+            build_key = EQUIPMENT_TYPES.get(eq_type, 'space')
+            # Determine space vs ground
+            env = 'ground' if build_key in (
+                'armor','ev_suit','ground_devices','weapons','kit',
+                'kit_modules','personal_shield') else 'space'
+            page = _h(row.get('Page') or name)
+            out[name] = {
                 'name':     name,
-                'category': slot_category,
-                'icon_url': icon_url,
-                'source':   f'vger_html:{category}',
+                'category': build_key,
+                'env':      env,
+                'rarity':   _h(row.get('rarity', '')),
+                'type':     eq_type,
+                'wiki_url': _wiki_url(page),
+                'icon_url': _icon_url_from_cargo(row),
+                'source':   'sets_cargo:equipment',
             }
-    except Exception as e:
-        log.debug(f'vger HTML parse error: {e}')
-    return items
+            n += 1
+        log.info(f'    equipment.json:       {n:4d} items')
+
+    # ── traits.json ────────────────────────────────────────────────────────────
+    # list[{Page, name, type, environment, description, icon_name}]
+    # type: 'char','spec','boff','rep','active'
+    # environment: 'space','ground','both'
+    p = cargo_dir / 'traits.json'
+    if p.exists():
+        rows = json.loads(p.read_text(encoding='utf-8'))
+        n = 0
+        for row in rows:
+            name = _h(row.get('name'))
+            if not name: continue
+            ttype = (row.get('type') or '').lower()
+            env   = (row.get('environment') or '').lower()
+            cat   = TRAIT_TYPE_MAP.get(ttype, 'traits')
+            page  = _h(row.get('Page') or name)
+            icon_name = row.get('icon_name') or ''
+            icon_url  = _icon_url_from_name(icon_name) if icon_name else ''
+            out[name] = {
+                'name':     name,
+                'category': cat,
+                'env':      env,
+                'rarity':   '',
+                'type':     ttype,
+                'wiki_url': _wiki_url(page),
+                'icon_url': icon_url,
+                'source':   f'sets_cargo:traits:{ttype}:{env}',
+            }
+            n += 1
+        log.info(f'    traits.json:          {n:4d} traits')
+
+    # ── starship_traits.json ───────────────────────────────────────────────────
+    # list[{Page, name, short, type, detailed, obtained, basic, icon_name}]
+    p = cargo_dir / 'starship_traits.json'
+    if p.exists():
+        rows = json.loads(p.read_text(encoding='utf-8'))
+        n = 0
+        for row in rows:
+            name = _h(row.get('name'))
+            if not name: continue
+            page = _h(row.get('Page') or name)
+            icon_name = row.get('icon_name') or ''
+            icon_url  = _icon_url_from_name(icon_name) if icon_name else ''
+            if name not in out:  # don't override equipment with same name
+                out[name] = {
+                    'name':     name,
+                    'category': 'starship_traits',
+                    'env':      'space',
+                    'rarity':   '',
+                    'type':     _h(row.get('type', '')),
+                    'wiki_url': _wiki_url(page),
+                    'icon_url': icon_url,
+                    'source':   'sets_cargo:starship_traits',
+                }
+                n += 1
+        log.info(f'    starship_traits.json: {n:4d} starship traits')
+
+    # ── doffs.json ─────────────────────────────────────────────────────────────
+    # list[{spec, _pageName, shipdutytype, department, description, white..gold}]
+    # 'spec' is the doff specialization name
+    p = cargo_dir / 'doffs.json'
+    if p.exists():
+        rows = json.loads(p.read_text(encoding='utf-8'))
+        seen: set[str] = set()
+        n = 0
+        for row in rows:
+            spec = _h(row.get('spec') or row.get('_pageName') or '')
+            if not spec or spec in seen: continue
+            seen.add(spec)
+            env = (row.get('shipdutytype') or 'space').lower()
+            out[spec] = {
+                'name':     spec,
+                'category': 'doffs',
+                'env':      env,
+                'rarity':   '',
+                'type':     _h(row.get('department', '')),
+                'wiki_url': _wiki_url(row.get('_pageName') or spec),
+                'icon_url': '',
+                'source':   'sets_cargo:doffs',
+            }
+            n += 1
+        log.info(f'    doffs.json:           {n:4d} doff specs')
+
+    # ── boff_abilities.json ────────────────────────────────────────────────────
+    # dict{space/ground/all: {profession: [rank_dict, ...]}}
+    # rank_dict: {ability_name: description}
+    p = cargo_dir / 'boff_abilities.json'
+    if p.exists():
+        data = json.loads(p.read_text(encoding='utf-8'))
+        n = 0
+        seen: set[str] = set()
+        # Try all env keys: space, ground, all — whichever has data
+        for env_key, env_data in data.items():
+            if not isinstance(env_data, dict): continue
+            for profession, rank_list in env_data.items():
+                if not isinstance(rank_list, list): continue
+                for rank_item in rank_list:
+                    # rank_item is a dict of {ability_name: description}
+                    if not isinstance(rank_item, dict): continue
+                    for ability_name in rank_item.keys():
+                        name = _h(ability_name)
+                        if not name or name in seen: continue
+                        seen.add(name)
+                        env = env_key if env_key in ('space', 'ground') else 'space'
+                        out[name] = {
+                            'name':     name,
+                            'category': 'boff_abilities',
+                            'env':      env,
+                            'rarity':   '',
+                            'type':     profession,
+                            'wiki_url': '',
+                            'icon_url': '',
+                            'source':   'sets_cargo:boff',
+                        }
+                        n += 1
+        log.info(f'    boff_abilities.json:  {n:4d} abilities')
+
+    # ── ship_list.json ─────────────────────────────────────────────────────────
+    # list[{Page, name, image, tier, type, ...}]
+    p = cargo_dir / 'ship_list.json'
+    if p.exists():
+        rows = json.loads(p.read_text(encoding='utf-8'))
+        n = 0
+        for row in rows:
+            name = _h(row.get('name'))
+            if not name or name in out: continue
+            page = _h(row.get('Page') or name)
+            # image: "File:Fed Ship Achilles.png" → construct wiki URL
+            img  = row.get('image') or ''
+            icon_url = ''
+            if img:
+                img_name = img.replace('File:', '').strip()
+                icon_url = f'https://stowiki.net/wiki/Special:FilePath/{quote_plus(img_name)}'
+            out[name] = {
+                'name':     name,
+                'category': 'ships',
+                'env':      'space',
+                'rarity':   '',
+                'type':     str(row.get('type', '')),
+                'tier':     str(row.get('tier', '')),
+                'wiki_url': _wiki_url(page),
+                'icon_url': icon_url,
+                'source':   'sets_cargo:ships',
+            }
+            n += 1
+        log.info(f'    ship_list.json:       {n:4d} ships')
 
 
-# ── stowiki scraper ────────────────────────────────────────────────────────────
+def _icon_url_from_cargo(row: dict) -> str:
+    """Try to get icon URL from cargo row (icon_name field or image field)."""
+    icon_name = row.get('icon_name') or row.get('icon') or ''
+    if icon_name:
+        return _icon_url_from_name(str(icon_name))
+    return ''
 
-def scrape_stowiki(
-    known_names: 'Iterable[str]',
-    icons_dir: Path,
-    skip_download: bool,
-) -> dict[str, dict]:
+
+def _icon_url_from_name(icon_name: str) -> str:
     """
-    Queries stowiki.net MediaWiki API for item pages and icon images.
-    Only queries items already known by name (from SETS cache + vger).
+    stowiki icon naming: 'icon_name' in cargo → File:<icon_name>.png
+    e.g. "Iconequip_dualbeambank" → Special:FilePath/Iconequip_dualbeambank.png
     """
-    import requests
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'SETS-WARP/0.1 (github.com/STOCD/SETS)'
-    })
+    if not icon_name: return ''
+    clean = icon_name.strip()
+    if not clean.lower().endswith('.png'):
+        clean += '.png'
+    return f'https://stowiki.net/wiki/Special:FilePath/{quote_plus(clean)}'
 
+
+# ── vger JS scraper ────────────────────────────────────────────────────────────
+
+def _scrape_vger_js(s) -> tuple[dict, dict]:
     items: dict[str, dict] = {}
-    names = list(known_names)
+    icons: dict[str, str]  = {}
+    visited: set[str] = set()
 
-    # Batch queries of 50 items each
-    batch_size = 50
-    for i in range(0, len(names), batch_size):
-        batch = names[i:i+batch_size]
+    for page_key, (url, cat) in VGER_PAGES.items():
+        log.info(f'  vger/{page_key}')
         try:
-            wiki_data = _query_stowiki_batch(session, batch)
-            for name, data in wiki_data.items():
-                items[name] = data
-                if not skip_download and data.get('icon_url'):
-                    _download_icon(session, data['icon_url'], name, icons_dir)
-                    time.sleep(REQUEST_DELAY * 0.5)
+            r = s.get(url, timeout=20); r.raise_for_status()
+            chunk_urls = _get_js_chunks(r.text, r.headers.get('link',''))
+            log.info(f'    {len(chunk_urls)} chunks')
+            for cu in chunk_urls:
+                if cu in visited: continue
+                visited.add(cu)
+                try:
+                    cr = s.get(cu, timeout=15)
+                    if cr.status_code != 200: continue
+                    ni, nc = _extract_from_js(cr.text, cat)
+                    if ni:
+                        items.update(ni); icons.update(nc)
+                        log.info(f'    {cu.split("/")[-1]}: {len(ni)} items')
+                except Exception as e:
+                    log.debug(f'    chunk {cu}: {e}')
+                time.sleep(0.1)
         except Exception as e:
-            log.warning(f'  stowiki batch {i//batch_size}: {e}')
-        time.sleep(REQUEST_DELAY)
-
-    # Also scrape Equipment categories for items not in SETS yet
-    new_from_wiki = scrape_stowiki_categories(session, icons_dir, skip_download)
-    items.update(new_from_wiki)
-
-    return items
+            log.warning(f'  vger/{page_key}: {e}')
+        time.sleep(REQ_DELAY)
+    return items, icons
 
 
-def _query_stowiki_batch(session, names: list[str]) -> dict[str, dict]:
-    """Query MediaWiki API for page info + images for a batch of item names."""
-    titles = '|'.join(names)
-    params = {
-        'action': 'query',
-        'format': 'json',
-        'titles': titles,
-        'prop':   'info|images|categories',
-        'inprop': 'url',
-        'imlimit': 5,
-    }
-    resp = session.get(STOWIKI_API, params=params, timeout=15)
-    data = resp.json()
+def _get_js_chunks(html: str, link_header: str) -> list[str]:
+    from urllib.parse import urljoin
+    seen: set[str] = set(); urls = []
+    for m in re.finditer(r'<([^>]+\.js)>', link_header):
+        u = urljoin(VGER_BASE, m.group(1).lstrip('.'))
+        if u not in seen: seen.add(u); urls.append(u)
+    for m in re.finditer(r'/_app/immutable/(?:nodes|chunks)/[A-Za-z0-9._-]+\.js', html):
+        u = VGER_BASE + m.group(0)
+        if u not in seen: seen.add(u); urls.append(u)
+    urls.sort(key=lambda u: (0 if '/nodes/' in u else 1))
+    return urls
 
+
+def _extract_from_js(js: str, cat: str) -> tuple[dict, dict]:
     items: dict[str, dict] = {}
-    for page_id, page in data.get('query', {}).get('pages', {}).items():
-        if page_id == '-1':
-            continue
-        name     = page.get('title', '')
-        wiki_url = page.get('fullurl', '')
+    icons: dict[str, str]  = {}
+    _ICON_RE = re.compile(r'https?://\S+\.(png|jpg|webp)', re.I)
+    _WIKI_RE = re.compile(r'https?://stowiki\.net/wiki/\S+')
 
-        # Find icon — usually the first image matching the item name
-        images = page.get('images', [])
-        icon_url = ''
-        for img in images:
-            img_name = img.get('title', '')
-            if name.lower().replace(' ', '_') in img_name.lower():
-                icon_url = STOWIKI_IMG.format(filename=quote_plus(img_name[5:]))
-                break
-
-        items[name] = {
-            'name':     name,
-            'wiki_url': wiki_url,
-            'icon_url': icon_url,
-            'source':   'stowiki_api',
-        }
-    return items
-
-
-def scrape_stowiki_categories(
-    session, icons_dir: Path, skip_download: bool
-) -> dict[str, dict]:
-    """
-    Scrapes stowiki category pages for items not already in SETS.
-    Categories: Category:Space_equipment, Category:Ground_equipment, etc.
-    """
-    CATEGORIES = [
-        'Category:Space_equipment',
-        'Category:Ground_equipment',
-        'Category:Personal_traits',
-        'Category:Starship_traits',
-        'Category:Reputation_traits',
-    ]
-
-    items: dict[str, dict] = {}
-    for cat in CATEGORIES:
-        params = {
-            'action':  'query',
-            'format':  'json',
-            'list':    'categorymembers',
-            'cmtitle': cat,
-            'cmlimit': 500,
-        }
+    # JSON.parse blobs
+    for m in re.finditer(r'JSON\.parse\("((?:[^"\\]|\\.)*)"\)', js):
         try:
-            resp = session.get(STOWIKI_API, params=params, timeout=15)
-            members = resp.json().get('query', {}).get('categorymembers', [])
-            for m in members:
-                name = m.get('title', '')
-                if name and name not in items:
-                    items[name] = {
-                        'name':     name,
-                        'wiki_url': f'https://stowiki.net/wiki/{quote_plus(name)}',
-                        'icon_url': '',
-                        'source':   f'stowiki_cat:{cat}',
-                    }
-            time.sleep(REQUEST_DELAY)
+            raw = json.loads(m.group(1).replace('\\"','"').replace('\\\\','\\'))
+            ni, nc = _walk_json(raw, cat); items.update(ni); icons.update(nc)
+        except Exception: pass
+
+    # {name:"...", icon:"..."} JS object literals
+    for m in re.finditer(
+            r'\{[^{}]{0,600}name:"([A-Z\"\'][A-Za-z0-9 \'\"\-\/\(\)\[\]:,\.&!]{2,89})"[^{}]{0,600}\}',
+            js):
+        block, name = m.group(0), m.group(1)
+        im = re.search(r'icon:"(https?://[^"]+)"', block)
+        wm = re.search(r'(?:url|wiki|href):"(https?://[^"]+)"', block)
+        iu = im.group(1) if im else ''
+        wu = wm.group(1) if wm else ''
+        if name not in items:
+            items[name] = {'name':name,'category':cat,'icon_url':iu,'wiki_url':wu,
+                           'source':'vger_js_obj'}
+            if iu: icons[name] = iu
+
+    # Flat string arrays
+    for m in re.finditer(r'\[("(?:[^"\\]|\\.)*"(?:,"(?:[^"\\]|\\.)*"){4,})\]', js):
+        parts = [p.replace('\\"','"') for p in re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1))]
+        for i, p in enumerate(parts):
+            if _NAME_RE.match(p) and len(p) >= 6 and p not in items:
+                win = parts[max(0,i-4):i+8]
+                iu  = next((u for u in win if _ICON_RE.match(u)), '')
+                wu  = next((u for u in win if _WIKI_RE.match(u)), '')
+                items[p] = {'name':p,'category':cat,'icon_url':iu,'wiki_url':wu,
+                            'source':'vger_js_arr'}
+                if iu: icons[p] = iu
+
+    # name,icon pairs: "Item Name","https://...icon.png"
+    for m in re.finditer(
+            r'"([A-Z\"\'][A-Za-z0-9 \'\"\-\/\(\)\[\]:,\.&!]{5,89})"\s*,\s*"(https?://[^"]+\.(png|jpg|webp))"',
+            js, re.I):
+        name, iu = m.group(1), m.group(2)
+        if name not in items:
+            items[name] = {'name':name,'category':cat,'icon_url':iu,'wiki_url':'',
+                           'source':'vger_js_pair'}
+            icons[name] = iu
+
+    return items, icons
+
+
+def _walk_json(obj, cat: str, _d: int = 0) -> tuple[dict, dict]:
+    items: dict[str, dict] = {}; icons: dict[str, str] = {}
+    if _d > 12: return items, icons
+    if isinstance(obj, dict):
+        name = _h(obj.get('name') or obj.get('Name') or obj.get('title') or '')
+        if 3 <= len(name) <= 90 and _NAME_RE.match(name):
+            iu = next((v for k,v in obj.items()
+                       if k.lower() in ('icon','image','iconurl','icon_url')
+                       and isinstance(v,str) and v.startswith('http')), '')
+            wu = obj.get('url') or obj.get('wiki') or obj.get('Page') or ''
+            if wu and not str(wu).startswith('http'): wu = _wiki_url(str(wu))
+            items[name] = {
+                'name':name,'category':cat,
+                'rarity': _h(obj.get('rarity') or obj.get('Rarity') or ''),
+                'type':   _h(obj.get('type') or obj.get('Type') or ''),
+                'icon_url':iu, 'wiki_url':str(wu), 'source':'json_walk',
+            }
+            if iu: icons[name] = iu
+        for v in obj.values():
+            i2,ic2 = _walk_json(v,cat,_d+1); items.update(i2); icons.update(ic2)
+    elif isinstance(obj, list):
+        for v in obj:
+            i2,ic2 = _walk_json(v,cat,_d+1); items.update(i2); icons.update(ic2)
+    return items, icons
+
+
+# ── GitHub fallback ────────────────────────────────────────────────────────────
+
+def _scrape_github(s) -> tuple[dict, dict]:
+    items: dict[str, dict] = {}; icons: dict[str, str] = {}
+    for fname, cat in [('equipment.json','space'),('traits.json','traits'),
+                       ('starship_traits.json','starship_traits')]:
+        url = f'https://raw.githubusercontent.com/STOCD/SETS/main/local/{fname}'
+        try:
+            r = s.get(url, timeout=15)
+            if r.status_code != 200: continue
+            ni, nc = _walk_json(r.json(), cat)
+            if ni: log.info(f'  github {fname}: {len(ni)} items')
+            items.update(ni); icons.update(nc)
         except Exception as e:
-            log.warning(f'  stowiki category {cat}: {e}')
+            log.debug(f'  github {fname}: {e}')
+        time.sleep(REQ_DELAY)
+    return items, icons
 
-    return items
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _copy_images(src: Path, dst: Path) -> int:
+    if not src.exists(): log.warning(f'  images not found: {src}'); return 0
+    n = 0
+    for p in src.glob('*.png'):
+        d = dst / p.name
+        if not d.exists(): shutil.copy2(p, d); n += 1
+    return n
 
 
-# ── Icon downloader ────────────────────────────────────────────────────────────
+def _download_icons(s, queue: dict[str, str], dst: Path) -> int:
+    ok = 0
+    for i, (name, url) in enumerate(queue.items()):
+        if i % 200 == 0 and i: log.info(f'  {i}/{len(queue)} ({ok} ok)')
+        dest = dst / (quote_plus(name) + '.png')
+        if dest.exists() and dest.stat().st_size > 200: ok += 1; continue
+        try:
+            r = s.get(url, timeout=12)
+            if r.status_code == 200 and len(r.content) > 200:
+                dest.write_bytes(r.content); ok += 1
+        except Exception: pass
+        time.sleep(ICON_DELAY)
+    return ok
 
-def _download_icon(session, url: str, item_name: str, icons_dir: Path) -> bool:
-    """Download a single icon and save as <quote_plus(item_name)>.png"""
-    filename = quote_plus(item_name) + '.png'
-    dest = icons_dir / filename
-    if dest.exists() and dest.stat().st_size > 200:
-        return True   # already downloaded
 
-    try:
-        resp = session.get(url, timeout=10, stream=True)
-        if resp.status_code != 200:
-            return False
-        content = resp.content
-        if len(content) < 100:
-            return False
-        dest.write_bytes(content)
-        return True
-    except Exception as e:
-        log.debug(f'Icon download failed ({item_name}): {e}')
-        return False
+def _print_summary(db: dict):
+    from collections import Counter
+    cats = Counter(v.get('category','?') for v in db.values())
+    log.info('Category breakdown:')
+    for cat, n in sorted(cats.items(), key=lambda x: -x[1]):
+        log.info(f'  {n:5d}  {cat}')
+    srcs = Counter(v.get('source','').split(':')[0] for v in db.values())
+    log.info('Sources:')
+    for src, n in sorted(srcs.items(), key=lambda x: -x[1]):
+        log.info(f'  {n:5d}  {src}')
 
 
 if __name__ == '__main__':

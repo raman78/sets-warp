@@ -407,7 +407,7 @@ def run_install(on_line, on_done, on_error, repair_only: bool = False):
             on_done()
             return
 
-        on_line(f"=== SETS First-Time Setup ===")
+        on_line(f"=== SETS-WARP First-Time Setup ===")
         on_line(f"ROOT: {ROOT}")
         on_line("")
 
@@ -427,7 +427,7 @@ def run_install(on_line, on_done, on_error, repair_only: bool = False):
         on_line("")
 
         # Step 3 — dependencies
-        on_line("Step 3/3  Installing dependencies...")
+        on_line("Step 3/4  Installing dependencies...")
         on_line("  Removing obsolete packages...")
         _uninstall_obsolete_packages(on_line)
         on_line("  Cleaning stale .venv cache...")
@@ -435,7 +435,13 @@ def run_install(on_line, on_done, on_error, repair_only: bool = False):
         install_dependencies(on_line)
         on_line("")
 
-        on_line("Setup complete!  Starting SETS...\n")
+        # Step 4 — WARP data
+        on_line("Step 4/4  Preparing WARP data...")
+        _setup_warp_dirs(on_line)
+        _run_warp_scraper(on_line)
+        on_line("")
+
+        on_line("Setup complete!  Starting SETS-WARP...\n")
         on_done()
 
     except Exception as exc:
@@ -472,7 +478,7 @@ def run_with_tkinter_gui():
     BG, FG, ACCENT = "#1a1a1a", "#eeeeee", "#c59129"
 
     root = tk.Tk()
-    root.title("SETS — Setup")
+    root.title("SETS-WARP — Setup")
     root.configure(bg=BG)
     root.resizable(True, True)
 
@@ -699,13 +705,77 @@ def _cleanup_after_install(on_line):
 
 
 def _setup_warp_dirs(on_line):
-    """Create WARP data directories inside the SETS installation if missing."""
-    for subdir in ('warp/models', 'warp/training_data/crops', 'warp/data'):
-        p = SETS_DIR / subdir
+    """Create WARP data directories inside the SETS-WARP installation if missing."""
+    for subdir in ('warp/models', 'warp/training_data/crops', 'warp/data/icons'):
+        p = ROOT / subdir
         try:
             p.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             on_line(f"  WARN WARP dir {subdir}: {exc}")
+
+
+def _run_warp_scraper(on_line):
+    """
+    Run warp.tools.scraper automatically after first install / repair.
+    Builds warp/data/item_db.json from SETS cargo cache.
+    Called once: if item_db.json already exists and is non-empty, skips.
+    """
+    db_path = ROOT / 'warp' / 'data' / 'item_db.json'
+    if db_path.exists() and db_path.stat().st_size > 1000:
+        on_line("  WARP data already present — skipping scraper")
+        return
+
+    on_line("  Building WARP item database from SETS cargo cache...")
+    py = str(venv_python())
+    try:
+        env = {**os.environ, 'SETS_DIR': str(ROOT)}
+        proc = subprocess.Popen(
+            [py, '-m', 'warp.tools.scraper',
+             '--cargo',       str(ROOT / '.config' / 'cargo'),
+             '--sets-images', str(ROOT / '.config' / 'images'),
+             '--output',      str(ROOT / 'warp' / 'data'),
+             '--skip-icons',   # icons downloaded on demand later
+             '--skip-vger',    # vger is CSR, skip
+             '--skip-github',  # only use local cargo
+             ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(ROOT),
+            env=env,
+        )
+        last_info = ['']
+        for line in proc.stdout:
+            line = line.strip()
+            if line:
+                on_line(f"  {line}", replace_last=(line.startswith('INFO') and
+                        last_info[0].startswith('INFO')))
+                last_info[0] = line
+        proc.wait()
+        if proc.returncode == 0 and db_path.exists():
+            import json
+            db = json.loads(db_path.read_text())
+            on_line(f"  WARP database ready: {len(db)} items")
+        else:
+            on_line("  WARN scraper exited non-zero — WARP will retry on next start")
+    except Exception as exc:
+        on_line(f"  WARN WARP scraper failed: {exc}")
+        on_line("  WARP will retry on next application start")
+
+
+def _warp_scraper_needed() -> bool:
+    """True if WARP item_db needs to be (re)built."""
+    db_path = ROOT / 'warp' / 'data' / 'item_db.json'
+    if not db_path.exists() or db_path.stat().st_size < 1000:
+        return True
+    # Re-run if cargo is newer than item_db
+    cargo_eq = ROOT / '.config' / 'cargo' / 'equipment.json'
+    if cargo_eq.exists():
+        try:
+            return cargo_eq.stat().st_mtime > db_path.stat().st_mtime
+        except Exception:
+            pass
+    return False
 
 
 def _quick_check_venv() -> list[str]:
@@ -791,7 +861,7 @@ def _run_repair_gui(broken: list[str]):
     exit_code = [0]  # 0=repaired, 2=user exit
 
     root = tk.Tk()
-    root.title("SETS — Dependency Repair")
+    root.title("SETS-WARP — Dependency Repair")
     root.configure(bg=BG)
     W, H = 620, 460
     root.geometry(f"{W}x{H}")
@@ -803,7 +873,7 @@ def _run_repair_gui(broken: list[str]):
     confirm_frame = tk.Frame(root, bg=BG)
     confirm_frame.pack(fill="both", expand=True)
 
-    tk.Label(confirm_frame, text="⚠  SETS — Missing or Broken Dependencies",
+    tk.Label(confirm_frame, text="⚠  SETS-WARP — Missing or Broken Dependencies",
              bg=BG, fg=ACCENT, font=("Helvetica", 13, "bold")).pack(pady=(22, 8))
     tk.Label(confirm_frame,
              text="The following packages need to be repaired:",
@@ -930,7 +1000,13 @@ def _repair_worker(on_line, on_done, on_error, broken: list[str]):
         _cleanup_venv_pycache(on_line)
         install_dependencies(on_line, deps=broken, force=True)
         on_line("")
-        on_line("Repair complete!  Starting SETS...")
+        on_line("Repair complete!")
+        # Refresh WARP data if needed after repair
+        if _warp_scraper_needed():
+            on_line("")
+            on_line("Refreshing WARP item database...")
+            _run_warp_scraper(on_line)
+        on_line("Starting SETS-WARP...")
         on_done()
     except Exception as exc:
         on_error(str(exc))
@@ -969,6 +1045,14 @@ def main():
 
     # Already running inside our venv → just run
     if running_in_our_venv():
+        # Silently refresh WARP data in background if cargo is newer than item_db
+        if _warp_scraper_needed():
+            print("[bootstrap] WARP data stale — refreshing in background...", flush=True)
+            threading.Thread(
+                target=_run_warp_scraper,
+                args=(lambda msg, **_: print(f"[warp] {msg}", flush=True),),
+                daemon=True,
+            ).start()
         import importlib.util
         spec = importlib.util.spec_from_file_location("__main__", ROOT / "main.py")
         mod  = importlib.util.module_from_spec(spec)
