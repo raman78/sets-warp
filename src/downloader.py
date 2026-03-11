@@ -128,9 +128,9 @@ class Downloader():
         # GitHub stores files with double-encoded names: quote_plus(quote_plus(name))
         github_name = quote_plus(quote_plus(name))
         url = f'{GITHUB_CACHE_URL}/ship_images/{github_name}'
-        log.info(f'download_ship_image: trying GitHub: {url!r}')
+        log.debug(f'download_ship_image: trying GitHub: {url!r}')
         image_response = session.get(url)
-        log.info(f'download_ship_image: github {image_response.status_code} '
+        log.debug(f'download_ship_image: github {image_response.status_code} '
                  f'size={len(image_response.content)}')
         if image_response.ok and len(image_response.content) > 100:
             with open(filepath, 'wb') as image_file:
@@ -139,15 +139,15 @@ class Downloader():
             # Fallback: stowiki Special:FilePath with proper encoding
             wiki_encoded = url_quote(name.replace(' ', '_'), safe='._-')
             url = WIKI_IMAGE_URL + wiki_encoded
-            log.info(f'download_ship_image: trying wiki: {url!r}')
+            log.debug(f'download_ship_image: trying wiki: {url!r}')
             image_response = session.get(url)
-            log.info(f'download_ship_image: wiki {image_response.status_code} '
+            log.debug(f'download_ship_image: wiki {image_response.status_code} '
                      f'size={len(image_response.content)}')
             if image_response.ok and len(image_response.content) > 100:
                 with open(filepath, 'wb') as image_file:
                     image_file.write(image_response.content)
             else:
-                log.info(f'download_ship_image: both sources failed for {name!r}')
+                log.warning(f'download_ship_image: both sources failed for {name!r}')
                 failed_images[name] = int(time())
         if on_progress is not None:
             on_progress()

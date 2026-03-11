@@ -98,27 +98,33 @@ class ImageManager():
         lock = Lock()
 
         for step_idx, (label, image_list, itype, suffix) in enumerate(batches):
-            step_num = step_idx + 1
+            step_num   = step_idx + 1
             batch_size = len(image_list)
 
-            # show initial state for this step before download starts
+            # Terminal progress bar (same style as SyncManager)
+            from src.syncmanager import _TermProgress
+            term = _TermProgress(label, batch_size)
+            term.start()
+
             _splash_state.update({
                 'text': f'Downloading {label}',
                 'current': counter[0],
                 'total': total_files,
                 'hidden': False,
             })
-            log.info(f'download_images: step {step_num}/{total_steps} — {label} ({batch_size} files)')
+
+            batch_counter = [0]
 
             def on_progress(
-                    _label=label, _step_num=step_num, _total_steps=total_steps,
-                    _batch_size=batch_size):
-                """Called by download threads — writes to _splash_state only (no Qt)."""
+                    _label=label, _batch_size=batch_size, _term=term):
+                """Called by download threads — updates splash + terminal bar."""
                 with lock:
                     counter[0] += 1
                     c = counter[0]
-                # Count within this batch = how many of the global counter belong here.
-                # We track it simply as global counter for the bar and recompute batch done.
+                with lock:
+                    batch_counter[0] += 1
+                    bc = batch_counter[0]
+                _term.update(bc)
                 _splash_state.update({
                     'text': f'Downloading {_label}',
                     'current': c,
@@ -132,6 +138,10 @@ class ImageManager():
 
             failed = self._downloader.download_image_list(image_list, **kwargs)
             self.failed_images.update(failed)
+
+            n_ok = batch_size - len(failed)
+            term.finish(f'{n_ok} updated, {len(failed)} FAILED' if failed
+                        else f'{n_ok} updated')
             log.info(f'download_images: step {step_num} done, failed={len(failed)}')
 
         _splash_state.update({
@@ -168,21 +178,21 @@ class ImageManager():
         - :param threaded_worker: thread object supplying signals
         """
         image_path = self._ship_images_dir / quote_plus(image_name)
-        log.info(f'ImageManager.get_ship_image: {image_name!r} -> {image_path}')
+        log.debug(f'ImageManager.get_ship_image: {image_name!r} -> {image_path}')
         image = QImage(str(image_path))
         if not image.isNull():
-            log.info(f'ImageManager.get_ship_image: loaded from disk '
+            log.debug(f'ImageManager.get_ship_image: loaded from disk '
                      f'size={image.width()}x{image.height()}')
             threaded_worker.result.emit((image,))
             return
         # Not on disk or corrupt — delete stale file and download
         if image_path.exists():
-            log.info(f'ImageManager.get_ship_image: file exists but QImage cannot load it '
+            log.warning(f'ImageManager.get_ship_image: file exists but QImage cannot load it '
                      f'(size={image_path.stat().st_size}B) — deleting and re-downloading')
             image_path.unlink(missing_ok=True)
-        log.info(f'ImageManager.get_ship_image: downloading...')
+        log.debug(f'ImageManager.get_ship_image: downloading...')
         self._downloader.download_ship_image(image_name, {})
         image = QImage(str(image_path))
-        log.info(f'ImageManager.get_ship_image: after download null={image.isNull()} '
+        log.debug(f'ImageManager.get_ship_image: after download null={image.isNull()} '
                  f'size={image.width()}x{image.height()}')
         threaded_worker.result.emit((image,))
