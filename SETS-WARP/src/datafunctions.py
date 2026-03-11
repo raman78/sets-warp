@@ -1,0 +1,1294 @@
+from datetime import datetime
+from json import dumps as json__dumps, loads as json__loads, JSONDecodeError
+import os
+from pathlib import Path
+import sys
+from zlib import compress as zlib_compress, decompress as zlib_decompress
+from numpy import array, append, fromiter, packbits, uint8, unpackbits, zeros
+from PySide6.QtGui import QImage
+from requests import Session
+from requests.cookies import create_cookie
+from requests.exceptions import (
+        ConnectionError as requests__ConnectionError, HTTPError as requests__HTTPError,
+        Timeout as requests__Timeout)
+from urllib.parse import unquote_plus
+from .iofunc import _LxmlElement as Element
+from .constants import (
+        BOFF_URL, BUILD_CONVERSION, CAREERS, DOFF_QUERY_URL, EQUIPMENT_TYPES,
+        GITHUB_CACHE_URL, ITEM_QUERY_URL, MODIFIER_QUERY, PRIMARY_SPECS, SHIP_QUERY_URL,
+        STARSHIP_TRAIT_QUERY_URL, TRAIT_QUERY_URL, WIKI_IMAGE_URL)
+from .iofunc import (
+        auto_backup_cargo_file, browse_path, cache_cargo_data, copy_file, download_image,
+        download_images_fast, fetch_html, get_asset_path, get_cached_cargo_data, get_cargo_data,
+        get_downloaded_icons, get_image_file_name, image, load_image, load_json, read_env_file, retrieve_image,
+        store_json, store_to_cache)
+from .splash import enter_splash, exit_splash, splash_text, splash_progress
+from .textedit import (
+        create_equipment_tooltip, create_trait_tooltip, dewikify, parse_wikitext,
+        sanitize_equipment_name)
+from .widgets import exec_in_thread, notempty, TagStyles, ThreadObject
+from .setsdebug import log
+from .syncmanager import SyncManager
+from .splash import _state as _splash_state
+from .buildupdater import load_build
+
+
+def init_backend(self):
+    """
+    Loads cargo and build data.
+    """
+    def finish_backend_init():
+        log.info('finish_backend_init: start')
+        splash_text(self, 'Injecting Cargo Data')
+        log.info('finish_backend_init: insert_cargo_data')
+        insert_cargo_data(self)
+        log.info('finish_backend_init: slot_skill_images')
+        slot_skill_images(self)
+        splash_text(self, 'Loading Build')
+        log.info('finish_backend_init: load_build')
+        load_build(self)
+        log.info('finish_backend_init: load_images (thread)')
+        exec_in_thread(self, load_images, self)
+        log.info('finish_backend_init: exit_splash')
+        exit_splash(self)
+        log.info('finish_backend_init: DONE')
+
+    log.info('init_backend: enter_splash')
+    enter_splash(self)
+    log.info('init_backend: load_build_file')
+    load_build_file(self, self.config['autosave_filename'], update_ui=False)
+    log.info('init_backend: launching populate_cache thread')
+    exec_in_thread(
+            self, populate_cache, self, finished=finish_backend_init)
+
+
+def insert_cargo_data(self):
+    """
+    Updates UI elements depending on cargo data with the loaded data
+    """
+    self.ship_selector_window.set_ships(self.cache.ships.keys())
+    space_doff_specs = [''] + sorted(self.cache.space_doffs.keys())
+    for combobox in self.widgets.build['space']['doffs_spec']:
+        combobox.addItems(space_doff_specs)
+    ground_doff_specs = [''] + sorted(self.cache.ground_doffs.keys())
+    for combobox in self.widgets.build['ground']['doffs_spec']:
+        combobox.addItems(ground_doff_specs)
+
+
+def slot_skill_images(self):
+    """
+    Updates the ground and skill tree, slotting the correct images into the slots.
+    """
+    for career_block in self.widgets.build['space_skills'].values():
+        for skill_button in career_block:
+            skill_button.set_item(image(self, skill_button.skill_image_name))
+    for skill_group in self.widgets.build['ground_skills']:
+        for skill_button in skill_group:
+            skill_button.set_item(image(self, skill_button.skill_image_name))
+
+
+def populate_cache(self, threaded_worker: ThreadObject):
+    """
+    Loads cargo data and images into cache
+
+    Parameters:
+    - :param threaded_worker: worker object supplying signals
+    """
+    log.info('populate_cache: start')
+    success = load_cargo_cache(self, threaded_worker)
+    log.info(f'populate_cache: load_cargo_cache returned {success}')
+    if not success:
+        self.cache.reset_cache(keep_static_data=True)
+        log.info('populate_cache: calling load_cargo_data')
+        load_cargo_data(self, threaded_worker)
+        log.info('populate_cache: load_cargo_data done')
+    self.cache.empty_image = QImage()
+    self.cache.images_failed = get_cached_cargo_data(self, 'images_failed.json')
+
+    # temporary: until self.cache has been replaced
+    self.images.image_set = self.cache.images_set
+    self.images.failed_images = self.cache.images_failed
+    self.cargo.boff_abilities = self.cache.boff_abilities
+
+    # --- GitHub sync: detect and download changed/new assets ---
+    log.info('populate_cache: starting SyncManager')
+    _splash_state.update({'text': 'Checking for updates…', 'current': 0, 'total': 0, 'hidden': False})
+    sync = SyncManager(
+        images_dir=Path(self.config['config_subfolders']['images']),
+        ship_images_dir=Path(self.config['config_subfolders']['ship_images']),
+        cargo_dir=Path(self.config['config_subfolders']['cargo']),
+        cache_dir=Path(self.config['config_subfolders']['cache']),
+        downloader=self.downloader,
+    )
+    def _sync_progress(text, current, total):
+        _splash_state.update({'text': text, 'current': current, 'total': total, 'hidden': False})
+    sync_report = sync.run(on_progress=_sync_progress)
+    log.info(f'populate_cache: sync done — {sync_report}')
+    # If cargo JSON files were updated, reload the in-memory cache
+    if sync_report.get('cargo_updated'):
+        log.info('populate_cache: cargo files updated by sync — reloading')
+        self.cache.reset_cache(keep_static_data=True)
+        load_cargo_data(self, threaded_worker)
+        log.info('populate_cache: cargo reloaded after sync')
+
+    log.info('populate_cache: calling download_images')
+    # build ship images list from cargo — image field is "File:Filename.ext", strip "File:"
+    ship_images = [
+        ship['image'][5:] for ship in self.cache.ships.values()
+        if ship.get('image', '').startswith('File:')
+    ]
+    # splash text will be set by ImageManager.download_images itself
+    self.images.download_images(self.cache.skills, threaded_worker, ship_images=ship_images)
+    log.info('populate_cache: download_images done')
+    store_to_cache(self, self.images.failed_images, 'images_failed.json')
+    log.info('populate_cache: calling load_base_images')
+    load_base_images(self, threaded_worker)
+    log.info('populate_cache: DONE')
+
+
+
+def load_cargo_cache(self, threaded_worker: ThreadObject) -> bool:
+    """
+    Loads cargo data for all cargo tables from cached data and puts them into variables. Returns
+    True when successful, False if cache is too old
+
+    Parameters:
+    - :param threaded_worker: worker object supplying signals
+    """
+    _splash_state['text'] = 'Loading: Cargo Data'
+    self.cache.ships = get_cached_cargo_data(self, 'ships.json')
+    if len(self.cache.ships) == 0:
+        return False
+    self.cache.equipment = get_cached_cargo_data(self, 'equipment.json')
+    if len(self.cache.equipment) == 0:
+        return False
+    self.cache.traits = get_cached_cargo_data(self, 'traits.json')
+    if len(self.cache.traits) == 0:
+        return False
+    self.cache.starship_traits = get_cached_cargo_data(self, 'starship_traits.json')
+    if len(self.cache.starship_traits) == 0:
+        return False
+    self.cache.boff_abilities = get_cached_cargo_data(self, 'boff_abilities.json')
+    if len(self.cache.boff_abilities) == 0 or len(self.cache.boff_abilities.get('all', {})) == 0:
+        return False
+    self.cache.modifiers = get_cached_cargo_data(self, 'modifiers.json')
+    if len(self.cache.modifiers) == 0:
+        return False
+    self.cache.space_doffs = get_cached_cargo_data(self, 'space_doffs.json')
+    if len(self.cache.space_doffs) == 0:
+        return False
+    self.cache.ground_doffs = get_cached_cargo_data(self, 'ground_doffs.json')
+    if len(self.cache.ground_doffs) == 0:
+        return False
+    self.cache.alt_images = get_cached_cargo_data(self, 'alt_images.json')
+    if len(self.cache.alt_images) == 0:
+        return False
+    self.cache.images_set = set(get_cached_cargo_data(self, 'images_list.json'))
+    if len(self.cache.images_set) == 0:
+        return False
+    return True
+
+
+def load_cargo_data(self, threaded_worker: ThreadObject):
+    """
+    Loads cargo data for all cargo tables and puts them into variables.
+
+    Parameters:
+    - :param threaded_worker: worker object supplying signals
+    """
+    # 7 cargo tables total — emit progress per table
+    CARGO_STEPS = 7
+    cargo_step = [0]
+
+    def cargo_progress(label: str):
+        cargo_step[0] += 1
+        log.info(f'load_cargo_data: step {cargo_step[0]}/{CARGO_STEPS} — {label}')
+        _splash_state.update({
+            'text': f'Fetching Data: {label}',
+            'current': cargo_step[0],
+            'total': CARGO_STEPS,
+            'hidden': False,
+        })
+
+    _splash_state.update({'text': 'Fetching Data...', 'current': 0, 'total': CARGO_STEPS, 'hidden': False})
+
+    cargo_progress('Starships')
+    ship_cargo_data = get_cargo_data(self, 'ship_list.json', SHIP_QUERY_URL)
+    self.cache.ships = {ship['Page']: ship for ship in ship_cargo_data}
+    store_to_cache(self, self.cache.ships, 'ships.json')
+
+    tags = TagStyles(
+            self.theme['tooltip']['ul'], self.theme['tooltip']['li'],
+            self.theme['tooltip']['indent'])
+
+    cargo_progress('Equipment')
+    equipment_cargo_data = get_cargo_data(self, 'equipment.json', ITEM_QUERY_URL)
+    equipment_types = set(EQUIPMENT_TYPES.keys())
+    head_s = self.theme['tooltip']['equipment_head']
+    subhead_s = self.theme['tooltip']['equipment_subhead']
+    who_s = self.theme['tooltip']['equipment_who']
+    elite_hangar = {
+        'Hangar - Elite Federation Mission Scout Ships',
+        'Hangar - Elite Valor Fighters'
+    }
+    for item in equipment_cargo_data:
+        if item['type'] in equipment_types:
+            if item['type'] == 'Hangar Bay' and item['name'] not in elite_hangar and (
+                    item['name'].startswith('Hangar - Advanced')
+                    or item['name'].startswith('Hangar - Elite')):
+                continue
+            name = sanitize_equipment_name(item['name'])
+            self.cache.equipment[EQUIPMENT_TYPES[item['type']]][name] = {
+                'Page': item['Page'],
+                'name': name,
+                'rarity': item['rarity'],
+                'type': item['type'],
+                'tooltip': create_equipment_tooltip(item, head_s, subhead_s, who_s, tags)
+            }
+            self.cache.images_set.add(name)
+    self.cache.equipment['fore_weapons'].update(self.cache.equipment['ship_weapon'])
+    self.cache.equipment['aft_weapons'].update(self.cache.equipment['ship_weapon'])
+    del self.cache.equipment['ship_weapon']
+    self.cache.equipment['tac_consoles'].update(self.cache.equipment['uni_consoles'])
+    self.cache.equipment['sci_consoles'].update(self.cache.equipment['uni_consoles'])
+    self.cache.equipment['eng_consoles'].update(self.cache.equipment['uni_consoles'])
+    self.cache.equipment['uni_consoles'].update(self.cache.equipment['tac_consoles'])
+    self.cache.equipment['uni_consoles'].update(self.cache.equipment['sci_consoles'])
+    self.cache.equipment['uni_consoles'].update(self.cache.equipment['eng_consoles'])
+    store_to_cache(self, self.cache.equipment, 'equipment.json')
+
+    cargo_progress('Traits')
+    trait_cargo_data = get_cargo_data(self, 'traits.json', TRAIT_QUERY_URL)
+    head_s = self.theme['tooltip']['trait_header']
+    subhead_s = self.theme['tooltip']['trait_subheader']
+    for trait in trait_cargo_data:
+        name = trait['name']
+        if trait['type'] != 'doff' and trait['type'] != 'boff' and name is not None:
+            if trait['type'] == 'reputation':
+                trait_type = 'rep_traits'
+            elif trait['type'] == 'activereputation':
+                trait_type = 'active_rep_traits'
+            else:
+                trait_type = 'traits'
+            try:
+                self.cache.traits[trait['environment']][trait_type][name] = {
+                    'Page': trait['Page'],
+                    'name': name,
+                    'tooltip': create_trait_tooltip(
+                            name, trait['description'], trait_type, trait['environment'], head_s,
+                            subhead_s, tags)
+                }
+                if trait['icon_name'] is None:
+                    self.cache.images_set.add(name)
+                else:
+                    self.cache.images_set.add(trait['icon_name'])
+                    self.cache.alt_images[f'{name}__{trait["environment"]}__{trait_type}'] = (
+                            trait['icon_name'])
+            # catch wrong values in trait['environment'] (cargo issue)
+            except (KeyError, AttributeError):
+                pass
+    store_to_cache(self, self.cache.traits, 'traits.json')
+    store_to_cache(self, self.cache.alt_images, 'alt_images.json')
+
+    cargo_progress('Starship Traits')
+    shiptrait_cargo = get_cargo_data(self, 'starship_traits.json', STARSHIP_TRAIT_QUERY_URL)
+    self.cache.starship_traits = {ship_trait['name']: {
+        'Page': ship_trait['Page'],
+        'name': ship_trait['name'],
+        'obtained': ship_trait['obtained'],
+        'tooltip': (
+                f"<p style='{head_s}'>{ship_trait['name']}</p><p style='{subhead_s}'>"
+                f"Starship Trait</p><p style='margin:0'>"
+                f"{ship_trait['short']}</p>{parse_wikitext(ship_trait['detailed'], tags)}")
+    } for ship_trait in shiptrait_cargo}
+    self.cache.images_set |= self.cache.starship_traits.keys()
+    store_to_cache(self, self.cache.starship_traits, 'starship_traits.json')
+
+    cargo_progress('Bridge Officers')
+    get_boff_data(self)
+    store_to_cache(self, self.cache.boff_abilities, 'boff_abilities.json')
+
+    cargo_progress('Modifiers')
+    mod_cargo_data = get_cargo_data(self, 'modifiers.json', MODIFIER_QUERY)
+    for modifier in mod_cargo_data:
+        try:
+            if modifier['available'][0] == '':
+                modifier['available'] = list()
+        except (IndexError, TypeError):
+            modifier['available'] = list()
+        for mod_type in modifier['type']:
+            mod_name = modifier['modifier'].replace('&gt;', '>')
+            try:
+                epic = bool(modifier['isepic'])
+                self.cache.modifiers[EQUIPMENT_TYPES[mod_type]][mod_name] = {
+                    'stats': modifier['stats'],
+                    'available': modifier['available'],
+                    'epic': epic,
+                    'isunique': False if epic else bool(modifier['isunique']),
+                }
+            except KeyError:
+                pass
+    self.cache.modifiers['fore_weapons'].update(self.cache.modifiers['ship_weapon'])
+    self.cache.modifiers['aft_weapons'].update(self.cache.modifiers['ship_weapon'])
+    del self.cache.modifiers['ship_weapon']
+    self.cache.modifiers['uni_consoles'].update(self.cache.modifiers['sci_consoles'])
+    self.cache.modifiers['uni_consoles'].update(self.cache.modifiers['eng_consoles'])
+    self.cache.modifiers['uni_consoles'].update(self.cache.modifiers['tac_consoles'])
+    store_to_cache(self, self.cache.modifiers, 'modifiers.json')
+
+    cargo_progress('Duty Officers')
+    doff_cargo_data = get_cargo_data(self, 'doffs.json', DOFF_QUERY_URL)
+    for doff in doff_cargo_data:
+        doff['description'] = dewikify(doff['description'], remove_formatting=True)
+        for rarity in ('white', 'green', 'blue', 'purple', 'violet', 'gold'):
+            if isinstance(doff[rarity], str):
+                doff[rarity] = dewikify(doff[rarity], remove_formatting=True)
+        if doff['shipdutytype'] == 'Space':
+            cache_doff_single(self, self.cache.space_doffs, doff)
+        elif doff['shipdutytype'] == 'Ground':
+            cache_doff_single(self, self.cache.ground_doffs, doff)
+        elif doff['shipdutytype'] is not None:
+            cache_doff_single(self, self.cache.space_doffs, doff)
+            cache_doff_single(self, self.cache.ground_doffs, doff)
+    store_to_cache(self, self.cache.space_doffs, 'space_doffs.json')
+    store_to_cache(self, self.cache.ground_doffs, 'ground_doffs.json')
+    store_to_cache(self, list(self.cache.images_set), 'images_list.json')
+    _splash_state.update({'text': 'Downloading: Images', 'current': 0, 'total': 0, 'hidden': True})
+
+
+def load_base_images(self, threaded_worker: ThreadObject):
+    """
+    Loads all images that are required for the app to start (skills, overlays)
+
+    Parameters:
+    - :param threaded_worker: worker object supplying signals
+    """
+    log.info('load_base_images: overlays start')
+    _splash_state['text'] = 'Loading: Images (Overlays)'
+    self.cache.images = {image_name: QImage() for image_name in self.cache.images_set}
+    self.cache.overlays.common = QImage(get_asset_path('Common_icon.png', self.app_dir))
+    self.cache.overlays.uncommon = QImage(get_asset_path('Uncommon_icon.png', self.app_dir))
+    self.cache.overlays.rare = QImage(get_asset_path('Rare_icon.png', self.app_dir))
+    self.cache.overlays.veryrare = QImage(get_asset_path('Very_rare_icon.png', self.app_dir))
+    self.cache.overlays.ultrarare = QImage(get_asset_path('Ultra_rare_icon.png', self.app_dir))
+    self.cache.overlays.epic = QImage(get_asset_path('Epic_icon.png', self.app_dir))
+    self.cache.overlays.check = QImage(get_asset_path('check_overlay.png', self.app_dir))
+    log.info('load_base_images: overlays done')
+
+    _splash_state['text'] = 'Loading: Images (Skills)'
+    img_folder = self.config['config_subfolders']['images']
+
+    # collect all skill nodes first so we know total count for progress bar
+    skill_nodes = []
+    for rank_group in self.cache.skills['space']:
+        for skill_group in rank_group:
+            skill_nodes.extend(skill_group['nodes'])
+    for skill_group in self.cache.skills['ground']:
+        skill_nodes.extend(skill_group['nodes'])
+    # add 3 special images (Focused Frenzy, Probability Manipulation, EPS Corruption)
+    skill_total = len(skill_nodes) + 3
+    log.info(f'load_base_images: loading {skill_total} skill images')
+
+    if skill_total > 0:
+        _splash_state.update({'text': 'Loading: Skill Images', 'current': 0, 'total': skill_total, 'hidden': False})
+
+    skill_current = 0
+    for skill_node in skill_nodes:
+        log.debug(f'load_base_images: skill image [{skill_current}/{skill_total}] {skill_node["image"]}')
+        self.cache.images[skill_node['image']] = retrieve_image(
+            self, skill_node['image'], img_folder, threaded_worker.update_splash,
+            f'{WIKI_IMAGE_URL}{skill_node["image"]}.png')
+        skill_current += 1
+        _splash_state.update({'text': f'Loading: Skill Images', 'current': skill_current, 'total': skill_total, 'hidden': False})
+
+    self.cache.images['arrow-up'] = QImage(get_asset_path('arrow-up.png', self.app_dir))
+    self.cache.images['arrow-down'] = QImage(get_asset_path('arrow-down.png', self.app_dir))
+
+    for special in ('Focused Frenzy', 'Probability Manipulation', 'EPS Corruption'):
+        log.info(f'load_base_images: special image {special}')
+        self.cache.images[special] = retrieve_image(self, special, img_folder)
+        skill_current += 1
+        _splash_state.update({'text': f'Loading: Skill Images', 'current': skill_current, 'total': skill_total, 'hidden': False})
+
+    log.info('load_base_images: DONE')
+    _splash_state.update({'text': 'Loading: Complete', 'current': 0, 'total': 0, 'hidden': True})
+
+
+def load_images(self, threaded_worker=None):
+    """
+
+    Parameters:
+    - :param threaded_worker: (unused; required for compatability with employed threading method)
+    """
+    img_folder = self.config['config_subfolders']['images']
+    for img_name, img in list(self.cache.images.items()):
+        if img.isNull():
+            img_path = os.path.join(img_folder, get_image_file_name(img_name))
+            if os.path.exists(img_path):
+                loaded = QImage(img_path)
+                if not loaded.isNull():
+                    self.cache.images[img_name] = loaded
+
+
+def download_images(self, threaded_worker: ThreadObject):
+    """
+    Downloads all images not already in the images folder and puts them into cache. Returns set of
+    images not to be retried in this cycle.
+    """
+    no_retry_images = set()
+    now = datetime.now()
+    for img, timestamp in self.cache.images_failed.items():
+        if (datetime.fromtimestamp(timestamp) - now).days < 7:
+            no_retry_images.add(img)
+        else:
+            self.cache.images_failed.pop(img)
+    images = self.cache.images_set - no_retry_images - get_downloaded_icons(
+        Path(self.config['config_subfolders']['images']))
+    img_folder = self.config['config_subfolders']['images']
+
+    images_to_download = images - self.cache.boff_abilities['all'].keys()
+    boff_images_to_download = images & self.cache.boff_abilities['all'].keys()
+    total = len(images_to_download) + len(boff_images_to_download)
+    current = 0
+
+    # emit initial progress to show the bar
+    if total > 0:
+        _splash_state.update({'text': f'Downloading Images', 'current': 0, 'total': total, 'hidden': False})
+
+    for image_name in images_to_download:
+        download_image(self, image_name, img_folder)
+        current += 1
+        _splash_state.update({'text': f'Downloading Images', 'current': current, 'total': total, 'hidden': False})
+
+    for image_name in boff_images_to_download:
+        image_url = f'{WIKI_IMAGE_URL}{image_name.replace(" ", "_")}_icon_(Federation).png'
+        download_image(self, image_name, img_folder, image_url)
+        current += 1
+        _splash_state.update({'text': f'Downloading Images', 'current': current, 'total': total, 'hidden': False})
+
+    # hide bar when done
+    if total > 0:
+        _splash_state.update({'text': 'Loading: Images', 'current': 0, 'total': 0, 'hidden': True})
+
+    return no_retry_images
+
+
+def cache_doff_single(self, cache: dict, doff: dict):
+    """
+    Puts a single doff into cache.
+
+    Parameters:
+    - :param cache: cache dictionary to store doff into
+    - :param doff: the doff itself
+    """
+    try:
+        cache[doff['spec']][doff['description']] = doff
+    except KeyError:
+        cache[doff['spec']] = dict()
+        cache[doff['spec']][doff['description']] = doff
+
+
+def cache_skills(skill_cache: dict[str, dict], app_directory: str):
+    """
+    Loads skills into cache.
+    """
+    space_skill_data = load_json(get_asset_path('space_skills.json', app_directory))
+    skill_cache['space'] = space_skill_data['space']
+    skill_cache['space_unlocks'] = space_skill_data['space_unlocks']
+    ground_skill_data = load_json(get_asset_path('ground_skills.json', app_directory))
+    skill_cache['ground'] = ground_skill_data['ground']
+    skill_cache['ground_unlocks'] = ground_skill_data['ground_unlocks']
+
+
+def autosave(self):
+    """
+    Saves build to autosave file.
+    """
+    if not self.building:
+        store_json(self.build, self.config['autosave_filename'])
+
+
+def map_build_items(self, old_build: dict, new_build: dict, mapping):
+    """
+    Inserts items from old build into new build according to mapping; in-place
+
+    Parameters:
+    - :param old_build: source
+    - :param new_build: target
+    - :param mapping: iterable of 2-tuples containing source and target key
+    """
+    for source_key, target_key in mapping:
+        try:
+            if isinstance(new_build[target_key], list):
+                for index, element in enumerate(old_build[source_key]):
+                    try:
+                        if isinstance(element, dict) and 'modifiers' in element:
+                            element['modifiers'] += [None] * (5 - len(element['modifiers']))
+                        new_build[target_key][index] = element
+                    except IndexError:
+                        break
+            else:
+                new_build[target_key] = old_build[source_key]
+        except KeyError:
+            continue
+
+
+def convert_old_build(self, build: dict) -> dict:
+    """
+    converts build from old spec to current spec
+    """
+    new_build = empty_build(self)
+
+    # space
+    map_build_items(self, build, new_build['space'], BUILD_CONVERSION['space'])
+
+    new_build['space']['traits'] = build['personalSpaceTrait'] + build['personalSpaceTrait2']
+    if len(new_build['space']['traits']) < 12:
+        new_build['space']['traits'] += [None] * (12 - len(new_build['space']['traits']))
+    elite_captain_trait = new_build['space']['traits'][5]
+    new_build['space']['traits'][5] = new_build['space']['traits'][9]
+    new_build['space']['traits'][9] = elite_captain_trait
+
+    ship_data = self.cache.ships[new_build['space']['ship']]
+    boff_data = sorted(map(lambda s: get_boff_spec(self, s), ship_data['boffs']), reverse=True)
+    boff_data_old = []
+    for boff_id, boff_profession in enumerate(build['boffseats']['space']):
+        if f'spaceBoff_{boff_id}' in build['boffs'] and boff_profession is not None:
+            abilities = build['boffs'][f'spaceBoff_{boff_id}']
+            boff_data_old.append((len(abilities), boff_profession, abilities))
+    boff_data_old.sort(reverse=True)
+    for boff_id, (new_station, old_station) in enumerate(zip(boff_data, boff_data_old)):
+        if new_station[1] == old_station[1] or new_station[1] == 'Universal':
+            continue
+        for i, test_station in enumerate(boff_data):
+            if old_station[0] == test_station[0] and old_station[1] == test_station[1]:
+                boff_data_old[boff_id] = boff_data_old[i]
+                boff_data_old[i] = old_station
+                break
+        else:
+            for i, test_station in enumerate(boff_data):
+                if old_station[0] == test_station[0] and test_station[1] == 'Universal':
+                    boff_data_old[boff_id] = boff_data_old[i]
+                    boff_data_old[i] = old_station
+                    break
+    for boff_id, station in enumerate(boff_data_old):
+        new_build['space']['boff_specs'][boff_id] = [station[1], boff_data[boff_id][2]]
+        for i, ability in enumerate(station[2]):
+            if ability is None or ability == '':
+                new_build['space']['boffs'][boff_id][i] = ''
+            else:
+                new_build['space']['boffs'][boff_id][i] = {'item': ability}
+
+    # ground
+    map_build_items(self, build, new_build['ground'], BUILD_CONVERSION['ground'])
+
+    try:
+        for boff_id in range(4):
+            new_build['ground']['boff_profs'][boff_id] = build['boffseats']['ground'][boff_id]
+            new_build['ground']['boff_specs'][boff_id] = build['boffseats']['ground_spec'][boff_id]
+            if new_build['ground']['boff_specs'][boff_id] is None:
+                new_build['ground']['boff_specs'][boff_id] = 'Command'
+            for i, ability in enumerate(build['boffs'][f'groundBoff_{boff_id}']):
+                if ability is None or ability == '':
+                    new_build['ground']['boffs'][boff_id][i]
+                else:
+                    new_build['ground']['boffs'][boff_id][i] = {'item': ability}
+    except KeyError:
+        pass
+
+    new_build['ground']['traits'] = build['personalGroundTrait'] + build['personalGroundTrait2']
+    if len(new_build['ground']['traits']) < 12:
+        new_build['ground']['traits'] += [None] * (12 - len(new_build['ground']['traits']))
+    elite_captain_trait = new_build['ground']['traits'][5]
+    new_build['ground']['traits'][5] = new_build['ground']['traits'][9]
+    new_build['ground']['traits'][9] = elite_captain_trait
+
+    # captain
+    map_build_items(self, build, new_build['captain'], BUILD_CONVERSION['captain'])
+    try:
+        new_build['captain']['name'] = build['playerName'] + build['playerHandle']
+        new_build['captain']['faction'] = build['captain']['faction']
+    except KeyError:
+        pass
+
+    # doffs
+    for environment in ('space', 'ground'):
+        for doff_index, doff in enumerate(build['doffs'][environment]):
+            if doff is not None and doff != '':
+                new_build[environment]['doffs_spec'][doff_index] = doff['spec']
+                try:
+                    for variant in getattr(self.cache, f'{environment}_doffs')[doff['spec']]:
+                        if doff['effect'] in variant:
+                            new_build[environment]['doffs_variant'][doff_index] = variant
+                            break
+                except KeyError:
+                    pass
+
+    return new_build
+
+
+def compensate_old_build(self, build: str):
+    """
+    replaces known wrong terms in build string
+    """
+    build = build.replace('Ultra rare', 'Ultra Rare')
+    build = build.replace('Very rare', 'Very Rare')
+    return build
+
+
+def remove_invalid_build_items(self, build: dict):
+    """
+    Checks build for invalid items and removes these to maintain compatibility.
+
+    Parameters:
+    - :param build: build to remove items from (in place)
+    """
+    for environment in ('space', 'ground'):
+        for category, category_items in build[environment].items():
+            if isinstance(category_items, str):
+                continue
+            elif category == 'boffs':
+                for station in category_items:
+                    for index, ability in enumerate(station):
+                        if (isinstance(ability, dict)
+                                and ability['item'] not in self.cache.images_set):
+                            station[index] = ''
+            elif (category.startswith('doff')
+                  or category == 'boff_specs'
+                  or category == 'boff_profs'):
+                continue
+            elif isinstance(category_items, list):
+                for index, item in enumerate(category_items):
+                    if isinstance(item, dict) and item['item'] not in self.cache.images_set:
+                        category_items[index] = ''
+
+
+def encode_in_image(self, image: QImage, data: str):
+    """
+    Embeds data into image
+
+    Parameters:
+    - :param image: image to edit
+    - :param data: data string to embed into image
+    """
+    data_bytes = zlib_compress(bytes(data, encoding='utf-8'))
+    total_characters = len(data_bytes)
+    bits = zeros(total_characters * 8 + 32 + 8, dtype=uint8)
+    prefix = array([167, total_characters >> 8, total_characters & 0b11111111, 167], dtype=uint8)
+    bits[0:32] = unpackbits(prefix)
+    bits[32:-8] = unpackbits(fromiter(data_bytes, dtype=uint8, count=total_characters))
+    bits[-8:] = unpackbits(array([167], dtype=uint8))
+    total_characters += 5  # prefix and suffix length
+    w = image.width()
+    total_bits = total_characters * 8
+    full_rows = total_bits // (w * 3)
+    additional_pixels = (total_bits - full_rows * w * 3) // 3
+    additional_subpixels = total_bits % 3
+    i = -1
+    row = -1
+    for row in range(full_rows):
+        row_data = image.scanLine(row)
+        for i, subpixel in pixel_range(w, i + 1):
+            row_data[subpixel] = row_data[subpixel] & 0b11111110 | bits[i]
+    row_data = image.scanLine(row + 1)
+    for i, subpixel in pixel_range(additional_pixels, i + 1):
+        row_data[subpixel] = row_data[subpixel] & 0b11111110 | bits[i]
+    if additional_pixels == 0:
+        subpixel = -2
+    if additional_subpixels == 1:
+        row_data[subpixel + 2] = row_data[subpixel + 2] & 0b11111110 | bits[i + 1]
+    elif additional_subpixels == 2:
+        row_data[subpixel + 2] = row_data[subpixel + 2] & 0b11111110 | bits[i + 1]
+        row_data[subpixel + 3] = row_data[subpixel + 3] & 0b11111110 | bits[i + 2]
+
+
+def decode_from_image(self, image: QImage) -> str:
+    """
+    Extracts embedded data from image; returns empty string if no data was found
+
+    Parameters:
+    - :param image: image with embedded data
+    """
+    # prefix: §15000§ where 15000 is the number (as uint16) of bytes the encoded data occupies
+    prefix_bits = zeros(32, dtype=uint8)
+    first_row = image.constScanLine(0)
+    for i, subpixel in pixel_range(10):
+        prefix_bits[i] = first_row[subpixel] & 0b1
+    prefix_bits[30] = first_row[40] & 0b1
+    prefix_bits[31] = first_row[41] & 0b1
+    prefix_bytes = packbits(prefix_bits)
+    if prefix_bytes[0] != 167 or prefix_bytes[3] != 167:  # ord('§') == 167
+        return ''
+    total_characters = int(prefix_bytes[1]) << 8 | int(prefix_bytes[2])  # constructs 16-bit int
+    total_characters += 5  # prefix and suffix length
+    w = image.width()
+    total_bits = total_characters * 8
+    bits = zeros(total_bits, dtype=uint8)
+    full_rows = total_bits // (w * 3)
+    additional_pixels = (total_bits - full_rows * w * 3) // 3
+    additional_subpixels = total_bits % 3
+    i = -1
+    row = -1
+    for row in range(full_rows):
+        row_data = image.constScanLine(row)
+        for i, subpixel in pixel_range(w, i + 1):
+            bits[i] = row_data[subpixel] & 0b1
+    row_data = image.constScanLine(row + 1)
+    for i, subpixel in pixel_range(additional_pixels, i + 1):
+        bits[i] = row_data[subpixel] & 0b1
+    if additional_pixels == 0:
+        subpixel = -2
+    if additional_subpixels == 1:
+        bits[i + 1] = row_data[subpixel + 2] & 0b1
+    elif additional_subpixels == 2:
+        bits[i + 1] = row_data[subpixel + 2] & 0b1
+        bits[i + 2] = row_data[subpixel + 3] & 0b1
+    decoded_bytes = bytes(packbits(bits))
+    if decoded_bytes[-1] != 167:
+        raise ValueError('End delimiter not found! Decoded data not intact.')
+    return str(zlib_decompress(decoded_bytes[4:-1]), 'utf-8')
+
+
+def legacy_decode_from_image(self, image_path: str) -> str:
+    """
+    Decodes build from image using old embedding specification.
+
+    Parameters:
+    - :param image_path: path to image
+    """
+    message = ''
+    image = QImage(image_path)
+    width = image.width()
+    pixel_num = width * 3
+    bit_diff = pixel_num % 8
+    decoded_binary = zeros(pixel_num, dtype=uint8)
+    extra_bits = zeros(0, dtype=uint8)
+    for line in range(image.height()):
+        data = image.constScanLine(line)
+        for col in range(width):
+            pixel_index = col * 4
+            bin_index = col * 3
+            decoded_binary[bin_index] = data[pixel_index + 2] & 0b1
+            decoded_binary[bin_index + 1] = data[pixel_index + 1] & 0b1
+            decoded_binary[bin_index + 2] = data[pixel_index] & 0b1
+        if bit_diff == 0:
+            decoded_bytes = packbits(append(extra_bits, decoded_binary))
+            extra_bits = zeros(0, dtype=uint8)
+            bit_diff = pixel_num % 8
+        else:
+            decoded_bytes = packbits(append(extra_bits, decoded_binary[:-1 * bit_diff]))
+            extra_bits = decoded_binary[-1 * bit_diff:].copy()
+            bit_diff = (pixel_num + len(extra_bits)) % 8
+        new_message = ''.join(map(chr, decoded_bytes))
+        message += new_message
+        if '$t3g0' in new_message:
+            break
+    return message.split('$t3g0', maxsplit=1)[0]
+
+
+def load_legacy_build_image(self):
+    """
+    Loads legacy build from image file
+    """
+    load_path = browse_path(
+            self, self.config['config_subfolders']['library'],
+            'PNG image (*.png);;Any File (*.*)')
+    if load_path != '':
+        _, _, extension = load_path.rpartition('.')
+        if extension.lower() != 'png':
+            return
+        try:
+            raw_build = legacy_decode_from_image(self, load_path)
+            build_data = json__loads(compensate_old_build(self, raw_build))
+        except JSONDecodeError:
+            sys.stderr.write('[Error] Image contains no build or is corrupted.')
+            return
+        if 'versionJSON' in build_data:
+            new_build = empty_build(self)
+            new_build.update(convert_old_build(self, build_data))
+            self.build = new_build
+            try:
+                load_build(self)
+            except KeyError:
+                remove_invalid_build_items(self, self.build)
+                load_build(self)
+
+
+def load_build_file(self, filepath: str, update_ui: bool = True):
+    """
+    Loads build from json or png file and puts it into self.build
+
+    Parameters:
+    - :param filepath: path to build file
+    """
+    _, _, extension = filepath.rpartition('.')
+    if extension.lower() == 'json':
+        build_data = load_json(filepath)
+    elif extension.lower() == 'png':
+        decoded_str = decode_from_image(self, QImage(filepath))
+        if decoded_str == '':
+            return
+        build_data = json__loads(decoded_str)
+    else:
+        return
+    new_build = empty_build(self)
+    if len(build_data.keys() | new_build.keys()) == 7:
+        merge_build(self, new_build, build_data)
+    elif 'versionJSON' in build_data:
+        build_data = json__loads(compensate_old_build(self, json__dumps(build_data)))
+        new_build.update(convert_old_build(self, build_data))
+    else:
+        return
+    self.build = new_build
+    if update_ui:
+        try:
+            load_build(self)
+        except KeyError:
+            remove_invalid_build_items(self, self.build)
+            load_build(self)
+
+
+def save_build_file(self, filepath: str):
+    """
+    Saves build to json or png file
+
+    Parameters:
+    - :param filepath: path to build file
+    """
+    _, _, extension = filepath.rpartition('.')
+    if extension.lower() == 'json':
+        store_json(self.build, filepath)
+    elif extension.lower() == 'png':
+        image = self.window.grab().toImage()
+        encode_in_image(self, image, json__dumps(self.build))
+        image.save(filepath)
+
+
+def load_skill_tree_file(self, filepath: str):
+    """
+    Loads skill tree from json or png file and puts it into self.build
+
+    Parameters:
+    - :param filepath: path to skill tree file
+    """
+    _, _, extension = filepath.rpartition('.')
+    if extension.lower() == 'json':
+        build_data = load_json(filepath)
+    elif extension.lower() == 'png':
+        decoded_str = decode_from_image(self, QImage(filepath))
+        if decoded_str == '':
+            return
+        build_data = json__loads(decoded_str)
+    else:
+        return
+    new_build = empty_build(self, 'skills')
+    merge_build(self, new_build, build_data)
+    self.build['space_skills'] = new_build['space_skills']
+    self.build['ground_skills'] = new_build['ground_skills']
+    self.build['skill_unlocks'] = new_build['skill_unlocks']
+    self.build['skill_desc'] = new_build['skill_desc']
+    load_skill_pages(self)
+
+
+def save_skill_tree_file(self, filepath: str):
+    """
+    Saves skill tree to json or png file
+
+    Parameters:
+    - :param filepath: path to skill tree file
+    """
+    _, _, extension = filepath.rpartition('.')
+    skill_tree = {
+        'space_skills': self.build['space_skills'],
+        'ground_skills': self.build['ground_skills'],
+        'skill_unlocks': self.build['skill_unlocks'],
+        'skill_desc': self.build['skill_desc'],
+    }
+    if extension.lower() == 'json':
+        store_json(skill_tree, filepath)
+    elif extension.lower() == 'png':
+        image = self.window.grab().toImage()
+        encode_in_image(self, image, json__dumps(skill_tree))
+        image.save(filepath)
+
+
+def empty_build(self, build_type: str = 'full') -> dict:
+    """
+    Creates empty build and returns it.
+
+    Parameters:
+    - :param build_type: `build` -> space and ground build; `skills` -> space and ground skills;
+        `full` -> space and ground build and skills
+    """
+    # None means not available on the build; empty string means empty slot
+    new_build = {
+        'space': {
+            'active_rep_traits': [None] * 5,
+            'aft_weapons': [None] * 5,
+            'boffs': [[None] * 4, [None] * 4, [None] * 4, [None] * 4, [None] * 4, [None] * 4],
+            'boff_specs': [[None, None]] * 6,
+            'core': [''],
+            'deflector': [''],
+            'devices': [None] * 6,
+            'doffs_spec': [''] * 6,
+            'doffs_variant': [''] * 6,
+            'eng_consoles': [None] * 5,
+            'engines': [''],
+            'experimental': [None],
+            'fore_weapons': [None] * 5,
+            'hangars': [None] * 2,
+            'rep_traits': [None] * 5,
+            'sci_consoles': [None] * 5,
+            'sec_def': [None],
+            'shield': [''],
+            'ship': '',
+            'ship_name': '',
+            'ship_desc': '',
+            'starship_traits': [None] * 7,
+            'tac_consoles': [None] * 5,
+            'tier': '',
+            'traits': ['', '', '', '', '', '', '', '', '', None, None, ''],
+            'uni_consoles': [None] * 3,
+        },
+
+        'ground': {
+            'active_rep_traits': [None] * 5,
+            'armor': [''],
+            'boffs': [[''] * 4, [''] * 4, [''] * 4, [''] * 4],
+            'boff_profs': ['Tactical'] * 4,
+            'boff_specs': ['Command'] * 4,
+            'ground_desc': '',
+            'ground_devices': ['', '', '', '', None],
+            'doffs_spec': [''] * 6,
+            'doffs_variant': [''] * 6,
+            'ev_suit': [''],
+            'kit': [''],
+            'kit_modules': ['', '', '', '', '', None],
+            'rep_traits': [''] * 5,
+            'personal_shield': [''],
+            'traits': ['', '', '', '', '', '', '', '', '', None, None, ''],
+            'weapons': [''] * 2,
+        },
+
+        'captain': {
+            'career': '',
+            'elite': False,
+            'faction': '',
+            'name': '',
+            'primary_spec': '',
+            'secondary_spec': '',
+            'species': '',
+        },
+    }
+
+    new_skills = {
+        'space_skills': {
+            'eng': [False] * 30,
+            'sci': [False] * 30,
+            'tac': [False] * 30,
+        },
+        'skill_unlocks': {
+            'eng': [None] * 5,
+            'sci': [None] * 5,
+            'tac': [None] * 5,
+            'ground': [None] * 5
+        },
+        'ground_skills': [
+            [False] * 6,
+            [False] * 6,
+            [False] * 4,
+            [False] * 4
+        ],
+        'skill_desc': {
+            'space': '',
+            'ground': ''
+        }
+    }
+
+    if build_type == 'build':
+        return new_build
+    elif build_type == 'full':
+        new_build.update(new_skills)
+        return new_build
+    elif build_type == 'skills':
+        return new_skills
+
+
+def merge_build(self, original_build: dict, new_build: dict):
+    """
+    updates `original_build` with contents of `new_build`
+    """
+    for build_segment in original_build:
+        subdict = new_build.get(build_segment, None)
+        if subdict is None:
+            continue
+        if isinstance(subdict, dict):
+            original_build[build_segment].update(subdict)
+        else:
+            original_build[build_segment] = subdict
+
+
+def pixel_range(num: int = 0, range_start: int = 0, /):
+    """
+    Returns appropriate indices to access the RGB (not A) channels of the pixel row of `num` pixels,
+    as well as an 1-step increasing range index -> (range_index, pixel_index)
+    """
+    counter = range_start
+    for index in range(0, num * 4, 4):
+        yield counter, index
+        counter += 1
+        yield counter, index + 1
+        counter += 1
+        yield counter, index + 2
+        counter += 1
+
+
+def backup_cargo_data(self):
+    """
+    Saves current cargo data to backup folder.
+    """
+    cargo_files = (
+            'boff_abilities.json', 'doffs.json', 'equipment.json', 'modifiers.json',
+            'ship_list.json', 'starship_traits.json', 'traits.json')
+    cargo_folder = self.config['config_subfolders']['cargo']
+    backups_folder = self.config['config_subfolders']['backups']
+    for file_name in cargo_files:
+        cargo_path = os.path.join(cargo_folder, file_name)
+        backups_path = os.path.join(backups_folder, file_name)
+        copy_file(cargo_path, backups_path)
+
+
+def get_boff_data(self, force_offline_data: bool = False):
+    """
+    Populates self.cache.boff_abilities until boff abilties are available from cargo
+
+    Parameters:
+    - :param force_offline_data: Set to True to force the use of cargo backup in case the online
+    source is unavailable
+    """
+    class ThisIsTerribleError(RuntimeError):
+        pass
+
+    filename = 'boff_abilities.json'
+    filepath = os.path.join(self.config['config_subfolders']['cargo'], filename)
+    bad_cache = False
+
+    # try loading from cache
+    if os.path.exists(filepath) and os.path.isfile(filepath):
+        last_modified = os.path.getmtime(filepath)
+        if (datetime.now() - datetime.fromtimestamp(last_modified)).days < 7:
+            try:
+                self.cache.boff_abilities = load_json(filepath)
+                if len(self.cache.boff_abilities.get('all', {})) > 0:
+                    self.cache.images_set |= self.cache.boff_abilities['all'].keys()
+                    return
+                else:
+                    bad_cache = True
+            except JSONDecodeError:
+                pass
+
+    # download if not exists or outdated
+    try:
+        if not bad_cache:
+            auto_backup_cargo_file(self, filename)
+        if force_offline_data:
+            raise ThisIsTerribleError
+        boff_html = fetch_html(BOFF_URL)
+    except (requests__Timeout, requests__ConnectionError, requests__HTTPError, ThisIsTerribleError):
+        if not force_offline_data:
+            boff_data = self.downloader.fetch_json(f'{GITHUB_CACHE_URL}/cargo/boff_abilities.json')
+            if boff_data is not None and len(boff_data.get('all', {})) > 0:
+                self.cache.boff_abilities = boff_data
+                self.cache.images_set |= boff_data['all'].keys()
+                return
+        backup_path = os.path.join(self.config['config_subfolders']['backups'], filename)
+        if os.path.exists(backup_path) and os.path.isfile(backup_path):
+            try:
+                cargo_data = load_json(backup_path)
+                store_json(cargo_data, filepath)
+                self.cache.boff_abilities = cargo_data
+                if len(self.cache.boff_abilities.get('all', {})) > 0:
+                    self.cache.images_set |= self.cache.boff_abilities['all'].keys()
+                    return
+            except JSONDecodeError:
+                pass
+        backup_path = os.path.join(self.config['config_subfolders']['auto_backups'], filename)
+        if os.path.exists(backup_path) and os.path.isfile(backup_path):
+            try:
+                cargo_data = load_json(backup_path)
+                store_json(cargo_data, filepath)
+                self.cache.boff_abilities = cargo_data
+                if len(self.cache.boff_abilities.get('all', {})) > 0:
+                    self.cache.images_set |= self.cache.boff_abilities['all'].keys()
+                    return
+            except JSONDecodeError:
+                pass
+        sys.stderr.write(f'[Error] Html could not be retrieved ({filename})\n')
+        sys.exit(1)
+
+    boffCategories = CAREERS | PRIMARY_SPECS
+    header_tag = f"<p style='{self.theme['tooltip']['boff_header']}'>"
+    for environment in ('space', 'ground'):
+        l0 = [h2 for h2 in boff_html.find('h2') if ' Abilities' in h2.html]
+        if environment == 'ground':
+            l0 = [line for line in l0 if "Pilot" not in line.text]
+            l1 = boff_html.find('h2+h3+table+h3+table')
+        else:
+            l1 = boff_html.find('h2+h3+table')
+
+        for category in boffCategories:
+            table = [header[1] for header in zip(l0, l1) if isinstance(header[0].find('#'
+                     + category.replace(' ', '_') + '_Abilities', first=True), Element)]
+            if not len(table):
+                continue
+            trs = table[0].find('tr')
+            for tr in trs:
+                tds = tr.find('td')
+                if len(tds) > 0:
+                    a_name = tds[0].text.strip()
+                    a_desc = tds[5].text.strip()
+                    if a_desc == 'III':
+                        a_desc = tds[6].text.strip()
+                    self.cache.boff_abilities['all'][a_name] = (
+                        f"{header_tag}{a_name}</p><p>{a_desc}</p>")
+                    self.cache.images_set.add(a_name)
+                rank1 = 1
+                for i in [0, 1, 2, 3]:
+                    if len(tds) > 0 and tds[rank1 + i].text.strip() != '':
+                        cname = tds[0].text.strip()
+                        desc = tds[5].text.strip()
+                        if desc == 'III':
+                            desc = tds[6].text.strip()
+                        self.cache.boff_abilities[environment][category][i][cname] = desc
+                        if i == 2 and tds[rank1 + i].text.strip() in ['I', 'II']:
+                            self.cache.boff_abilities[environment][category][i + 1][cname] \
+                                = desc
+    if len(self.cache.boff_abilities.get('all', {})) == 0:
+        if not force_offline_data:
+            boff_data = self.downloader.fetch_json(f'{GITHUB_CACHE_URL}/cargo/boff_abilities.json')
+            if boff_data is not None and len(boff_data.get('all', {})) > 0:
+                self.cache.boff_abilities = boff_data
+                self.cache.images_set |= boff_data['all'].keys()
+                return
+        get_boff_data(self, force_offline_data=True)
+    else:
+        store_json(self.cache.boff_abilities, filepath)
+
+
+def get_icon_set(cargo_dir: Path) -> set[str]:
+    """
+    Creates set of all required icons from cargo data and required static images.
+
+    Parameters:
+    - :param cargo_dir: path to cargo data directory
+    """
+    images_set = set()
+    equipment_cargo_data = load_json(str(cargo_dir / 'equipment.json'))
+    equipment_types = set(EQUIPMENT_TYPES.keys())
+    elite_hangar = {
+        'Hangar - Elite Federation Mission Scout Ships',
+        'Hangar - Elite Valor Fighters'
+    }
+    for item in equipment_cargo_data:
+        if item['type'] in equipment_types:
+            if item['type'] == 'Hangar Bay' and item['name'] not in elite_hangar and (
+                    item['name'].startswith('Hangar - Advanced')
+                    or item['name'].startswith('Hangar - Elite')):
+                continue
+            images_set.add(sanitize_equipment_name(item['name']))
+    trait_cargo_data = load_json(str(cargo_dir / 'traits.json'))
+    for trait in trait_cargo_data:
+        if trait['type'] != 'doff' and trait['type'] != 'boff' and trait['name'] is not None:
+            if trait['icon_name'] is None:
+                images_set.add(trait['name'])
+            else:
+                images_set.add(trait['icon_name'])
+    shiptrait_cargo_data = load_json(str(cargo_dir / 'starship_traits.json'))
+    images_set |= set(ship_trait['name'] for ship_trait in shiptrait_cargo_data)
+    return images_set
+
+
+def get_skill_icons(skill_cache: dict[str, dict]) -> set[str]:
+    """
+    """
+    icons = set()
+    for rank_group in skill_cache['space']:
+        for skill_group in rank_group:
+            for skill_node in skill_group['nodes']:
+                icons.add(skill_node['image'])
+    for skill_group in skill_cache['ground']:
+        for skill_node in skill_group['nodes']:
+            icons.add(skill_node['image'])
+    return icons
+
+
+def get_boff_icons(boff_cache: dict[str, dict]) -> set[str]:
+    """
+    """
+    return set(boff_cache['all'].keys())
+
+
+def get_ship_icons(ship_list: list[dict[str]]) -> set[str]:
+    """
+    """
+    return set(ship['image'][5:] for ship in ship_list)
+
+
+def build_cache(app_dir: Path) -> int:
+    """
+    Builds cache in config folder indicated by `config_path`. Returns status: success: `0`,
+    failure: `1`
+
+    Parameters:
+    - :param config_path: path to build cache into
+    """
+    config_path = app_dir / '.config'
+    env_variables = read_env_file(config_path / '.env', ['SETS_CF_CLEARANCE', 'SETS_USER_AGENT'])
+    requests_session = Session()
+    if 'SETS_CF_CLEARANCE' in env_variables:
+        print(f'[Info] "SETS_CF_CLEARANCE" variable: "{env_variables["SETS_CF_CLEARANCE"][:10]}"')
+        print(f'[Info] "SETS_CF_CLEARANCE" variable: "{env_variables["SETS_CF_CLEARANCE"][-10:]}"')
+        requests_session.cookies.set_cookie(
+            create_cookie(name='cf_clearance', value=env_variables['SETS_CF_CLEARANCE']))
+    if 'SETS_USER_AGENT' in env_variables:
+        print(f'[Info] "SETS_USER_AGENT" variable: "{env_variables["SETS_USER_AGENT"][:10]}"')
+        print(f'[Info] "SETS_USER_AGENT" variable: "{env_variables["SETS_USER_AGENT"][-10:]}"')
+        requests_session.headers['User-Agent'] = env_variables['SETS_USER_AGENT']
+    cargo_dir = config_path / 'cargo'
+    success = list()
+    success.append(cache_cargo_data(cargo_dir / 'ship_list.json', SHIP_QUERY_URL, requests_session))
+    success.append(cache_cargo_data(cargo_dir / 'equipment.json', ITEM_QUERY_URL, requests_session))
+    success.append(cache_cargo_data(cargo_dir / 'traits.json', TRAIT_QUERY_URL, requests_session))
+    success.append(cache_cargo_data(
+        cargo_dir / 'starship_traits.json', STARSHIP_TRAIT_QUERY_URL, requests_session))
+    success.append(cache_cargo_data(cargo_dir / 'modifiers.json', MODIFIER_QUERY, requests_session))
+    success.append(cache_cargo_data(cargo_dir / 'doffs.json', DOFF_QUERY_URL, requests_session))
+
+    image_dir = config_path / 'images'
+    downloaded_images = get_downloaded_icons(image_dir)
+    ultimate_icons = {'Focused Frenzy', 'Probability Manipulation', 'EPS Corruption'}
+    images_set = (get_icon_set(cargo_dir) | ultimate_icons) - downloaded_images
+    if len(images_set) > 0:
+        download_images_fast(list(images_set), env_variables, image_dir)
+    skill_cache = dict()
+    cache_skills(skill_cache, app_dir)
+    skill_images = get_skill_icons(skill_cache) - downloaded_images
+    if len(skill_images) > 0:
+        download_images_fast(list(skill_images), env_variables, image_dir, image_suffix='.png')
+    boff_cache = load_json(cargo_dir / 'boff_abilities.json')
+    boff_images = get_boff_icons(boff_cache) - downloaded_images
+    if len(boff_images) > 0:
+        download_images_fast(
+            list(boff_images), env_variables, image_dir, image_suffix='_icon_(Federation).png')
+
+    downloaded_ship_images = set(
+        map(lambda x: unquote_plus(x), os.listdir(str(config_path / 'ship_images'))))
+    ship_list = load_json(str(cargo_dir / 'ship_list.json'))
+    ship_images = get_ship_icons(ship_list) - downloaded_ship_images
+    if len(ship_images) > 0:
+        download_images_fast(
+            list(ship_images), env_variables, config_path / 'ship_images', image_suffix='')
+
+    if False in success:
+        return 1
+    return 0

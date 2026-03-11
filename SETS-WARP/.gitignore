@@ -1,0 +1,13 @@
+.config/
+images/
+..debug/
+__pycache__/
+*.py[cod]
+.SETS_settings.ini
+.venv/
+.python/
+*.log
+.pycache/
+.env
+warp_core_screenshots/*
+build_core_screenshots/*

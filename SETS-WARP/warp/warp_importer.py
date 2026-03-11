@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from difflib import get_close_matches
 from pathlib import Path
@@ -105,12 +106,34 @@ SLOT_LABEL_ALIASES: dict[str, str] = {
 
 # ── ShipDB — primary source of truth for slot counts ──────────────────────────
 
+# Tier suffixes appended by STO to ship type string — strip before DB lookup.
+# e.g. "Avenger Miracle Worker Battlecruiser [T6-X2]" → "Avenger Miracle Worker Battlecruiser"
+_RE_TIER_SUFFIX = re.compile(
+    r'\s*[\[(]?(?:Legendary\s+)?T[1-6](?:-(?:U|X|X2))?[\])]?\s*$', re.IGNORECASE)
+
+# Prefixes that appear before the actual ship class name in ship_type string.
+# e.g. "Legendary Avenger ..." — "Legendary" is a quality tag, not part of the DB name.
+_TYPE_STRIP_PREFIXES = re.compile(
+    r'^(?:legendary|advanced|elite|special)\s+', re.IGNORECASE)
+
+
+def _normalise_type(ship_type: str) -> str:
+    """Strip tier suffixes and quality prefixes from ship type string for DB lookup."""
+    s = _RE_TIER_SUFFIX.sub('', ship_type).strip()
+    s = _TYPE_STRIP_PREFIXES.sub('', s).strip()
+    return s.lower()
+
+
 class ShipDB:
     """
     Wraps ship_list.json from SETS cargo.
     Provides exact slot counts per ship using the cargo data fields:
       fore, aft, experimental, hangars, secdeflector,
       uniconsole, consolestac, consoleseng, consolessci, devices
+
+    IMPORTANT: ship_name in screenshots is the player's custom name ("U.S.S. GENIUS").
+    ship_type is the ship class name ("Avenger Miracle Worker Battlecruiser [T6-X2]").
+    → We match against ship_list.json 'name' field using ship_type, NOT ship_name.
 
     Fields confirmed from debug_cargo output:
       ship_list.json: list[{Page, name, image, fc, tier, type, hull, ...,
@@ -121,7 +144,7 @@ class ShipDB:
 
     def __init__(self, cargo_dir: Path):
         self._ships: list[dict] = []
-        self._index: dict[str, dict] = {}   # lowercase name → ship entry
+        self._index: dict[str, dict] = {}   # normalised lowercase class name → ship entry
         self._load(cargo_dir)
 
     def _load(self, cargo_dir: Path):
@@ -135,7 +158,7 @@ class ShipDB:
             for ship in ships:
                 name = (ship.get('name') or '').strip()
                 if name:
-                    self._index[name.lower()] = ship
+                    self._index[_normalise_type(name)] = ship
             log.info(f'ShipDB: loaded {len(self._ships)} ships')
         except Exception as e:
             log.warning(f'ShipDB load error: {e}')
@@ -143,25 +166,37 @@ class ShipDB:
     def get_profile(self, ship_name: str, ship_type: str) -> dict[str, int]:
         """
         Returns exact slot counts for a ship.
-        Tries: exact name match → fuzzy name match → type-keyword fallback.
-        """
-        # 1. Exact match
-        entry = self._index.get(ship_name.lower().strip())
 
-        # 2. Fuzzy match (handles slight OCR errors, missing prefixes)
+        ship_name = player custom name e.g. "U.S.S. GENIUS"   — NOT used for lookup
+        ship_type = class name from OCR e.g. "Avenger Miracle Worker Battlecruiser [T6-X2]"
+
+        Tries:
+          1. Exact normalised match of ship_type against ship_list.json 'name'
+          2. Fuzzy match (handles slight OCR errors in class name)
+          3. Type-keyword fallback (last resort — conservative slot counts)
+        """
+        if not ship_type:
+            log.debug(f'ShipDB: no ship_type for {ship_name!r} — keyword fallback')
+            return _type_keyword_profile(ship_type)
+
+        normalised = _normalise_type(ship_type)
+
+        # 1. Exact match
+        entry = self._index.get(normalised)
+
+        # 2. Fuzzy match (handles OCR errors, slight name differences)
         if entry is None and self._index:
             candidates = list(self._index.keys())
-            matches = get_close_matches(
-                ship_name.lower(), candidates, n=1, cutoff=0.72)
+            matches = get_close_matches(normalised, candidates, n=1, cutoff=0.72)
             if matches:
                 entry = self._index[matches[0]]
-                log.debug(f'ShipDB fuzzy: {ship_name!r} → {matches[0]!r}')
+                log.debug(f'ShipDB fuzzy: {ship_type!r} → {matches[0]!r}')
 
         if entry is not None:
             return self._entry_to_profile(entry)
 
         # 3. Type-keyword fallback
-        log.debug(f'ShipDB: {ship_name!r} not found — using keyword fallback')
+        log.debug(f'ShipDB: {ship_type!r} not in DB — keyword fallback')
         return _type_keyword_profile(ship_type)
 
     def _entry_to_profile(self, e: dict) -> dict[str, int]:
@@ -279,33 +314,13 @@ class WarpImporter:
       5. Merge across screenshots: highest confidence per (slot, index)
     """
 
-    def __init__(
-        self,
-        sets_app,
-        build_type: str = 'SPACE',
-        progress_callback: Callable[[int, str], None] | None = None,
-    ):
-        self._app              = sets_app
-        self._build_type       = build_type
-        self._progress_callback = progress_callback
-<<<<<<< HEAD
-        self._interrupt_check = None
-=======
->>>>>>> origin/main
+    def __init__(self, sets_app):
+        self._app     = sets_app
         self._layout  = None
         self._matcher = None
         self._text    = None
         self._shipdb  = None
-<<<<<<< HEAD
-        self._sync    = None   # WARPSyncClient — lazy init
 
-    def set_interrupt_check(self, fn):
-        # fn() returns True when processing should stop
-        self._interrupt_check = fn
-
-=======
-
->>>>>>> origin/main
     def process_folder(
         self,
         folder:      str | Path,
@@ -315,23 +330,15 @@ class WarpImporter:
         files  = sorted(f for f in folder.iterdir()
                         if f.suffix.lower() in SCREENSHOT_EXTENSIONS)
         if not files:
-            return ImportResult(build_type=self._build_type,
+            return ImportResult(build_type='SPACE',
                                 errors=[f'No images found in {folder}'])
 
-        result = ImportResult(build_type=self._build_type)
+        result = ImportResult(build_type='SPACE')
         best: dict[tuple[str, int], RecognisedItem] = {}
 
         for i, fpath in enumerate(files):
-            pct = int(i / len(files) * 90)
             if progress_cb:
                 progress_cb(i, len(files), fpath.name)
-<<<<<<< HEAD
-            if self._interrupt_check and self._interrupt_check():
-                break
-=======
->>>>>>> origin/main
-            if self._progress_callback:
-                self._progress_callback(pct, fpath.name)
             try:
                 img         = self._load_image(fpath)
                 file_result = self._process_image(img, str(fpath))
@@ -358,11 +365,7 @@ class WarpImporter:
         text_info  = self._get_text().extract_ship_info(img)
         ship_name  = text_info.get('ship_name', '')
         ship_type  = text_info.get('ship_type', '')
-        # Use user-selected build_type if set; fall back to OCR detection
-        if self._build_type in ('SPACE', 'GROUND'):
-            build_type = self._build_type
-        else:
-            build_type = 'GROUND' if text_info.get('build_type') == 'GROUND' else 'SPACE'
+        build_type = 'GROUND' if text_info.get('build_type') == 'GROUND' else 'SPACE'
 
         # Step 2 — get exact slot profile from ship_list.json
         profile = self._get_shipdb().get_profile(ship_name, ship_type)
@@ -406,14 +409,6 @@ class WarpImporter:
                     source_file = source,
                     bbox        = bbox,
                 ))
-<<<<<<< HEAD
-                # Contribute to community knowledge (non-blocking, only high-conf)
-                if conf >= TEMPLATE_CONF_THRESHOLD:
-                    sync = self._get_sync_client()
-                    if sync is not None:
-                        sync.contribute(crop, name, confirmed=False)
-=======
->>>>>>> origin/main
 
         return result
 
@@ -452,27 +447,9 @@ class WarpImporter:
     def _get_matcher(self):
         if self._matcher is None:
             from warp.recognition.icon_matcher import SETSIconMatcher
-<<<<<<< HEAD
-            self._matcher = SETSIconMatcher(self._app,
-                                            sync_client=self._get_sync_client())
-        return self._matcher
-
-    def _get_sync_client(self):
-        if self._sync is None:
-            try:
-                from warp.knowledge.sync_client import WARPSyncClient
-                self._sync = WARPSyncClient()
-                log.info('WARP: sync client initialized')
-            except Exception as e:
-                log.warning(f'WARP: sync client unavailable: {e}')
-                self._sync = None
-        return self._sync
-
-=======
             self._matcher = SETSIconMatcher(self._app)
         return self._matcher
 
->>>>>>> origin/main
     def _get_text(self):
         if self._text is None:
             from warp.recognition.text_extractor import TextExtractor

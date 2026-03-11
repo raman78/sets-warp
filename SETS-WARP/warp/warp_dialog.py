@@ -100,10 +100,8 @@ class _ImportWorker(QThread):
                 sets_app=self._sets_app,
                 progress_callback=lambda p, m: self.progress.emit(p, m),
             )
-            importer.set_interrupt_check(self.isInterruptionRequested)
             result = importer.process_folder(self._folder)
-            if not self.isInterruptionRequested():
-                self.finished.emit(result)
+            self.finished.emit(result)
         except Exception as exc:
             log.exception('WARP import worker error')
             self.error.emit(str(exc))
@@ -123,22 +121,17 @@ class WarpDialog(QDialog):
         super().__init__(parent)
         self._sets = sets_app
         self._settings = QSettings()
-        last = self._settings.value(_SETTINGS_KEY_LAST_DIR, '')
-        self._folder: Path | None = Path(last) if last and Path(last).is_dir() else None
+        self._folder: Path | None = None
         self._build_type = 'SPACE'
         self._worker: _ImportWorker | None = None
         self._import_result: ImportResult | None = None
+        self._review_rows: list[_ReviewRow] = []
 
         self.setWindowTitle('WARP — Screenshot Import')
         self.setMinimumWidth(580)
         self.setMinimumHeight(420)
         self.setModal(True)
         self._build_ui()
-        if self._folder:
-            self._folder_label.setText(str(self._folder))
-            self._folder_label.setStyleSheet(
-                'color:#eee;background:#111;border:1px solid #3a6a9c;'
-                'border-radius:3px;padding:3px 7px;')
 
     # ── UI construction ────────────────────────────────────────────────────
 
@@ -162,22 +155,31 @@ class WarpDialog(QDialog):
 
         self._stack.addWidget(self._make_page_select())
         self._stack.addWidget(self._make_page_progress())
+        self._stack.addWidget(self._make_page_review())
 
         # Footer
         footer = QHBoxLayout()
-        self._btn_next   = QPushButton('Analyse & Import →')
+        self._btn_back   = QPushButton('← Back')
+        self._btn_next   = QPushButton('Analyse →')
+        self._btn_accept = QPushButton('✓  Import Build')
         self._btn_cancel = QPushButton('Cancel')
-        self._btn_next.setStyleSheet(
+        self._btn_back.setVisible(False)
+        self._btn_accept.setVisible(False)
+        self._btn_accept.setStyleSheet(
             'QPushButton {background:#1a5c3a;color:#7effc8;'
             'border:1px solid #3aac6a;border-radius:3px;padding:5px 14px;font-weight:bold;}'
             'QPushButton:hover{background:#2a8c5a;}')
+        footer.addWidget(self._btn_back)
         footer.addStretch()
         footer.addWidget(self._btn_cancel)
         footer.addWidget(self._btn_next)
+        footer.addWidget(self._btn_accept)
         root.addLayout(footer)
 
-        self._btn_cancel.clicked.connect(self._on_cancel)
+        self._btn_cancel.clicked.connect(self.reject)
         self._btn_next.clicked.connect(self._on_next)
+        self._btn_back.clicked.connect(self._on_back)
+        self._btn_accept.clicked.connect(self._on_accept)
 
     def _make_page_select(self) -> QWidget:
         page = QWidget()
@@ -241,6 +243,31 @@ class WarpDialog(QDialog):
         lay.addStretch()
         return page
 
+    def _make_page_review(self) -> QWidget:
+        page = QWidget()
+        lay  = QVBoxLayout(page)
+        hdr = QLabel(
+            'Review recognised items — correct any mistakes before importing.\n'
+            'Green = high confidence, Yellow = uncertain, Red = low confidence.')
+        hdr.setWordWrap(True)
+        hdr.setStyleSheet('color:#aaa;font-size:11px;')
+        lay.addWidget(hdr)
+
+        self._review_scroll = QScrollArea()
+        self._review_scroll.setWidgetResizable(True)
+        self._review_inner  = QWidget()
+        self._review_layout = QVBoxLayout(self._review_inner)
+        self._review_layout.setSpacing(3)
+        self._review_layout.addStretch()
+        self._review_scroll.setWidget(self._review_inner)
+        lay.addWidget(self._review_scroll, 1)
+
+        self._review_summary = QLabel('')
+        self._review_summary.setStyleSheet('color:#7effc8;font-size:11px;')
+        lay.addWidget(self._review_summary)
+        return page
+
+    # ── Navigation ─────────────────────────────────────────────────────────
 
     def _on_next(self):
         if self._stack.currentIndex() == 0:
@@ -251,11 +278,26 @@ class WarpDialog(QDialog):
             self._build_type = checked.property('build_key') if checked else 'SPACE'
             self._start_import()
 
+    def _on_back(self):
+        self._stack.setCurrentIndex(0)
+        self._btn_back.setVisible(False)
+        self._btn_next.setVisible(True)
+        self._btn_accept.setVisible(False)
+        self._btn_next.setEnabled(True)
+
+    def _on_accept(self):
+        """Apply all accepted items to SETS build."""
+        if self._import_result is None:
+            return
+        self._apply_to_sets()
+        self.accept()
+
     # ── Import pipeline ────────────────────────────────────────────────────
 
     def _start_import(self):
         self._stack.setCurrentIndex(1)
         self._btn_next.setEnabled(False)
+        self._btn_back.setVisible(False)
         self._progress_bar.setValue(0)
         self._progress_label.setText('Starting…')
 
@@ -265,82 +307,96 @@ class WarpDialog(QDialog):
         self._worker.error.connect(self._on_import_error)
         self._worker.start()
 
-    def _on_cancel(self):
-        if self._worker and self._worker.isRunning():
-            self._worker.requestInterruption()
-            self._worker.wait(2000)
-        self.reject()
-
     def _on_progress(self, pct: int, msg: str):
         self._progress_bar.setValue(pct)
         self._progress_label.setText(msg)
 
     def _on_import_done(self, result: ImportResult):
         self._import_result = result
-        self._apply_to_sets()
-        n_detected   = len(result.items)
-        n_imported   = sum(1 for i in result.items if i.name)
-        n_unmatched  = n_detected - n_imported
-        ship_info    = result.ship_name or 'Unknown ship'
-        msg = (
-            f"Detected {n_detected} item slot(s)\n"
-            f"Identified and imported: {n_imported}\n"
-            f"Unmatched (skipped): {n_unmatched}\n\n"
-            f"Ship: {ship_info} {result.ship_type} {result.ship_tier}"
-        )
-        QMessageBox.information(self, "WARP — Import Complete", msg)
-        self.accept()
+        self._populate_review(result)
+        self._stack.setCurrentIndex(2)
+        self._btn_back.setVisible(True)
+        self._btn_next.setVisible(False)
+        self._btn_accept.setVisible(True)
+        self._btn_cancel.setEnabled(True)
+
+        n    = len(result.items)
+        low  = sum(1 for i in result.items if i.confidence < 0.70)
+        self._review_summary.setText(
+            f'Found {n} item(s) — {low} with low confidence (highlighted in yellow/red).\n'
+            f'Ship: {result.ship_name}  {result.ship_type}  {result.ship_tier}')
 
     def _on_import_error(self, msg: str):
         self._stack.setCurrentIndex(0)
         self._btn_next.setEnabled(True)
-        self._btn_cancel.setEnabled(True)
         QMessageBox.critical(self, 'WARP — Analysis Error', msg)
 
+    # ── Review population ──────────────────────────────────────────────────
+
+    def _populate_review(self, result: ImportResult):
+        # Remove old rows
+        while self._review_layout.count() > 1:
+            item = self._review_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._review_rows = []
+
+        for ri in result.items:
+            # Verify item name exists in SETS cache before showing
+            exists = self._item_in_cache(ri)
+            row = _ReviewRow(ri, item_exists=exists, parent=self._review_inner)
+            self._review_layout.insertWidget(self._review_layout.count() - 1, row)
+            self._review_rows.append(row)
+
+    def _item_in_cache(self, ri: RecognisedItem) -> bool:
+        """Check whether recognised item name exists in SETS equipment/trait caches."""
+        if not ri.name:
+            return False
+        slot_info = SLOT_MAP.get(ri.slot)
+        if not slot_info:
+            return True   # unknown slot — assume OK, let SETS validate
+        build_key, env, is_equipment = slot_info
+        if is_equipment:
+            return ri.name in self._sets.cache.equipment.get(build_key, {})
+        elif build_key == 'starship_traits':
+            return ri.name in self._sets.cache.starship_traits
+        else:
+            return ri.name in self._sets.cache.traits.get(env, {}).get(build_key, {})
 
     # ── Apply to SETS ──────────────────────────────────────────────────────
 
     def _apply_to_sets(self):
         """
-        Writes all recognised items directly into the SETS build (no review step).
-        Only items with a non-empty name are imported.
+        Iterates accepted review rows and writes each item into the SETS build
+        using the same functions the existing item picker uses.
         """
         from src.buildupdater import slot_equipment_item, slot_trait_item
 
-        r = self._import_result
-        if r is None:
-            return
-
         # Set ship info if recognised
-        if r.ship_name:
-            try:
-                if not self._sets.build['space']['ship_name']:
-                    self._sets.build['space']['ship_name'] = r.ship_name
-                    self._sets.widgets.ship['name'].setText(r.ship_name)
-            except Exception:
-                pass
+        r = self._import_result
+        if r.ship_name and not self._sets.build['space']['ship_name']:
+            self._sets.build['space']['ship_name'] = r.ship_name
+            self._sets.widgets.ship['name'].setText(r.ship_name)
 
-        for ri in r.items:
-            if not ri.name:
-                continue
+        accepted = [row for row in self._review_rows if row.is_accepted()]
+
+        for row in accepted:
+            ri    = row.get_item()
             slot_info = SLOT_MAP.get(ri.slot)
             if not slot_info:
                 log.warning(f'WARP: Unknown slot "{ri.slot}" — skipping')
                 continue
 
             build_key, env, is_equipment = slot_info
-            idx = ri.slot_index
+            idx  = ri.slot_index
 
-            try:
-                if is_equipment:
-                    item_data = self._make_equipment_item(ri, build_key, env)
-                    if item_data:
-                        slot_equipment_item(self._sets, item_data, env, build_key, idx)
-                else:
-                    item_data = {'item': ri.name}
-                    slot_trait_item(self._sets, item_data, env, build_key, idx)
-            except Exception as e:
-                log.warning(f'WARP: Failed to import "{ri.name}" into {ri.slot}[{idx}]: {e}')
+            if is_equipment:
+                item_data = self._make_equipment_item(ri, build_key, env)
+                if item_data:
+                    slot_equipment_item(self._sets, item_data, env, build_key, idx)
+            else:
+                item_data = {'item': ri.name}
+                slot_trait_item(self._sets, item_data, env, build_key, idx)
 
         # Switch to the correct build tab
         tab_map = {
@@ -374,8 +430,7 @@ class WarpDialog(QDialog):
         return {
             'item':      ri.name,
             'rarity':    rarity,
-            'mark':      default_mark,
-            'modifiers': [None] * 4,
+            'modifiers': [default_mark] + [None] * 4,
         }
 
     # ── Folder picker ──────────────────────────────────────────────────────
@@ -386,18 +441,10 @@ class WarpDialog(QDialog):
         dlg.setWindowTitle('Select Screenshots Folder')
         dlg.setFileMode(QFileDialog.FileMode.Directory)
         dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        # Show image files for context but keep directory-only selection
-        dlg.setNameFilter('Images (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*)')
+        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
         if last and Path(last).is_dir():
             dlg.setDirectory(last)
-        # Make file list read-only: user can see images but only dirs are selectable
-        from PySide6.QtWidgets import QListView, QTreeView
-<<<<<<< HEAD
-        for view in dlg.findChildren(QListView) + dlg.findChildren(QTreeView):
-=======
-        for view in dlg.findChildren((QListView, QTreeView)):
->>>>>>> origin/main
-            view.setSelectionMode(view.SelectionMode.NoSelection)
+
         if dlg.exec():
             files = dlg.selectedFiles()
             if files:
@@ -407,3 +454,105 @@ class WarpDialog(QDialog):
                     'color:#eee;background:#111;border:1px solid #3a6a9c;'
                     'border-radius:3px;padding:3px 7px;')
                 self._settings.setValue(_SETTINGS_KEY_LAST_DIR, str(self._folder))
+
+
+# ── Review row widget ──────────────────────────────────────────────────────────
+
+class _ReviewRow(QWidget):
+    """One item in the review list."""
+
+    def __init__(self, item: RecognisedItem, item_exists: bool = True, parent=None):
+        super().__init__(parent)
+        self._item    = item
+        self._accepted = True
+        self._setup_ui(item_exists)
+
+    def _setup_ui(self, item_exists: bool):
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(3, 2, 3, 2)
+        lay.setSpacing(7)
+
+        conf = self._item.confidence
+        if conf >= 0.85 and item_exists:
+            badge = f'color:#7effc8;background:#1a3a2a;border:1px solid #3aac6a;'
+        elif conf >= 0.70 and item_exists:
+            badge = f'color:#e8c060;background:#3a2a0a;border:1px solid #9c7a20;'
+        else:
+            badge = f'color:#ff7e7e;background:#3a1a1a;border:1px solid #ac3a3a;'
+
+        # Icon thumbnail
+        icon_lbl = QLabel()
+        icon_lbl.setFixedSize(40, 40)
+        icon_lbl.setStyleSheet('background:#222;border:1px solid #444;')
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if self._item.thumbnail is not None:
+            try:
+                # thumbnail is a QImage from warp_importer
+                pix = QPixmap.fromImage(self._item.thumbnail).scaled(
+                    38, 38, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+                icon_lbl.setPixmap(pix)
+            except Exception:
+                icon_lbl.setText('?')
+        else:
+            icon_lbl.setText('?')
+
+        # Slot label
+        slot_lbl = QLabel(f'{self._item.slot}\n[{self._item.slot_index}]')
+        slot_lbl.setFixedWidth(130)
+        slot_lbl.setStyleSheet('color:#7ec8e3;font-size:10px;')
+        slot_lbl.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        # Item name
+        self._name_lbl = QLabel(self._item.name or '— unknown —')
+        if not item_exists:
+            self._name_lbl.setStyleSheet('color:#ff9999;')
+        else:
+            self._name_lbl.setStyleSheet('color:#eee;')
+        self._name_lbl.setWordWrap(True)
+        self._name_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        # Confidence badge
+        conf_lbl = QLabel(f'{conf:.0%}')
+        conf_lbl.setFixedWidth(42)
+        conf_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        conf_lbl.setStyleSheet(
+            badge + 'border-radius:3px;padding:1px 3px;font-size:11px;')
+
+        # Accept toggle
+        self._btn_acc = QPushButton('✓')
+        self._btn_acc.setFixedSize(26, 26)
+        self._btn_acc.setCheckable(True)
+        self._btn_acc.setChecked(True)
+        self._btn_acc.setStyleSheet(
+            'QPushButton:checked{background:#1a5c3a;color:#7effc8;'
+            'border:1px solid #3aac6a;border-radius:3px;}'
+            'QPushButton:!checked{background:#3a1a1a;color:#888;'
+            'border:1px solid #5a2a2a;border-radius:3px;}')
+        self._btn_acc.toggled.connect(self._toggle)
+
+        lay.addWidget(icon_lbl)
+        lay.addWidget(slot_lbl)
+        lay.addWidget(self._name_lbl, 1)
+        lay.addWidget(conf_lbl)
+        lay.addWidget(self._btn_acc)
+
+        self._update_bg()
+
+    def _toggle(self, checked: bool):
+        self._accepted = checked
+        self._btn_acc.setText('✓' if checked else '✗')
+        self._update_bg()
+
+    def _update_bg(self):
+        self.setStyleSheet(
+            'background:#1a2530;' if self._accepted else 'background:#2a1a1a;')
+        self.setAutoFillBackground(True)
+
+    def is_accepted(self) -> bool:
+        return self._accepted
+
+    def get_item(self) -> RecognisedItem:
+        return self._item

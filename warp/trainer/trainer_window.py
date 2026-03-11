@@ -290,7 +290,11 @@ class WarpCoreWindow(QMainWindow):
         if last and Path(last).is_dir():
             dlg.setDirectory(last)
         from PySide6.QtWidgets import QListView, QTreeView
+<<<<<<< HEAD
         for view in dlg.findChildren(QListView) + dlg.findChildren(QTreeView):
+=======
+        for view in dlg.findChildren((QListView, QTreeView)):
+>>>>>>> origin/main
             view.setSelectionMode(view.SelectionMode.NoSelection)
         if not dlg.exec():
             return

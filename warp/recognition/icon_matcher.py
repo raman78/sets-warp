@@ -69,6 +69,7 @@ class SETSIconMatcher:
 
     # ── Public ─────────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
     def match(
         self, crop_bgr: np.ndarray
     ) -> tuple[str, float, object]:   # object = QImage | None
@@ -83,6 +84,13 @@ class SETSIconMatcher:
         Returns:
             (item_name, confidence, thumbnail_QImage)
             item_name='' and confidence=0.0 if nothing matched.
+=======
+    def match(self, crop_bgr: np.ndarray) -> tuple[str, float, object]:
+        """
+        Stage 1: match crop against SETS icon index.
+        Returns (item_name, confidence, thumbnail_QImage|None).
+        name='' if no match.
+>>>>>>> origin/main
         """
         if crop_bgr is None or crop_bgr.size == 0:
             return '', 0.0, None
@@ -119,6 +127,7 @@ class SETSIconMatcher:
             if tm_score < TEMPLATE_THRESHOLD * 0.7:   # early reject
                 continue
 
+<<<<<<< HEAD
             # ── Stage 2: histogram correlation ───────────────────────────────
             h_score = float(cv2.compareHist(
                 q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL
@@ -148,6 +157,11 @@ class SETSIconMatcher:
             thumb = self._bgr_to_qimage(best_entry.get('orig'))
 
         return best_name, best_score, thumb
+=======
+        # Build QImage thumbnail from crop for display in review dialog
+        thumb = self._bgr_to_qimage(icon)
+        return best_name, best_conf, thumb
+>>>>>>> origin/main
 
     def classify_ml_batch(
         self,
@@ -348,3 +362,14 @@ class SETSIconMatcher:
     def _softmax(x: np.ndarray) -> np.ndarray:
         e = np.exp(x - np.max(x))
         return e / e.sum()
+
+    def _bgr_to_qimage(self, bgr: np.ndarray) -> object:
+        """Convert a BGR numpy array to QImage for use as thumbnail."""
+        try:
+            import cv2
+            from PySide6.QtGui import QImage
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb.shape
+            return QImage(rgb.tobytes(), w, h, ch * w, QImage.Format.Format_RGB888).copy()
+        except Exception:
+            return None
