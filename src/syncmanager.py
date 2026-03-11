@@ -15,10 +15,14 @@ Logging:
   - Log file: only final result per file (OK / FAILED), never per-attempt noise
   - Log prefix: always includes asset group name for easy grep
 
-Asset groups (3 in SyncManager, 4 more in ImageManager = 7 total):
+Asset groups (GitHub-backed, 3 groups):
   1. Item Icons    — images/
   2. Ship Images   — ship_images/
   3. Cargo Data    — cargo/
+
+Wiki-only groups (no GitHub mirror, downloaded on demand):
+  4. Boff Abilities — wiki suffix _icon_(Federation).png
+  5. Skill Icons    — wiki suffix .png
 """
 
 from __future__ import annotations
@@ -358,6 +362,116 @@ class SyncManager:
             prog(f'Sync done: {total_updated} updated, {total_failed} failed', 0, 0)
 
         return report
+
+    # -----------------------------------------------------------------------
+    # Public: wiki-only groups (Boff Abilities, Skill Icons)
+    # -----------------------------------------------------------------------
+
+    def download_wiki_group(
+            self,
+            label: str,
+            names: list[str],
+            suffix: str,
+            on_splash: 'Callable[[str,int,int],None] | None' = None,
+    ) -> dict[str, int]:
+        """
+        Download a list of items from stowiki only (no GitHub mirror).
+        Uses _TermProgress for terminal output.
+        Returns {name: timestamp} failed dict.
+        """
+        from urllib.parse import quote_plus as _qp
+        if not names:
+            return {}
+
+        prog = on_splash or (lambda t, c, n: None)
+        tprog = _TermProgress(label, len(names))
+        tprog.start()
+        prog(label, 0, len(names))
+
+        counter  = [0]
+        n_failed = [0]
+        lock     = Lock()
+        failed   = {}
+
+        session = self._downloader._session
+        images_dir = self._images_dir
+
+        def _worker(name: str):
+            filename = _qp(name) + '.png'
+            local_path = images_dir / filename
+            url = WIKI_IMAGE_URL + name.replace(' ', '_') + suffix
+            data, _ = self._fetch(session, url, min_size=10)
+            ok = False
+            if data is not None:
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_bytes(data)
+                ok = True
+            with lock:
+                counter[0] += 1
+                if not ok:
+                    n_failed[0] += 1
+                    failed[name] = int(__import__('time').time())
+                c = counter[0]
+            tprog.update(c)
+            prog(label, c, len(names))
+
+        import queue as _queue
+        q = _queue.Queue()
+        for n in names:
+            q.put(n)
+
+        def _thread_worker():
+            while True:
+                try:
+                    name = q.get_nowait()
+                except _queue.Empty:
+                    return
+                _worker(name)
+                q.task_done()
+
+        n_threads = min(MAX_THREADS, len(names))
+        threads = [Thread(target=_thread_worker, name=f'wiki-T{i+1}') for i in range(n_threads)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+
+        updated = len(names) - n_failed[0]
+        summary = f'{updated} updated' + (f', {n_failed[0]} FAILED' if n_failed[0] else '')
+        log.info(f'SyncManager [{label}]: done — {summary}')
+        tprog.finish(summary)
+        prog(f'{label}: {summary}', len(names), len(names))
+        return failed
+
+    def download_one(self, name: str, type_tag: str) -> bool:
+        """
+        Download a single asset on-demand (e.g. ship image clicked in UI).
+        type_tag: 'ship' | 'icon'
+        Returns True on success.
+        """
+        session = self._downloader._session
+        if type_tag == 'ship':
+            # Construct fake entry for _download_with_result
+            filename = quote_plus(quote_plus(name))
+            entry = {
+                'path': f'ship_images/{filename}',
+                'sha':  '',
+                'size': -1,
+            }
+            local_path = self._ship_images_dir / quote_plus(name)
+        else:
+            filename = quote_plus(name) + '.png'
+            entry = {
+                'path': f'images/{filename}',
+                'sha':  '',
+                'size': -1,
+            }
+            local_path = self._images_dir / filename
+
+        ok, source, _ = self._download_with_result(entry, local_path, type_tag, session)
+        if ok:
+            log.debug(f'SyncManager.download_one: OK ({source}) — {name!r}')
+        else:
+            log.warning(f'SyncManager.download_one: FAILED — {name!r}')
+        return ok
 
     # -----------------------------------------------------------------------
     # Diff

@@ -1,7 +1,6 @@
 from os import listdir as os__listdir
 from pathlib import Path
 from PySide6.QtGui import QImage
-from threading import Lock
 from time import time
 from urllib.parse import quote_plus, unquote_plus
 
@@ -18,21 +17,27 @@ class ImageManager():
 
     def __init__(
             self, images_dir: Path, ship_images_dir: Path, cargo_cache: CargoManager,
-            downloader: Downloader):
+            downloader: Downloader, sync_manager=None):
         """
         Parameters:
         - :param images_dir: path to directory storing icons
         - :param ship_images_dir: path to directory storing ship images
         - :param cargo_cache: used to access cache
         - :param downloader: used to download icons and ship images
+        - :param sync_manager: SyncManager instance for on-demand downloads
         """
         self._images_dir: Path = images_dir
         self._ship_images_dir: Path = ship_images_dir
         self._cargo_cache: CargoManager = cargo_cache
         self._downloader: Downloader = downloader
+        self._sync: object = sync_manager   # SyncManager, set later via set_sync_manager()
         self.empty = QImage()
         self.image_set: set[str] = set()
         self.failed_images: dict[str, int] = dict()
+
+    def set_sync_manager(self, sync_manager) -> None:
+        """Called from datafunctions after SyncManager is constructed."""
+        self._sync = sync_manager
 
     def get_downloaded_icons(self) -> set[str]:
         """
@@ -42,114 +47,49 @@ class ImageManager():
 
     def download_images(self, skill_cache: dict[str, dict], threaded_worker=None, ship_images: list[str] = []):
         """
-        Ensures that all required images are downloaded to disk. Updates `failed_images`.
-        Reports progress directly to _splash_state (thread-safe).
+        Downloads wiki-only assets: Boff Abilities and Skill Icons.
+        Item Icons and Ship Images are handled by SyncManager (GitHub-backed).
         """
-        no_retry_images = set()
-        retry_images = list()
+        # Retry expired failures
         now = time()
-        for image_name, timestamp in self.failed_images.items():
-            if now - timestamp < SEVEN_DAYS_IN_SECONDS:
-                no_retry_images.add(image_name)
-            else:
-                retry_images.append(image_name)
-        for image_name in retry_images:
-            del self.failed_images[image_name]
-        available_images = self.get_downloaded_icons() | no_retry_images
+        retry = [n for n, ts in self.failed_images.items() if now - ts >= SEVEN_DAYS_IN_SECONDS]
+        for n in retry:
+            del self.failed_images[n]
+        no_retry = set(self.failed_images)
+        available = self.get_downloaded_icons() | no_retry
 
-        ultimate_skill_icons = {'Focused Frenzy', 'Probability Manipulation', 'EPS Corruption'}
-        image_set = self.image_set | ultimate_skill_icons
-        images = image_set - available_images - self._cargo_cache.boff_abilities['all'].keys()
-        boff_images = self._cargo_cache.boff_abilities['all'].keys() - available_images
-        skill_images = self.get_skill_icons(skill_cache) - available_images
+        boff_images = sorted(
+            self._cargo_cache.boff_abilities['all'].keys() - available)
+        skill_images = sorted(
+            self.get_skill_icons(skill_cache) - available)
 
-        # Ship images — skip already downloaded (valid file on disk, size > 100B)
-        downloaded_ship = set(
-            unquote_plus(f) for f in os__listdir(str(self._ship_images_dir))
-            if (self._ship_images_dir / f).stat().st_size > 100
-        ) if self._ship_images_dir.exists() else set()
-        # compare decoded filenames with original names
-        missing_ships = [name for name in ship_images if name not in downloaded_ship]
-        log.info(f'download_images: ship images on disk={len(downloaded_ship)}, '
-                 f'total={len(ship_images)}, missing={len(missing_ships)}')
+        total = len(boff_images) + len(skill_images)
+        log.info(f'download_images: wiki-only — boff={len(boff_images)}, skill={len(skill_images)}')
 
-        batches = [
-            ('Icons',        list(images),        'icon',  None),
-            ('Boff Abilities', list(boff_images), 'icon',  '_icon_(Federation).png'),
-            ('Skill Icons',  list(skill_images),  'icon',  '.png'),
-            ('Ship Images',  missing_ships,       'ship',  ''),
-        ]
-        # filter empty batches
-        batches = [(label, lst, itype, suffix) for label, lst, itype, suffix in batches if lst]
-
-        total_files = len(images) + len(boff_images) + len(skill_images) + len(missing_ships)
-        total_steps = len(batches)
-
-        log.info(f'download_images: total={total_files} (icons={len(images)}, '
-                 f'boff={len(boff_images)}, skill={len(skill_images)}, '
-                 f'ships={len(missing_ships)})')
-
-        if total_files == 0:
+        if total == 0:
             _splash_state.update({'text': 'Downloading Images: up to date', 'current': 0, 'total': 0, 'hidden': True})
             return
 
-        # global counter across all batches for the progress bar
-        counter = [0]
-        lock = Lock()
+        if self._sync is None:
+            log.warning('download_images: no SyncManager — wiki downloads skipped')
+            return
 
-        for step_idx, (label, image_list, itype, suffix) in enumerate(batches):
-            step_num   = step_idx + 1
-            batch_size = len(image_list)
+        def _splash(text, current, n):
+            _splash_state.update({'text': text, 'current': current, 'total': total, 'hidden': False})
 
-            # Terminal progress bar (same style as SyncManager)
-            from src.syncmanager import _TermProgress
-            term = _TermProgress(label, batch_size)
-            term.start()
-
-            _splash_state.update({
-                'text': f'Downloading {label}',
-                'current': counter[0],
-                'total': total_files,
-                'hidden': False,
-            })
-
-            batch_counter = [0]
-
-            def on_progress(
-                    _label=label, _batch_size=batch_size, _term=term):
-                """Called by download threads — updates splash + terminal bar."""
-                with lock:
-                    counter[0] += 1
-                    c = counter[0]
-                with lock:
-                    batch_counter[0] += 1
-                    bc = batch_counter[0]
-                _term.update(bc)
-                _splash_state.update({
-                    'text': f'Downloading {_label}',
-                    'current': c,
-                    'total': total_files,
-                    'hidden': False,
-                })
-
-            kwargs = {'on_progress': on_progress, 'image_type': itype}
-            if suffix is not None:
-                kwargs['image_suffix'] = suffix
-
-            failed = self._downloader.download_image_list(image_list, **kwargs)
+        if boff_images:
+            failed = self._sync.download_wiki_group(
+                'Boff Abilities', boff_images,
+                suffix='_icon_(Federation).png', on_splash=_splash)
             self.failed_images.update(failed)
 
-            n_ok = batch_size - len(failed)
-            term.finish(f'{n_ok} updated, {len(failed)} FAILED' if failed
-                        else f'{n_ok} updated')
-            log.info(f'download_images: step {step_num} done, failed={len(failed)}')
+        if skill_images:
+            failed = self._sync.download_wiki_group(
+                'Skill Icons', skill_images,
+                suffix='.png', on_splash=_splash)
+            self.failed_images.update(failed)
 
-        _splash_state.update({
-            'text': f'Downloading: complete',
-            'current': total_files,
-            'total': total_files,
-            'hidden': False,
-        })
+        _splash_state.update({'text': 'Downloading: complete', 'current': total, 'total': total, 'hidden': False})
 
     def get_skill_icons(self, skill_cache: dict[str, dict]) -> set[str]:
         """
@@ -191,7 +131,10 @@ class ImageManager():
                      f'(size={image_path.stat().st_size}B) — deleting and re-downloading')
             image_path.unlink(missing_ok=True)
         log.debug(f'ImageManager.get_ship_image: downloading...')
-        self._downloader.download_ship_image(image_name, {})
+        if self._sync is not None:
+            self._sync.download_one(image_name, 'ship')
+        else:
+            self._downloader.download_ship_image(image_name, {})
         image = QImage(str(image_path))
         log.debug(f'ImageManager.get_ship_image: after download null={image.isNull()} '
                  f'size={image.width()}x{image.height()}')

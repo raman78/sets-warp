@@ -124,6 +124,8 @@ def populate_cache(self, threaded_worker: ThreadObject):
         _splash_state.update({'text': text, 'current': current, 'total': total, 'hidden': False})
     sync_report = sync.run(on_progress=_sync_progress)
     log.info(f'populate_cache: sync done — {sync_report}')
+    # Przekaż SyncManager do ImageManager (on-demand downloads + wiki groups)
+    self.images.set_sync_manager(sync)
     # If cargo JSON files were updated, reload the in-memory cache
     if sync_report.get('cargo_updated'):
         log.info('populate_cache: cargo files updated by sync — reloading')
