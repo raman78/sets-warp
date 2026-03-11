@@ -17,12 +17,42 @@ Wymagania:
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# ── Auto-restart w .venv SETS-WARP ────────────────────────────────────────────
+# Uruchamiamy się zawsze w lokalnym .venv żeby mieć cv2, numpy itp.
+
+def _ensure_venv():
+    root    = Path(__file__).resolve().parent.parent.parent
+    is_win  = sys.platform == 'win32'
+    venv_py = root / ('.venv/Scripts/python.exe' if is_win else '.venv/bin/python')
+
+    if venv_py.exists() and Path(sys.executable).resolve() == venv_py.resolve():
+        return  # już jesteśmy w .venv
+
+    if venv_py.exists():
+        os.execv(str(venv_py), [str(venv_py)] + sys.argv)
+
+    # Brak .venv — uruchom bootstrap.py
+    bootstrap = root / 'bootstrap.py'
+    if bootstrap.exists():
+        print('  → Brak .venv — uruchamiam bootstrap.py ...')
+        subprocess.check_call([sys.executable, str(bootstrap)])
+        if venv_py.exists():
+            os.execv(str(venv_py), [str(venv_py)] + sys.argv)
+
+    print('ERROR: brak .venv — uruchom najpierw SETS.sh / SETS.bat', file=sys.stderr)
+    sys.exit(1)
+
+_ensure_venv()
+
 import argparse
 import json
 import logging
-import sys
 import time
-from pathlib import Path
 
 # ── Dodaj root projektu do sys.path ───────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent.parent
