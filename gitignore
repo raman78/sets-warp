@@ -1,0 +1,29 @@
+.config/
+images/
+..debug/
+__pycache__/
+*.py[cod]
+.SETS_settings.ini
+.venv/
+.python/
+*.log
+.pycache/
+.env
+warp_core_screenshots/*
+build_core_screenshots/*
+
+# IDE
+.idea/
+
+# Backup files
+*.bak
+*.orig
+
+# WARP runtime — nie commituj
+warp/data/
+warp/knowledge/knowledge_cache.json
+warp/knowledge/install_id.txt
+warp/knowledge/rate_limit.json
+
+# WARP models (pobierane automatycznie)
+warp/models/
