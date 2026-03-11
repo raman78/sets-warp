@@ -1,5 +1,5 @@
 #!/bin/sh
-# SETS.sh — entry point for SETS (Linux / macOS)
+# SETS.sh — entry point for SETS-WARP (Linux / macOS)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR" || { echo "[Error] Cannot change to script directory."; exit 1; }
@@ -167,6 +167,6 @@ if [ "$TKINTER_OK" = "0" ]; then
     exit 1
 fi
 
-echo "[SETS] First run — starting setup (this will take a few minutes)..."
-echo "[SETS] SCRIPT_DIR=$SCRIPT_DIR"
+echo "[SETS-WARP] First run — starting setup (this will take a few minutes)..."
+echo "[SETS-WARP] SCRIPT_DIR=$SCRIPT_DIR"
 exec "$PYTHON" "$SCRIPT_DIR/bootstrap.py" "$@"
