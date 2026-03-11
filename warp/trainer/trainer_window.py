@@ -290,11 +290,7 @@ class WarpCoreWindow(QMainWindow):
         if last and Path(last).is_dir():
             dlg.setDirectory(last)
         from PySide6.QtWidgets import QListView, QTreeView
-<<<<<<< HEAD
         for view in dlg.findChildren(QListView) + dlg.findChildren(QTreeView):
-=======
-        for view in dlg.findChildren((QListView, QTreeView)):
->>>>>>> origin/main
             view.setSelectionMode(view.SelectionMode.NoSelection)
         if not dlg.exec():
             return
@@ -370,13 +366,26 @@ class WarpCoreWindow(QMainWindow):
             return
 
         for ri in result.items:
+            # crop_bgr: wycinamy z obrazu żeby mieć numpy array do contribute()
+            crop_bgr = None
+            if ri.bbox and self._current_idx >= 0:
+                try:
+                    import cv2, numpy as np
+                    img = cv2.imread(str(self._screenshots[self._current_idx]))
+                    if img is not None:
+                        x, y, w, h = ri.bbox
+                        crop_bgr = img[y:y+h, x:x+w].copy()
+                except Exception:
+                    pass
             self._recognition_items.append({
-                'name':  ri.name,
-                'slot':  ri.slot,
-                'conf':  ri.confidence,
-                'bbox':  ri.bbox,
-                'state': 'pending',
-                'thumb': ri.thumbnail,
+                'name':     ri.name,
+                'slot':     ri.slot,
+                'conf':     ri.confidence,
+                'bbox':     ri.bbox,
+                'state':    'pending',
+                'thumb':    ri.thumbnail,
+                'crop_bgr': crop_bgr,   # numpy array dla sync_client
+                'orig_name': ri.name,  # oryginalna nazwa z matchera (przed ewentualną korektą)
             })
             self._add_review_row(ri.name, ri.slot, ri.confidence)
 
@@ -435,6 +444,24 @@ class WarpCoreWindow(QMainWindow):
         if litem:
             litem.setText(f'{slot}  →  {name or "— unmatched —"}  [✓ confirmed]')
             litem.setForeground(QColor('#7effc8'))
+
+        # Wyślij do community knowledge base (non-blocking)
+        if name and ri.get('crop_bgr') is not None:
+            try:
+                from warp.knowledge.sync_client import WARPSyncClient
+                if not hasattr(self, '_sync_client') or self._sync_client is None:
+                    self._sync_client = WARPSyncClient()
+                wrong_name = ri.get('orig_name', '') if ri.get('orig_name') != name else ''
+                self._sync_client.contribute(
+                    crop_bgr   = ri['crop_bgr'],
+                    item_name  = name,
+                    wrong_name = wrong_name,
+                    confirmed  = True,
+                )
+                log.debug(f'WARP CORE: contributed {name!r} to knowledge base')
+            except Exception as e:
+                log.warning(f'WARP CORE: contribute failed: {e}')
+
         self._update_progress()
         self._advance_to_next_unconfirmed(row)
 

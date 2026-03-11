@@ -1,6 +1,0 @@
-13:25:21  main: start, log=/home/raman/Pobrane/SETS-WARP/sets_early.log
-13:25:21  main: importing stdlib
-13:25:21  main: stdlib OK
-13:25:21  main: importing src (will trigger PySide6 + all module imports)
-13:25:21  main: src.SETS imported OK
-13:25:21  main: build_cache imported OK

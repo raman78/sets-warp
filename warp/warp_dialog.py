@@ -294,7 +294,6 @@ class WarpDialog(QDialog):
     def _on_import_error(self, msg: str):
         self._stack.setCurrentIndex(0)
         self._btn_next.setEnabled(True)
-        self._btn_cancel.setEnabled(True)
         QMessageBox.critical(self, 'WARP — Analysis Error', msg)
 
 
@@ -392,11 +391,7 @@ class WarpDialog(QDialog):
             dlg.setDirectory(last)
         # Make file list read-only: user can see images but only dirs are selectable
         from PySide6.QtWidgets import QListView, QTreeView
-<<<<<<< HEAD
         for view in dlg.findChildren(QListView) + dlg.findChildren(QTreeView):
-=======
-        for view in dlg.findChildren((QListView, QTreeView)):
->>>>>>> origin/main
             view.setSelectionMode(view.SelectionMode.NoSelection)
         if dlg.exec():
             files = dlg.selectedFiles()

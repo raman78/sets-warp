@@ -288,24 +288,17 @@ class WarpImporter:
         self._app              = sets_app
         self._build_type       = build_type
         self._progress_callback = progress_callback
-<<<<<<< HEAD
         self._interrupt_check = None
-=======
->>>>>>> origin/main
         self._layout  = None
         self._matcher = None
         self._text    = None
         self._shipdb  = None
-<<<<<<< HEAD
         self._sync    = None   # WARPSyncClient — lazy init
 
     def set_interrupt_check(self, fn):
         # fn() returns True when processing should stop
         self._interrupt_check = fn
 
-=======
-
->>>>>>> origin/main
     def process_folder(
         self,
         folder:      str | Path,
@@ -325,11 +318,8 @@ class WarpImporter:
             pct = int(i / len(files) * 90)
             if progress_cb:
                 progress_cb(i, len(files), fpath.name)
-<<<<<<< HEAD
             if self._interrupt_check and self._interrupt_check():
                 break
-=======
->>>>>>> origin/main
             if self._progress_callback:
                 self._progress_callback(pct, fpath.name)
             try:
@@ -406,14 +396,11 @@ class WarpImporter:
                     source_file = source,
                     bbox        = bbox,
                 ))
-<<<<<<< HEAD
                 # Contribute to community knowledge (non-blocking, only high-conf)
                 if conf >= TEMPLATE_CONF_THRESHOLD:
                     sync = self._get_sync_client()
                     if sync is not None:
                         sync.contribute(crop, name, confirmed=False)
-=======
->>>>>>> origin/main
 
         return result
 
@@ -452,7 +439,6 @@ class WarpImporter:
     def _get_matcher(self):
         if self._matcher is None:
             from warp.recognition.icon_matcher import SETSIconMatcher
-<<<<<<< HEAD
             self._matcher = SETSIconMatcher(self._app,
                                             sync_client=self._get_sync_client())
         return self._matcher
@@ -468,11 +454,6 @@ class WarpImporter:
                 self._sync = None
         return self._sync
 
-=======
-            self._matcher = SETSIconMatcher(self._app)
-        return self._matcher
-
->>>>>>> origin/main
     def _get_text(self):
         if self._text is None:
             from warp.recognition.text_extractor import TextExtractor
