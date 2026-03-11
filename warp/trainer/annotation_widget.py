@@ -34,7 +34,7 @@ STATE_COLORS = {
     AnnotationState.PENDING:   QColor(255, 200,   0, 180),   # yellow
     AnnotationState.CONFIRMED: QColor( 60, 220, 100, 200),   # green
     AnnotationState.SKIPPED:   QColor(160, 160, 160, 120),   # grey
-    AnnotationState.CANDIDATE: QColor( 80, 180, 255, 140),   # blue — auto-detected candidate
+    # CANDIDATE boxes are intentionally hidden — they clutter the screen
 }
 
 DRAW_PEN_WIDTH   = 2
@@ -77,6 +77,9 @@ class AnnotationWidget(QWidget):
         # Pending new bbox (drawn but not yet confirmed)
         self._pending_bbox: tuple | None = None
 
+        self._highlight_bbox: tuple | None = None
+        self._draw_mode_forced: bool = False
+
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(400, 300)
@@ -86,12 +89,13 @@ class AnnotationWidget(QWidget):
 
     def load_image(self, path: Path):
         """Load a screenshot and its existing annotations."""
-        self._img_path   = path
-        self._pixmap     = QPixmap(str(path))
+        self._img_path    = path
+        self._pixmap      = QPixmap(str(path))
         self._annotations = self._data_mgr.get_annotations(path)
-        self._selected_idx = -1
-        self._pending_bbox = None
-        self._drawing      = False
+        self._selected_idx  = -1
+        self._pending_bbox  = None
+        self._highlight_bbox = None
+        self._drawing       = False
         self._compute_transform()
         self.update()
 
@@ -142,6 +146,20 @@ class AnnotationWidget(QWidget):
             for a in self._annotations
         )
 
+    def highlight_bbox(self, bbox: tuple):
+        """Highlight a specific bbox from recognition (shown as orange dashed rect)."""
+        self._highlight_bbox = bbox
+        self.update()
+
+    def set_draw_mode(self, enabled: bool):
+        """Enable or disable manual bbox drawing mode."""
+        self._draw_mode_forced = enabled
+        if not enabled:
+            self._drawing = False
+            self._draw_start = None
+            self._draw_current = None
+        self.update()
+
     # ---------------------------------------------------------------- painting
 
     def paintEvent(self, event: QPaintEvent):
@@ -185,7 +203,18 @@ class AnnotationWidget(QWidget):
             painter.setFont(QFont("", FONT_SIZE_BADGE, QFont.Weight.Bold))
             painter.drawText(prect.topLeft() + QPoint(2, -3), "NEW")
 
+        # Draw recognition highlight (from review panel selection)
+        if self._highlight_bbox:
+            hrect = self._img_to_screen_rect(self._highlight_bbox)
+            pen   = QPen(QColor(126, 200, 227), 2, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(QBrush(QColor(126, 200, 227, 25)))
+            painter.drawRect(hrect)
+
     def _draw_annotation(self, painter: QPainter, ann: Annotation, selected: bool):
+        # Skip CANDIDATE annotations — they clutter the view
+        if ann.state == AnnotationState.CANDIDATE:
+            return
         color = STATE_COLORS.get(ann.state, QColor(200, 200, 200, 150))
         pen   = QPen(color, SELECTED_PEN_WIDTH if selected else DRAW_PEN_WIDTH)
         if selected:

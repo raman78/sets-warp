@@ -279,8 +279,15 @@ class WarpImporter:
       5. Merge across screenshots: highest confidence per (slot, index)
     """
 
-    def __init__(self, sets_app):
-        self._app     = sets_app
+    def __init__(
+        self,
+        sets_app,
+        build_type: str = 'SPACE',
+        progress_callback: Callable[[int, str], None] | None = None,
+    ):
+        self._app              = sets_app
+        self._build_type       = build_type
+        self._progress_callback = progress_callback
         self._layout  = None
         self._matcher = None
         self._text    = None
@@ -295,15 +302,18 @@ class WarpImporter:
         files  = sorted(f for f in folder.iterdir()
                         if f.suffix.lower() in SCREENSHOT_EXTENSIONS)
         if not files:
-            return ImportResult(build_type='SPACE',
+            return ImportResult(build_type=self._build_type,
                                 errors=[f'No images found in {folder}'])
 
-        result = ImportResult(build_type='SPACE')
+        result = ImportResult(build_type=self._build_type)
         best: dict[tuple[str, int], RecognisedItem] = {}
 
         for i, fpath in enumerate(files):
+            pct = int(i / len(files) * 90)
             if progress_cb:
                 progress_cb(i, len(files), fpath.name)
+            if self._progress_callback:
+                self._progress_callback(pct, fpath.name)
             try:
                 img         = self._load_image(fpath)
                 file_result = self._process_image(img, str(fpath))
@@ -330,7 +340,11 @@ class WarpImporter:
         text_info  = self._get_text().extract_ship_info(img)
         ship_name  = text_info.get('ship_name', '')
         ship_type  = text_info.get('ship_type', '')
-        build_type = 'GROUND' if text_info.get('build_type') == 'GROUND' else 'SPACE'
+        # Use user-selected build_type if set; fall back to OCR detection
+        if self._build_type in ('SPACE', 'GROUND'):
+            build_type = self._build_type
+        else:
+            build_type = 'GROUND' if text_info.get('build_type') == 'GROUND' else 'SPACE'
 
         # Step 2 — get exact slot profile from ship_list.json
         profile = self._get_shipdb().get_profile(ship_name, ship_type)
