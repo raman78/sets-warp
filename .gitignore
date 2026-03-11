@@ -8,3 +8,6 @@ __pycache__/
 .python/
 *.log
 .pycache/
+.env
+warp_core_screenshots/*
+build_core_screenshots/*
