@@ -1,0 +1,54 @@
+name: Build Python Distribution
+
+on: push
+
+jobs:
+  build_release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install cx-Freeze==8.0.0
+        python -m pip install .
+    - name: Build executable
+      run: python -m cxfreeze build_exe
+    - uses: actions/upload-artifact@v4
+      with:
+        name: build_release
+        path: build/exe.win*/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ build_release ]
+    name: Create release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download
+        uses: actions/download-artifact@v4
+        with:
+          name: build_release
+          path: .
+      - name: Bundle App
+        run: |
+          cd exe.win*
+          zip -r SETS.zip .
+          mv SETS.zip ..
+          cd ..
+      - name: Create release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: SETS.zip
