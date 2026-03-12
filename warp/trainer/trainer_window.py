@@ -806,7 +806,9 @@ class WarpCoreWindow(QMainWindow):
 
         act('Open Folder',  'Open screenshots folder',              self._on_open)
         act('Save',         'Save annotations locally',             self._on_save)
-        act('Auto-Detect',  'Auto-detect icons in all screenshots', self._on_auto_detect)
+        act('Auto-Detect Slots', 'Auto-detect icons in all screenshots', self._on_auto_detect)
+        act('Detect Screen Types', 'Re-classify screen types using trained model',
+            self._on_detect_screen_types)
         act('Train Model',  'Train icon + screen-type classifiers on confirmed data',
             self._on_train)
         act('Sync to Hub',  'Upload annotations to Hugging Face Hub', self._on_sync)
@@ -1031,6 +1033,15 @@ class WarpCoreWindow(QMainWindow):
         self._recognition_cache.pop(path.name, None)
         self._start_recognition(path, stype)
         self.statusBar().showMessage(f'Auto-Detect running on {path.name}...')
+
+    def _on_detect_screen_types(self):
+        """Re-run screen type classification on all loaded screenshots.
+        Uses the trained ONNX model if available, falls back to OCR.
+        Call this after Train Model to apply the new classifier."""
+        if not self._screenshots:
+            self.statusBar().showMessage('No screenshots loaded.')
+            return
+        self._start_screen_type_detection()
 
     # -- Recognition background worker ----------------------------------------
 
@@ -1786,6 +1797,9 @@ class WarpCoreWindow(QMainWindow):
                 ScreenTypeClassifier.clear_session()
             except Exception:
                 pass
+            # Re-run screen type detection with the newly trained model
+            if self._screenshots:
+                self._start_screen_type_detection()
         else:
             QMessageBox.warning(self, 'Training Failed', message)
         self._train_worker = None
