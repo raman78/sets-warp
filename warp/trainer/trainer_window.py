@@ -219,7 +219,8 @@ class ScreenTypeDetectorWorker(QThread):
         results: dict[str, str] = {}
         total = len(self._paths)
 
-        # Try ML classifier first (may not exist on first run)
+        # ML classifier only — OCR is no longer used for screen type detection.
+        # OCR is reserved for reading text from labelled bboxes (e.g. Ship Name).
         classifier = None
         if self._models_dir is not None:
             try:
@@ -228,14 +229,6 @@ class ScreenTypeDetectorWorker(QThread):
             except Exception as e:
                 log.debug(f'ScreenTypeDetector: classifier init failed: {e}')
 
-        # OCR fallback — loads easyocr model once
-        te = None
-        try:
-            from warp.recognition.text_extractor import TextExtractor
-            te = TextExtractor()
-        except Exception as e:
-            log.warning(f'ScreenTypeDetector: TextExtractor init failed: {e}')
-
         import cv2
         for idx, path in enumerate(self._paths):
             if self.isInterruptionRequested():
@@ -243,20 +236,10 @@ class ScreenTypeDetectorWorker(QThread):
             stype = 'UNKNOWN'
             try:
                 img = cv2.imread(str(path))
-                if img is not None:
-                    # Stage 1+2: ML classifier (ONNX model + session k-NN)
-                    if classifier is not None:
-                        ml_stype, ml_conf = classifier.classify(img)
-                        if ml_stype and ml_conf >= 0.70:
-                            stype = ml_stype
-                    # Stage 3: OCR fallback when ML uncertain
-                    if stype == 'UNKNOWN' and te is not None:
-                        info  = te.extract_ship_info(img)
-                        btype = info.get('build_type', '')
-                        if btype in ('SPACE', 'GROUND', 'SPACE_TRAITS',
-                                     'GROUND_TRAITS', 'BOFFS', 'SPEC',
-                                     'SPACE_MIXED', 'GROUND_MIXED'):
-                            stype = btype
+                if img is not None and classifier is not None:
+                    ml_stype, ml_conf = classifier.classify(img)
+                    if ml_stype and ml_conf >= 0.70:
+                        stype = ml_stype
             except Exception as e:
                 log.debug(f'Screen type detection error for {path.name}: {e}')
             results[path.name] = stype
@@ -509,6 +492,7 @@ class WarpCoreWindow(QMainWindow):
         self._screenshots: list[Path] = []
         self._current_idx  = -1
         self._screen_types: dict[str, str] = {}       # filename -> screen type
+        self._screen_types_manual: set[str] = set()   # filenames overridden by user
         self._recognition_cache: dict[str, list] = {} # filename -> recognition items
         self._recognition_items: list[dict] = []
         self._manual_bbox_mode = False
@@ -837,6 +821,7 @@ class WarpCoreWindow(QMainWindow):
             self.statusBar().showMessage('No images found in selected folder.')
             return
         self._screen_types.clear()
+        self._screen_types_manual.clear()
         self._recognition_cache.clear()
         self._recognition_items = []
         self._current_idx = -1
@@ -863,9 +848,14 @@ class WarpCoreWindow(QMainWindow):
 
     def _on_detect_progress(self, idx: int, total: int, filename: str, stype: str):
         """Update badge live as each screenshot is processed.
-        As soon as the first screenshot's type is known, load it immediately
-        so the user sees recognition results without waiting for all OCR.
+        Skip filenames that the user has manually overridden.
         """
+        if filename in self._screen_types_manual:
+            if self._detect_dlg:
+                self._detect_dlg.update_progress(
+                    idx, total, filename,
+                    self._screen_types.get(filename, 'UNKNOWN'))
+            return
         self._screen_types[filename] = stype
         for row, p in enumerate(self._screenshots):
             if p.name == filename:
@@ -887,8 +877,10 @@ class WarpCoreWindow(QMainWindow):
             self._detect_dlg.update_progress(idx, total, filename, stype)
 
     def _on_detect_finished(self, results: dict):
-        """Background OCR detection complete."""
-        self._screen_types.update(results)
+        """Background detection complete — skip manually overridden types."""
+        for fname, stype in results.items():
+            if fname not in self._screen_types_manual:
+                self._screen_types[fname] = stype
         for row, p in enumerate(self._screenshots):
             stype = self._screen_types.get(p.name, 'UNKNOWN')
             item  = self._file_list.item(row)
@@ -1009,6 +1001,7 @@ class WarpCoreWindow(QMainWindow):
         stype = self._type_override_combo.itemData(index)
         path  = self._screenshots[self._current_idx]
         self._screen_types[path.name] = stype
+        self._screen_types_manual.add(path.name)   # protect from auto re-detection
         self._recognition_cache.pop(path.name, None)
         item = self._file_list.item(self._current_idx)
         if item:
