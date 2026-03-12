@@ -304,7 +304,7 @@ def create_venv(python_exe: str, on_line):
     on_line("  OK virtual environment created")
 
 
-def _run_pip(args: list, on_line, label: str):
+def _run_pip(args: list, on_line, label: str, ignore_exit: bool = False):
     """Run pip command, streaming output line by line so UI stays responsive."""
     proc = subprocess.Popen(
         args,
@@ -319,7 +319,7 @@ def _run_pip(args: list, on_line, label: str):
         if line:
             on_line(f"    {line}")
     proc.wait()
-    if proc.returncode != 0:
+    if proc.returncode != 0 and not ignore_exit:
         raise RuntimeError(f"pip failed for {label} (exit {proc.returncode})")
 
 
@@ -344,7 +344,8 @@ def install_dependencies(on_line, deps: list | None = None, force: bool = False)
 
     install_start = time.monotonic()
 
-    def _install_batch(batch: list[str], extra_args: list[str], label: str):
+    def _install_batch(batch: list[str], extra_args: list[str], label: str,
+                       ignore_exit: bool = False):
         if not batch:
             return
         on_line(f"  Installing {label}...")
@@ -352,13 +353,15 @@ def install_dependencies(on_line, deps: list | None = None, force: bool = False)
         if force:
             pip_args.append("--force-reinstall")
         pip_args += extra_args + batch
-        _run_pip(pip_args, on_line, label)
+        _run_pip(pip_args, on_line, label, ignore_exit=ignore_exit)
 
     # Install torch CPU-only first (separate index)
+    # ignore_exit=True: pip exits 1 on dependency conflict warnings even when install succeeded
     _install_batch(
         torch_deps,
         ["--index-url", TORCH_CPU_INDEX],
-        "torch (CPU-only)"
+        "torch (CPU-only)",
+        ignore_exit=True,
     )
     if torch_deps:
         # Write sentinel so _quick_check_venv knows torch is CPU-only
@@ -373,7 +376,7 @@ def install_dependencies(on_line, deps: list | None = None, force: bool = False)
                   'nvidia-cusolver-cu12', 'nvidia-cusparse-cu12', 'nvidia-nccl-cu12',
                   'nvidia-nvtx-cu12', 'nvidia-nvjitlink-cu12', 'cuda-bindings',
                   'nvidia-cufile-cu12', 'nvidia-cusparselt-cu12', 'nvidia-nvshmem-cu12'],
-                 on_line, 'remove GPU packages')
+                 on_line, 'remove GPU packages', ignore_exit=True)
 
     # Install everything else in one shot (pip resolves transitive deps)
     _install_batch(
