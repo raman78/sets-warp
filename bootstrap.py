@@ -627,19 +627,16 @@ def _check_portable_python_version() -> bool:
 
 def _uninstall_obsolete_packages(on_line):
     """
-    Removes packages installed in venv that are no longer in pyproject.toml.
-    Skips pip, setuptools, wheel (managed separately).
+    Removes packages installed in venv that are no longer needed —
+    neither listed in pyproject.toml nor a transitive dependency of any
+    listed package.  Skips pip/setuptools/wheel and friends.
     """
     import json
     py = str(venv_python())
-    required_names = set()
-    for dep in parse_pyproject():
-        name, _ = _parse_specifier(dep)
-        required_names.add(name)
-    # always keep these
-    keep_always = {'pip', 'setuptools', 'wheel', 'pkg_resources', 'distlib', 'platformdirs',
-                   'filelock', 'virtualenv', 'packaging'}
+    keep_always = {'pip', 'setuptools', 'wheel', 'pkg_resources', 'distlib',
+                   'platformdirs', 'filelock', 'virtualenv', 'packaging'}
 
+    # ── Collect all installed packages ────────────────────────────────────────
     try:
         r = subprocess.run(
             [py, '-m', 'pip', 'list', '--format=json'],
@@ -649,11 +646,53 @@ def _uninstall_obsolete_packages(on_line):
         on_line(f"  WARN cannot list packages for cleanup: {exc}")
         return
 
-    to_remove = []
-    for pkg in installed:
-        norm = pkg['name'].lower().replace('-', '_').replace('.', '_')
-        if norm not in required_names and norm not in keep_always:
-            to_remove.append(pkg['name'])
+    if not installed:
+        return
+
+    # ── Build full required set: top-level + all transitive deps ──────────────
+    def _norm(n): return n.lower().replace('-', '_').replace('.', '_')
+
+    top_level = set()
+    for dep in parse_pyproject():
+        name, _ = _parse_specifier(dep)
+        top_level.add(name)
+
+    # Use pip show to get Requires for every installed package
+    all_names = [pkg['name'] for pkg in installed]
+    try:
+        r = subprocess.run(
+            [py, '-m', 'pip', 'show'] + all_names,
+            capture_output=True, text=True, timeout=60)
+        # Parse multi-record output separated by '---'
+        pkg_deps: dict[str, set[str]] = {}
+        current = None
+        for line in r.stdout.splitlines():
+            if line.startswith('Name:'):
+                current = _norm(line.split(':', 1)[1].strip())
+                pkg_deps[current] = set()
+            elif line.startswith('Requires:') and current:
+                reqs = line.split(':', 1)[1].strip()
+                if reqs:
+                    pkg_deps[current] = {_norm(x.strip()) for x in reqs.split(',')}
+    except Exception as exc:
+        on_line(f"  WARN cannot resolve transitive deps: {exc} — skipping cleanup")
+        return
+
+    # Walk dependency graph from top-level roots
+    required: set[str] = set(keep_always) | top_level
+    queue = list(top_level)
+    while queue:
+        pkg = queue.pop()
+        for dep in pkg_deps.get(pkg, set()):
+            if dep and dep not in required:
+                required.add(dep)
+                queue.append(dep)
+
+    # ── Remove anything not reachable from required set ───────────────────────
+    to_remove = [
+        pkg['name'] for pkg in installed
+        if _norm(pkg['name']) not in required
+    ]
 
     if not to_remove:
         on_line("  No obsolete packages to remove.")
