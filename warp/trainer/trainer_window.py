@@ -499,6 +499,8 @@ class WarpCoreWindow(QMainWindow):
         self._manual_bbox_mode = False
         self._add_bbox_mode    = False
         self._sync_client = None
+        self._sync_timer  = None
+        self._init_sync_client()
         self._train_worker = None
         self._detect_worker: ScreenTypeDetectorWorker | None = None
         self._recog_worker:  RecognitionWorker | None = None
@@ -931,19 +933,16 @@ class WarpCoreWindow(QMainWindow):
         cached = self._recognition_cache.get(path.name)
         if cached is not None:
             self._populate_review_panel(cached, stype)
-        elif stype != 'UNKNOWN':
-            # Screen type known — start recognition immediately
-            self._recognition_items = []
-            self._review_list.clear()
-            self._review_summary.setText('Recognising...')
-            self._set_review_buttons_enabled(False)
-            self._start_recognition(path, stype)
         else:
-            # Type still UNKNOWN — detection still running
             self._recognition_items = []
             self._review_list.clear()
-            self._review_summary.setText('Detecting screen type...')
+            if stype == 'UNKNOWN':
+                self._review_summary.setText('Detecting screen type...')
+            else:
+                self._review_summary.setText(
+                    'Click Auto-Detect to recognise items on this screenshot.')
             self._set_review_buttons_enabled(False)
+            self._ann_widget.set_review_items([])
         self._update_add_bbox_btn()
         icon  = SCREEN_TYPE_ICONS.get(stype, '?')
         label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
@@ -1002,44 +1001,17 @@ class WarpCoreWindow(QMainWindow):
 
     def _on_auto_detect(self):
         """
-        Run layout detection on all screenshots, add bboxes to data_mgr,
-        then run recognition on the current screenshot so Review updates.
+        Run full recognition on the currently selected screenshot.
+        Session examples (user-confirmed items) are included as extra evidence.
         """
-        if not self._screenshots:
+        if self._current_idx < 0:
+            self.statusBar().showMessage('No screenshot selected.')
             return
-        from warp.recognition.layout_detector import LayoutDetector
-        import cv2
-        det = LayoutDetector()
-        new = 0
-        for path in self._screenshots:
-            img = cv2.imread(str(path))
-            if img is None:
-                continue
-            stype = self._screen_types.get(path.name, 'UNKNOWN')
-            # Map screen type -> detector build_type
-            if stype in ('GROUND', 'GROUND_MIXED'):
-                build_type = 'GROUND'
-            elif stype in ('SPACE', 'SPACE_MIXED', 'UNKNOWN'):
-                build_type = 'SPACE'
-            else:
-                # TRAITS, BOFFS, SPEC -- layout detector not calibrated for these yet
-                continue
-            for slot_name, bboxes in det.detect(img, build_type).items():
-                for i, bbox in enumerate(bboxes):
-                    if self._data_mgr.add_candidate(path, slot_name, i, bbox):
-                        new += 1
-        self._update_progress()
-        # Invalidate recognition cache for all screenshots so next view re-runs
-        self._recognition_cache.clear()
-        # Re-run recognition on current screenshot to refresh Review panel
-        if self._current_idx >= 0:
-            path  = self._screenshots[self._current_idx]
-            stype = self._screen_types.get(path.name, 'UNKNOWN')
-            self._ann_widget.load_image(path)
-            self._update_screen_type_ui(stype)
-            self._start_recognition(path, stype)
-        self.statusBar().showMessage(
-            f'Auto-detect done -- {new} new candidate(s) added.')
+        path  = self._screenshots[self._current_idx]
+        stype = self._screen_types.get(path.name, 'UNKNOWN')
+        self._recognition_cache.pop(path.name, None)
+        self._start_recognition(path, stype)
+        self.statusBar().showMessage(f'Auto-Detect running on {path.name}...')
 
     # -- Recognition background worker ----------------------------------------
 
@@ -1192,11 +1164,33 @@ class WarpCoreWindow(QMainWindow):
         if ri.get('bbox'):
             self._ann_widget.set_selected_row(row)
 
-    def _contribute(self, ri: dict, confirmed_name: str):
+    def _init_sync_client(self):
+        """Start sync client immediately and schedule periodic refresh."""
         try:
             from warp.knowledge.sync_client import WARPSyncClient
+            from PySide6.QtCore import QTimer
+            self._sync_client = WARPSyncClient()
+            self._sync_timer  = QTimer(self)
+            self._sync_timer.setInterval(15 * 60 * 1000)
+            self._sync_timer.timeout.connect(self._on_sync_timer)
+            self._sync_timer.start()
+            log.debug('WARP CORE: sync client started, refresh every 15 min')
+        except Exception as e:
+            log.warning(f'WARP CORE: sync client init failed: {e}')
+
+    def _on_sync_timer(self):
+        """Periodic background download of community knowledge."""
+        if self._sync_client:
+            try:
+                self._sync_client.refresh_knowledge()
+                log.debug('WARP CORE: periodic knowledge refresh triggered')
+            except Exception as e:
+                log.debug(f'WARP CORE: knowledge refresh error: {e}')
+
+    def _contribute(self, ri: dict, confirmed_name: str):
+        try:
             if self._sync_client is None:
-                self._sync_client = WARPSyncClient()
+                return
             wrong = ri.get('orig_name', '')
             if wrong == confirmed_name:
                 wrong = ''
@@ -1444,8 +1438,12 @@ class WarpCoreWindow(QMainWindow):
             if litem:
                 litem.setText(f'{slot}  ->  {name or "—"}  [confirmed]')
                 litem.setForeground(QColor('#7effc8'))
+            # ── Session example: improves recognition immediately ─────────
+            if name and ri.get('crop_bgr') is not None and slot not in NON_ICON_SLOTS:
+                from warp.recognition.icon_matcher import SETSIconMatcher
+                SETSIconMatcher.add_session_example(ri['crop_bgr'], name)
             # ── Contribute to community (non-blocking) ────────────────────
-            if name and ri.get('crop_bgr') is not None and slot not in TEXT_SLOTS:
+            if name and ri.get('crop_bgr') is not None and slot not in NON_ICON_SLOTS:
                 self._contribute(ri, name)
         else:
             # Fallback: no review item selected, use legacy canvas confirm

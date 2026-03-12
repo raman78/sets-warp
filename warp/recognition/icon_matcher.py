@@ -63,6 +63,10 @@ class SETSIconMatcher:
       name=''  if no match above threshold.
     """
 
+    # Session examples: confirmed crops added by user during this session.
+    # Shared across all instances so every match() call benefits.
+    _session_examples: list[dict] = []   # {name, tmpl64, hist_hsv, orig}
+
     def __init__(self, sets_app, sync_client=None):
         self._sets        = sets_app
         self._index: list[dict] = []   # {name, tmpl64, hist_hsv, path}
@@ -115,6 +119,20 @@ class SETSIconMatcher:
         best_name  = ''
         best_score = 0.0
         best_entry = None
+
+        # ── Stage 0.5: session examples (user-confirmed this session) ─────────
+        # Checked first — highest priority, no threshold guard
+        for entry in self._session_examples:
+            res      = cv2.matchTemplate(crop64, entry['tmpl64'],
+                                         cv2.TM_CCOEFF_NORMED)
+            tm_score = float(res.max())
+            h_score  = max(0.0, float(cv2.compareHist(
+                q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL)))
+            combined = tm_score * (1.0 - HIST_WEIGHT) + h_score * HIST_WEIGHT
+            if combined > best_score:
+                best_score = combined
+                best_name  = entry['name']
+                best_entry = entry
 
         for entry in self._index:
             # ── Stage 1: template match ───────────────────────────────────────
@@ -337,6 +355,32 @@ class SETSIconMatcher:
             return None
 
     @classmethod
+    @classmethod
+    def add_session_example(cls, crop_bgr: 'np.ndarray', name: str) -> None:
+        """
+        Add a user-confirmed crop to the in-memory session index.
+        Immediately improves recognition for the rest of this session
+        without any retraining.
+        """
+        import cv2
+        if crop_bgr is None or crop_bgr.size == 0 or not name.strip():
+            return
+        tmpl64 = cv2.resize(crop_bgr, (MATCH_SIZE, MATCH_SIZE),
+                             interpolation=cv2.INTER_AREA)
+        # Build a small helper to get hist (can't call self._hist_hsv as classmethod)
+        hsv  = cv2.cvtColor(tmpl64, cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([hsv], [0, 1], None, [36, 32],
+                             [0, 180, 0, 256])
+        cv2.normalize(hist, hist)
+        cls._session_examples.append({
+            'name':     name,
+            'tmpl64':   tmpl64,
+            'hist_hsv': hist,
+            'orig':     crop_bgr,
+        })
+        log.debug(f'WARP: session example added for {name!r} '
+                  f'({len(cls._session_examples)} total)')
+
     def reset_ml_session(cls):
         """
         Force reload of the ML model on next inference call.
@@ -349,6 +393,7 @@ class SETSIconMatcher:
         cls._shared_ml_session  = None
         cls._shared_label_map   = {}
         cls._shared_ml_disabled = False
+        cls._session_examples   = []
         log.info('WARP: ML session reset -- will reload on next match')
 
     def _check_repo_exists(self) -> bool:
