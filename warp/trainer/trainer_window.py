@@ -29,10 +29,10 @@ from PySide6.QtWidgets import (
     QFileDialog, QComboBox, QLineEdit, QGroupBox,
     QProgressBar, QToolBar, QStatusBar, QMessageBox,
     QInputDialog, QSizePolicy, QFrame, QScrollArea,
-    QAbstractItemView
+    QAbstractItemView, QCompleter
 )
-from PySide6.QtCore import Qt, QSettings, QThread, Signal
-from PySide6.QtGui import QFont, QAction, QColor
+from PySide6.QtCore import Qt, QSettings, QThread, Signal, QSortFilterProxyModel
+from PySide6.QtGui import QFont, QAction, QColor, QStandardItemModel, QStandardItem
 
 from warp.trainer.annotation_widget import AnnotationWidget
 from warp.trainer.training_data      import TrainingDataManager, AnnotationState
@@ -141,12 +141,39 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
     'UNKNOWN':       'SPACE',
 }
 
+# Slots that represent free-text strings, not icons.
+# Matching / crop logic is skipped for these.
+TEXT_SLOTS: frozenset[str] = frozenset([
+    'Ship Name',
+    'Ship Type',
+    'Ship Tier',
+])
+
+# Ship info slots are available on every equipment screen
+_SHIP_INFO_SLOTS = ['Ship Name', 'Ship Type', 'Ship Tier']
+for _grp in ('SPACE', 'GROUND', 'ALL'):
+    pass   # added below after ALL_SLOTS is built
+
 # All slots combined (fallback + MIXED screens)
 ALL_SLOTS: list[str] = []
 for _slots in SLOT_GROUPS.values():
     for _s in _slots:
         if _s not in ALL_SLOTS:
             ALL_SLOTS.append(_s)
+# Append ship info slots to groups where they are relevant
+for _grp_key in ('SPACE', 'GROUND'):
+    for _s in _SHIP_INFO_SLOTS:
+        if _s not in SLOT_GROUPS[_grp_key]:
+            SLOT_GROUPS[_grp_key].append(_s)
+# Build ALL after extending SPACE/GROUND
+ALL_SLOTS = []
+for _slots in SLOT_GROUPS.values():
+    for _s in _slots:
+        if _s not in ALL_SLOTS:
+            ALL_SLOTS.append(_s)
+for _s in _SHIP_INFO_SLOTS:
+    if _s not in ALL_SLOTS:
+        ALL_SLOTS.append(_s)
 SLOT_GROUPS['ALL'] = ALL_SLOTS
 
 # Specialization names known to WARP (from STO wiki)
@@ -580,17 +607,21 @@ class WarpCoreWindow(QMainWindow):
 
         nc = QVBoxLayout()
         nc.addWidget(QLabel('Item name:'))
-        nr = QHBoxLayout()
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
         self._name_edit.returnPressed.connect(self._on_accept)
-        btn_search = QPushButton('Search')
-        btn_search.setFixedWidth(60)
-        btn_search.setToolTip('Search item in SETS cache and specializations')
-        btn_search.clicked.connect(self._on_search)
-        nr.addWidget(self._name_edit, 1)
-        nr.addWidget(btn_search)
-        nc.addLayout(nr)
+        self._name_edit.textEdited.connect(self._on_name_edited)
+        # Autocomplete
+        self._completer_model = QStandardItemModel()
+        self._completer = QCompleter(self._completer_model, self._name_edit)
+        self._completer.setCompletionMode(
+            QCompleter.CompletionMode.PopupCompletion)
+        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._completer.setMaxVisibleItems(12)
+        self._completer.activated.connect(self._name_edit.setText)
+        self._name_edit.setCompleter(self._completer)
+        nc.addWidget(self._name_edit)
         lay.addLayout(nc, 1)
 
         bc = QVBoxLayout()
@@ -602,10 +633,7 @@ class WarpCoreWindow(QMainWindow):
             'border:1px solid #3aac6a;border-radius:3px;padding:5px 12px;font-weight:bold;}'
             'QPushButton:hover{background:#2a8c5a;}')
         self._btn_accept.clicked.connect(self._on_accept)
-        self._btn_skip = QPushButton('Skip')
-        self._btn_skip.clicked.connect(self._on_skip)
         br.addWidget(self._btn_accept)
-        br.addWidget(self._btn_skip)
         bc.addLayout(br)
         lay.addLayout(bc)
         return g
@@ -660,13 +688,6 @@ class WarpCoreWindow(QMainWindow):
         pl.addWidget(sep2)
 
         btn_row = QHBoxLayout()
-        self._btn_confirm = QPushButton('Confirm')
-        self._btn_confirm.setStyleSheet(
-            'QPushButton{background:#1a5c3a;color:#7effc8;border:1px solid #3aac6a;'
-            'border-radius:3px;padding:4px 8px;}'
-            'QPushButton:hover{background:#2a8c5a;}')
-        self._btn_confirm.clicked.connect(self._on_review_confirm)
-
         self._btn_edit_bbox = QPushButton('Edit BBox')
         self._btn_edit_bbox.setStyleSheet(
             'QPushButton{background:#1a3a5c;color:#7ec8e3;border:1px solid #3a6aac;'
@@ -676,16 +697,7 @@ class WarpCoreWindow(QMainWindow):
         self._btn_edit_bbox.setCheckable(True)
         self._btn_edit_bbox.clicked.connect(self._on_edit_bbox_toggle)
 
-        self._btn_reject = QPushButton('Reject')
-        self._btn_reject.setStyleSheet(
-            'QPushButton{background:#3a1a1a;color:#ff9999;border:1px solid #ac3a3a;'
-            'border-radius:3px;padding:4px 8px;}'
-            'QPushButton:hover{background:#5a2a2a;}')
-        self._btn_reject.clicked.connect(self._on_review_reject)
-
-        btn_row.addWidget(self._btn_confirm)
         btn_row.addWidget(self._btn_edit_bbox)
-        btn_row.addWidget(self._btn_reject)
         pl.addLayout(btn_row)
 
         # Add bbox / Remove row
@@ -1071,39 +1083,6 @@ class WarpCoreWindow(QMainWindow):
         if ri.get('bbox'):
             self._ann_widget.highlight_bbox(ri['bbox'])
 
-    def _on_review_confirm(self):
-        row = self._review_list.currentRow()
-        if row < 0 or row >= len(self._recognition_items):
-            return
-        ri   = self._recognition_items[row]
-        slot = self._slot_combo.currentText()
-        name = self._name_edit.text().strip()
-        ri['name']  = name
-        ri['slot']  = slot
-        ri['state'] = 'confirmed'
-
-        if ri.get('bbox') and self._current_idx >= 0:
-            path = self._screenshots[self._current_idx]
-            self._data_mgr.add_annotation(
-                image_path=path,
-                bbox=ri['bbox'],
-                slot=slot,
-                name=name,
-                state=AnnotationState.CONFIRMED,
-            )
-
-        litem = self._review_list.item(row)
-        if litem:
-            litem.setText(f'{slot}  ->  {name or "—"}  [confirmed]')
-            litem.setForeground(QColor('#7effc8'))
-
-        # Contribute to community knowledge base (non-blocking)
-        if name and ri.get('crop_bgr') is not None:
-            self._contribute(ri, name)
-
-        self._update_progress()
-        self._advance_to_next_unconfirmed(row)
-
     def _contribute(self, ri: dict, confirmed_name: str):
         try:
             from warp.knowledge.sync_client import WARPSyncClient
@@ -1120,18 +1099,6 @@ class WarpCoreWindow(QMainWindow):
             )
         except Exception as e:
             log.warning(f'WARP CORE: contribute failed: {e}')
-
-    def _on_review_reject(self):
-        row = self._review_list.currentRow()
-        if row < 0 or row >= len(self._recognition_items):
-            return
-        ri = self._recognition_items[row]
-        ri['state'] = 'rejected'
-        litem = self._review_list.item(row)
-        if litem:
-            litem.setText(f'{ri["slot"]}  ->  [rejected]')
-            litem.setForeground(QColor('#888888'))
-        self._advance_to_next_unconfirmed(row)
 
     def _on_edit_bbox_toggle(self, checked: bool):
         if checked:
@@ -1201,8 +1168,8 @@ class WarpCoreWindow(QMainWindow):
                 return
 
     def _set_review_buttons_enabled(self, enabled: bool):
-        for btn in (self._btn_confirm, self._btn_edit_bbox, self._btn_reject,
-                    self._btn_remove_item):
+        for btn in (self._btn_edit_bbox, self._btn_remove_item,
+                    self._btn_add_bbox):
             btn.setEnabled(enabled)
 
     # ── Canvas callbacks ──────────────────────────────────────────────────────
@@ -1237,6 +1204,9 @@ class WarpCoreWindow(QMainWindow):
                 except Exception:
                     pass
             slot = self._slot_combo.currentText()
+            # Don't run icon matching for free-text slots
+            if slot in TEXT_SLOTS:
+                name, conf, thumb, crop_bgr = '', 0.0, None, None
             new_item = {
                 'name':      name,
                 'slot':      slot,
@@ -1268,6 +1238,10 @@ class WarpCoreWindow(QMainWindow):
     def _rematch_current_item(self, row: int, bbox: tuple):
         if row < 0 or self._current_idx < 0:
             return
+        # Skip icon matching for free-text slots
+        if 0 <= row < len(self._recognition_items):
+            if self._recognition_items[row].get('slot', '') in TEXT_SLOTS:
+                return
         try:
             import cv2
             from warp.recognition.icon_matcher import SETSIconMatcher
@@ -1303,59 +1277,92 @@ class WarpCoreWindow(QMainWindow):
         self._name_edit.setText(ann.get('name', ''))
 
     def _on_accept(self):
+        """
+        Unified accept: saves annotation from the currently selected
+        Recognition Review item, updates data_mgr, contributes to community
+        knowledge, and advances to the next unconfirmed item.
+        """
         slot = self._slot_combo.currentText()
         name = self._name_edit.text().strip()
-        self._ann_widget.confirm_current(slot=slot, name=name)
+        row  = self._review_list.currentRow()
+
+        if 0 <= row < len(self._recognition_items):
+            # ── Update recognition item ───────────────────────────────────
+            ri = self._recognition_items[row]
+            ri['name']  = name
+            ri['slot']  = slot
+            ri['state'] = 'confirmed'
+            # ── Persist to data manager ───────────────────────────────────
+            if ri.get('bbox') and self._current_idx >= 0:
+                path = self._screenshots[self._current_idx]
+                self._data_mgr.add_annotation(
+                    image_path=path,
+                    bbox=ri['bbox'],
+                    slot=slot,
+                    name=name,
+                    state=AnnotationState.CONFIRMED,
+                )
+            # ── Update list item colour ───────────────────────────────────
+            litem = self._review_list.item(row)
+            if litem:
+                litem.setText(f'{slot}  ->  {name or "—"}  [confirmed]')
+                litem.setForeground(QColor('#7effc8'))
+            # ── Contribute to community (non-blocking) ────────────────────
+            if name and ri.get('crop_bgr') is not None and slot not in TEXT_SLOTS:
+                self._contribute(ri, name)
+        else:
+            # Fallback: no review item selected, use legacy canvas confirm
+            self._ann_widget.confirm_current(slot=slot, name=name)
+
         self._name_edit.clear()
         self._update_progress()
-        if self._ann_widget.all_confirmed():
-            next_row = self._current_idx + 1
-            if next_row < len(self._screenshots):
-                self._file_list.setCurrentRow(next_row)
+        self._advance_to_next_unconfirmed(row)
+        # Update cache
+        if self._current_idx >= 0:
+            fname = self._screenshots[self._current_idx].name
+            self._recognition_cache[fname] = list(self._recognition_items)
 
-    def _on_skip(self):
-        self._ann_widget.skip_current()
-        self._name_edit.clear()
-
-    def _on_search(self):
-        """Search SETS cache + specializations for item names."""
-        query      = self._name_edit.text().strip().lower()
+    def _build_search_candidates(self) -> list[str]:
+        """Collect all known item names from SETS cache + specializations."""
         candidates: list[str] = []
-
         if self._sets:
             try:
                 for cat_items in self._sets.cache.equipment.values():
-                    for name in cat_items:
-                        if query in name.lower():
-                            candidates.append(name)
+                    candidates.extend(cat_items)
             except Exception:
                 pass
             try:
-                for name in self._sets.cache.starship_traits:
-                    if query in name.lower():
-                        candidates.append(name)
+                candidates.extend(self._sets.cache.starship_traits)
             except Exception:
                 pass
             try:
-                for name in self._sets.cache.traits:
-                    if query in name.lower():
-                        candidates.append(name)
+                candidates.extend(self._sets.cache.traits)
             except Exception:
                 pass
+        candidates.extend(SPECIALIZATION_NAMES)
+        return sorted(set(candidates))
 
-        # Always include specialization names
-        for name in SPECIALIZATION_NAMES:
-            if not query or query in name.lower():
-                candidates.append(name)
-
-        if not candidates:
-            self.statusBar().showMessage('No matching items found.')
+    def _on_name_edited(self, text: str):
+        """
+        Called on every keystroke in Item name field.
+        For TEXT_SLOTS (Ship Name/Type/Tier) -- no autocomplete.
+        For icon slots -- filters SETS cache and updates the QCompleter popup.
+        """
+        slot = self._slot_combo.currentText()
+        if slot in TEXT_SLOTS:
+            self._completer_model.clear()
             return
-        candidates = sorted(set(candidates))[:50]
-        chosen, ok = QInputDialog.getItem(
-            self, 'Search Item', 'Select item:', candidates, 0, False)
-        if ok and chosen:
-            self._name_edit.setText(chosen)
+        query = text.strip().lower()
+        if len(query) < 2:
+            self._completer_model.clear()
+            return
+        all_names = self._build_search_candidates()
+        matches   = [n for n in all_names if query in n.lower()][:60]
+        self._completer_model.clear()
+        for name in matches:
+            self._completer_model.appendRow(QStandardItem(name))
+        if matches:
+            self._completer.complete()
 
     # ── Save / Sync ───────────────────────────────────────────────────────────
 
