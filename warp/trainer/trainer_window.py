@@ -153,6 +153,182 @@ SPECIALIZATION_NAMES: list[str] = [
 ]
 
 
+# ── Background workers ────────────────────────────────────────────────────────
+
+class ScreenTypeDetectorWorker(QThread):
+    """
+    Detects screen type for each screenshot using OCR.
+    Runs in background — never blocks the UI.
+
+    Signals:
+        progress(index, total, filename, detected_type)
+        finished(results: dict[str, str])   filename -> screen type
+    """
+    progress = Signal(int, int, str, str)    # idx, total, filename, stype
+    finished = Signal(dict)                  # {filename: stype}
+
+    def __init__(self, paths: list, parent=None):
+        super().__init__(parent)
+        self._paths = paths
+
+    def run(self):
+        results: dict[str, str] = {}
+        total = len(self._paths)
+        # Instantiate TextExtractor once — easyocr model loads only once
+        try:
+            from warp.recognition.text_extractor import TextExtractor
+            te = TextExtractor()
+        except Exception as e:
+            log.warning(f'ScreenTypeDetector: TextExtractor init failed: {e}')
+            for p in self._paths:
+                results[p.name] = 'UNKNOWN'
+            self.finished.emit(results)
+            return
+
+        for idx, path in enumerate(self._paths):
+            if self.isInterruptionRequested():
+                break
+            stype = 'UNKNOWN'
+            try:
+                import cv2
+                img = cv2.imread(str(path))
+                if img is not None:
+                    info  = te.extract_ship_info(img)
+                    btype = info.get('build_type', '')
+                    if btype in ('SPACE', 'GROUND', 'SPACE_TRAITS',
+                                 'GROUND_TRAITS', 'BOFFS', 'SPEC'):
+                        stype = btype
+            except Exception as e:
+                log.debug(f'Screen type detection error for {path.name}: {e}')
+            results[path.name] = stype
+            self.progress.emit(idx + 1, total, path.name, stype)
+
+        self.finished.emit(results)
+
+
+class RecognitionWorker(QThread):
+    """
+    Runs WARP recognition (icon matching) on a single screenshot.
+    Used when user manually changes the screen type override.
+
+    Signals:
+        finished(items: list[dict])   list of recognition result dicts
+        error(message: str)
+    """
+    finished = Signal(list)
+    error    = Signal(str)
+
+    def __init__(self, path, stype: str, sets_app, parent=None):
+        super().__init__(parent)
+        self._path     = path
+        self._stype    = stype
+        self._sets_app = sets_app
+
+    def run(self):
+        importer_type = {
+            'SPACE':         'SPACE',
+            'GROUND':        'GROUND',
+            'SPACE_TRAITS':  'SPACE_TRAITS',
+            'GROUND_TRAITS': 'GROUND_TRAITS',
+            'BOFFS':         'BOFFS',
+            'SPEC':          'SPEC',
+        }.get(self._stype, 'SPACE')
+
+        try:
+            import cv2
+            from warp.warp_importer import WarpImporter
+            importer = WarpImporter(
+                sets_app=self._sets_app, build_type=importer_type)
+            img = cv2.imread(str(self._path))
+            if img is None:
+                self.finished.emit([])
+                return
+            result = importer._process_image(img, str(self._path))
+        except Exception as e:
+            log.exception('RecognitionWorker error')
+            self.error.emit(str(e))
+            return
+
+        items = []
+        try:
+            import cv2
+            img2 = cv2.imread(str(self._path))
+        except Exception:
+            img2 = None
+
+        for ri in result.items:
+            crop_bgr = None
+            if ri.bbox and img2 is not None:
+                try:
+                    x, y, w, h = ri.bbox
+                    crop_bgr = img2[y:y+h, x:x+w].copy()
+                except Exception:
+                    pass
+            items.append({
+                'name':      ri.name,
+                'slot':      ri.slot,
+                'conf':      ri.confidence,
+                'bbox':      ri.bbox,
+                'state':     'pending',
+                'thumb':     ri.thumbnail,
+                'crop_bgr':  crop_bgr,
+                'orig_name': ri.name,
+                'ship_name': result.ship_name,
+            })
+        self.finished.emit(items)
+
+
+class _DetectProgressDialog(QWidget):
+    """
+    Floating progress dialog shown during screen type detection.
+    Has a Cancel button that requests interruption of the worker thread.
+    """
+    cancelled = Signal()
+
+    def __init__(self, total: int, parent=None):
+        super().__init__(parent,
+                         Qt.WindowType.Window |
+                         Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowTitle('WARP CORE — Detecting Screen Types')
+        self.setFixedSize(460, 140)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+
+        self._title_lbl = QLabel('Analysing screenshots with OCR…')
+        self._title_lbl.setFont(QFont('', 10, QFont.Weight.Bold))
+        self._title_lbl.setStyleSheet('color:#7ec8e3;')
+
+        self._file_lbl = QLabel('')
+        self._file_lbl.setStyleSheet('color:#aaa;font-size:10px;')
+        self._file_lbl.setWordWrap(True)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, total)
+        self._bar.setValue(0)
+
+        btn_cancel = QPushButton('Cancel')
+        btn_cancel.setFixedWidth(80)
+        btn_cancel.clicked.connect(self.cancelled.emit)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+
+        lay.addWidget(self._title_lbl)
+        lay.addWidget(self._file_lbl)
+        lay.addWidget(self._bar)
+        lay.addLayout(btn_row)
+
+    def update_progress(self, idx: int, total: int, filename: str, stype: str):
+        self._bar.setValue(idx)
+        icon  = SCREEN_TYPE_ICONS.get(stype, '?')
+        label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
+        self._file_lbl.setText(f'{filename}  →  {icon} {label}')
+
+
 class WarpCoreWindow(QMainWindow):
     """
     WARP CORE trainer window.
@@ -173,10 +349,14 @@ class WarpCoreWindow(QMainWindow):
             self._sets_root / 'warp' / 'training_data')
         self._screenshots: list[Path] = []
         self._current_idx  = -1
-        self._screen_types: dict[str, str] = {}   # filename -> detected screen type
+        self._screen_types: dict[str, str] = {}       # filename -> screen type
+        self._recognition_cache: dict[str, list] = {} # filename -> recognition items
         self._recognition_items: list[dict] = []
         self._manual_bbox_mode = False
         self._sync_client = None
+        self._detect_worker: ScreenTypeDetectorWorker | None = None
+        self._recog_worker:  RecognitionWorker | None = None
+        self._detect_dlg:    _DetectProgressDialog | None = None
 
         self.setWindowTitle('WARP CORE — ML Trainer')
         self.setMinimumSize(1280, 740)
@@ -438,22 +618,85 @@ class WarpCoreWindow(QMainWindow):
         exts = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
         self._screenshots = sorted([f for f in folder.iterdir()
                                      if f.suffix.lower() in exts])
+        if not self._screenshots:
+            self.statusBar().showMessage('No images found in selected folder.')
+            return
         self._screen_types.clear()
+        self._recognition_cache.clear()
+        self._recognition_items = []
+        self._current_idx = -1
         self._file_list.clear()
+        for p in self._screenshots:
+            self._screen_types[p.name] = 'UNKNOWN'
+            self._file_list.addItem(self._make_file_list_item(p, 'UNKNOWN'))
+        self._start_screen_type_detection()
 
+    def _start_screen_type_detection(self):
+        """Launch background OCR worker to detect screen types."""
         total = len(self._screenshots)
-        for idx, p in enumerate(self._screenshots):
-            self.statusBar().showMessage(
-                f'Detecting screen types... {idx+1}/{total}')
-            stype = self._detect_screen_type(p)
-            self._screen_types[p.name] = stype
-            self._file_list.addItem(self._make_file_list_item(p, stype))
+        self._detect_dlg = _DetectProgressDialog(total, parent=self)
+        self._detect_dlg.cancelled.connect(self._on_detect_cancelled)
+        self._detect_dlg.show()
+        self._detect_worker = ScreenTypeDetectorWorker(self._screenshots, parent=self)
+        self._detect_worker.progress.connect(self._on_detect_progress)
+        self._detect_worker.finished.connect(self._on_detect_finished)
+        self._detect_worker.start()
+        self.statusBar().showMessage(
+            f'Detecting screen types for {total} screenshot(s)...')
 
+    def _on_detect_progress(self, idx: int, total: int, filename: str, stype: str):
+        """Update badge live as each screenshot is processed."""
+        self._screen_types[filename] = stype
+        for row, p in enumerate(self._screenshots):
+            if p.name == filename:
+                item = self._file_list.item(row)
+                if item:
+                    icon  = SCREEN_TYPE_ICONS.get(stype, '?')
+                    label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
+                    item.setText(f'{icon} {label}\n  {filename}')
+                    item.setForeground(
+                        QColor('#7effc8') if self._data_mgr.has_annotations(p)
+                        else Qt.GlobalColor.white)
+                break
+        if self._detect_dlg:
+            self._detect_dlg.update_progress(idx, total, filename, stype)
+
+    def _on_detect_finished(self, results: dict):
+        """Background OCR detection complete."""
+        self._screen_types.update(results)
+        for row, p in enumerate(self._screenshots):
+            stype = self._screen_types.get(p.name, 'UNKNOWN')
+            item  = self._file_list.item(row)
+            if item:
+                icon  = SCREEN_TYPE_ICONS.get(stype, '?')
+                label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
+                item.setText(f'{icon} {label}\n  {p.name}')
+                item.setForeground(
+                    QColor('#7effc8') if self._data_mgr.has_annotations(p)
+                    else Qt.GlobalColor.white)
+        if self._detect_dlg:
+            self._detect_dlg.close()
+            self._detect_dlg = None
+        self._detect_worker = None
         if self._screenshots:
             self._file_list.setCurrentRow(0)
         self._update_progress()
         self.statusBar().showMessage(
-            f'Loaded {total} screenshot(s) from {folder}')
+            f'Ready -- {len(self._screenshots)} screenshot(s) loaded.')
+
+    def _on_detect_cancelled(self):
+        """User cancelled screen type detection."""
+        if self._detect_worker and self._detect_worker.isRunning():
+            self._detect_worker.requestInterruption()
+            self._detect_worker.wait(3000)
+        if self._detect_dlg:
+            self._detect_dlg.close()
+            self._detect_dlg = None
+        if self._screenshots:
+            self._file_list.setCurrentRow(0)
+        self._update_progress()
+        self.statusBar().showMessage(
+            'Detection cancelled -- some types may show as Unknown.')
 
     def _make_file_list_item(self, p: Path, stype: str) -> QListWidgetItem:
         icon  = SCREEN_TYPE_ICONS.get(stype, '?')
@@ -465,55 +708,40 @@ class WarpCoreWindow(QMainWindow):
         return item
 
     def _load_screenshot(self, row: int):
+        """
+        Load screenshot into canvas and restore cached recognition.
+        Does NOT run OCR -- that only happens once per unique screen type.
+        """
         if row < 0 or row >= len(self._screenshots):
             return
         self._current_idx = row
         path  = self._screenshots[row]
         stype = self._screen_types.get(path.name, 'UNKNOWN')
-
         self._ann_widget.load_image(path)
         self._exit_manual_bbox_mode()
         self._update_screen_type_ui(stype)
-        self._run_recognition(path, stype)
-
+        cached = self._recognition_cache.get(path.name)
+        if cached is not None:
+            self._populate_review_panel(cached, stype)
+        else:
+            self._recognition_items = []
+            self._review_list.clear()
+            self._review_summary.setText(
+                'Recognition not yet run for this screenshot.')
+            self._set_review_buttons_enabled(False)
         icon  = SCREEN_TYPE_ICONS.get(stype, '?')
         label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
         self.statusBar().showMessage(
-            f'{path.name}  ({row+1}/{len(self._screenshots)})  '
-            f'— {icon} {label}')
+            f'{path.name}  ({row+1}/{len(self._screenshots)})  -- {icon} {label}')
 
-    # ── Screen type detection ─────────────────────────────────────────────────
-
-    def _detect_screen_type(self, path: Path) -> str:
-        """
-        Detect which STO screen this screenshot represents using OCR.
-        Returns: SPACE | GROUND | SPACE_TRAITS | GROUND_TRAITS | BOFFS | SPEC | UNKNOWN
-        """
-        try:
-            import cv2
-            img = cv2.imread(str(path))
-            if img is None:
-                return 'UNKNOWN'
-            from warp.recognition.text_extractor import TextExtractor
-            te    = TextExtractor()
-            info  = te.extract_ship_info(img)
-            btype = info.get('build_type', '')
-            if btype in ('SPACE', 'GROUND', 'SPACE_TRAITS',
-                         'GROUND_TRAITS', 'BOFFS', 'SPEC'):
-                return btype
-        except Exception as e:
-            log.debug(f'Screen type detection failed for {path.name}: {e}')
-        return 'UNKNOWN'
+    # -- Screen type UI -------------------------------------------------------
 
     def _update_screen_type_ui(self, stype: str):
         """Update badge, slot combo and type override for current screen."""
         icon  = SCREEN_TYPE_ICONS.get(stype, '?')
         label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
         self._screen_type_badge.setText(f'Screen: {icon} {label}')
-
         self._refresh_slot_combo(stype)
-
-        # Sync override combo without triggering callback
         self._type_override_combo.blockSignals(True)
         for i in range(self._type_override_combo.count()):
             if self._type_override_combo.itemData(i) == stype:
@@ -522,11 +750,10 @@ class WarpCoreWindow(QMainWindow):
         self._type_override_combo.blockSignals(False)
 
     def _refresh_slot_combo(self, stype: str):
-        """Repopulate slot combo with slots for the given screen type."""
+        """Repopulate slot combo for the given screen type."""
         group_key    = SCREEN_TO_SLOT_GROUP.get(stype, 'SPACE')
         slots        = SLOT_GROUPS.get(group_key, ALL_SLOTS)
         current_slot = self._slot_combo.currentText()
-
         self._slot_combo.blockSignals(True)
         self._slot_combo.clear()
         for s in slots:
@@ -537,29 +764,25 @@ class WarpCoreWindow(QMainWindow):
         self._slot_combo.blockSignals(False)
 
     def _on_type_override_changed(self, index: int):
-        """User manually overrides the screen type for current screenshot."""
+        """
+        User manually overrides screen type.
+        Clears cache and triggers background re-recognition.
+        """
         if self._current_idx < 0:
             return
         stype = self._type_override_combo.itemData(index)
         path  = self._screenshots[self._current_idx]
         self._screen_types[path.name] = stype
-
-        # Update file list item text
+        self._recognition_cache.pop(path.name, None)
         item = self._file_list.item(self._current_idx)
         if item:
             icon  = SCREEN_TYPE_ICONS.get(stype, '?')
             label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
             item.setText(f'{icon} {label}\n  {path.name}')
-
         self._update_screen_type_ui(stype)
-        self._run_recognition(path, stype)
+        self._start_recognition(path, stype)
 
-        icon  = SCREEN_TYPE_ICONS.get(stype, '?')
-        label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
-        self.statusBar().showMessage(
-            f'Screen type manually set to: {icon} {label}')
-
-    # ── Auto-detect ───────────────────────────────────────────────────────────
+    # -- Auto-detect ----------------------------------------------------------
 
     def _on_auto_detect(self):
         if not self._screenshots:
@@ -573,7 +796,6 @@ class WarpCoreWindow(QMainWindow):
             if img is None:
                 continue
             stype = self._screen_types.get(path.name, 'UNKNOWN')
-            # Layout detection only applies to equipment screens
             if stype not in ('SPACE', 'GROUND', 'UNKNOWN'):
                 continue
             build_type = 'GROUND' if stype == 'GROUND' else 'SPACE'
@@ -583,75 +805,63 @@ class WarpCoreWindow(QMainWindow):
                         new += 1
         self._update_progress()
         if self._current_idx >= 0:
-            self._load_screenshot(self._current_idx)
-        self.statusBar().showMessage(f'Auto-detect done — {new} candidates added.')
+            path  = self._screenshots[self._current_idx]
+            stype = self._screen_types.get(path.name, 'UNKNOWN')
+            self._ann_widget.load_image(path)
+            self._update_screen_type_ui(stype)
+        self.statusBar().showMessage(f'Auto-detect done -- {new} candidates added.')
 
-    # ── Recognition review ────────────────────────────────────────────────────
+    # -- Recognition background worker ----------------------------------------
 
-    def _run_recognition(self, path: Path, stype: str):
-        """Run recognition on current screenshot and populate review panel."""
+    def _start_recognition(self, path: Path, stype: str):
+        """Launch RecognitionWorker for a single screenshot."""
+        if self._recog_worker and self._recog_worker.isRunning():
+            self._recog_worker.requestInterruption()
+            self._recog_worker.wait(2000)
         self._recognition_items = []
+        self._review_list.clear()
+        self._review_summary.setText('Running recognition...')
+        self._set_review_buttons_enabled(False)
+        self.statusBar().showMessage(f'Recognising icons in {path.name}...')
+        self._recog_worker = RecognitionWorker(
+            path, stype, self._sets, parent=self)
+        self._recog_worker.finished.connect(
+            lambda items: self._on_recognition_done(path.name, stype, items))
+        self._recog_worker.error.connect(self._on_recognition_error)
+        self._recog_worker.start()
+
+    def _on_recognition_done(self, filename: str, stype: str, items: list):
+        """RecognitionWorker finished -- cache and display results."""
+        self._recognition_cache[filename] = items
+        if (self._current_idx >= 0 and
+                self._screenshots[self._current_idx].name == filename):
+            self._populate_review_panel(items, stype)
+        self.statusBar().showMessage(
+            f'Recognition done -- {len(items)} item(s) found.')
+
+    def _on_recognition_error(self, msg: str):
+        self._review_summary.setText(f'Recognition error: {msg}')
+        self.statusBar().showMessage(f'Recognition error: {msg}')
+
+    def _populate_review_panel(self, items: list, stype: str):
+        """Fill right-panel review list from cached recognition items."""
+        self._recognition_items = list(items)
         self._review_list.clear()
         self._review_summary.setText('')
         self._set_review_buttons_enabled(False)
-
-        # Map screen type to WarpImporter build_type
-        importer_type = {
-            'SPACE':         'SPACE',
-            'GROUND':        'GROUND',
-            'SPACE_TRAITS':  'SPACE_TRAITS',
-            'GROUND_TRAITS': 'GROUND_TRAITS',
-            'BOFFS':         'BOFFS',
-            'SPEC':          'SPEC',
-        }.get(stype, 'SPACE')
-
-        try:
-            import cv2
-            from warp.warp_importer import WarpImporter
-            importer = WarpImporter(sets_app=self._sets, build_type=importer_type)
-            img = cv2.imread(str(path))
-            if img is None:
-                return
-            result = importer._process_image(img, str(path))
-        except Exception as e:
-            self.statusBar().showMessage(f'Recognition error: {e}')
-            log.exception('WARP CORE recognition error')
-            return
-
-        for ri in result.items:
-            crop_bgr = None
-            if ri.bbox and self._current_idx >= 0:
-                try:
-                    import cv2
-                    img2 = cv2.imread(str(self._screenshots[self._current_idx]))
-                    if img2 is not None:
-                        x, y, w, h = ri.bbox
-                        crop_bgr = img2[y:y+h, x:x+w].copy()
-                except Exception:
-                    pass
-            self._recognition_items.append({
-                'name':      ri.name,
-                'slot':      ri.slot,
-                'conf':      ri.confidence,
-                'bbox':      ri.bbox,
-                'state':     'pending',
-                'thumb':     ri.thumbnail,
-                'crop_bgr':  crop_bgr,
-                'orig_name': ri.name,
-            })
-            self._add_review_row(ri.name, ri.slot, ri.confidence)
-
-        n       = len(result.items)
-        matched = sum(1 for i in result.items if i.name)
+        for ri in self._recognition_items:
+            self._add_review_row(ri['name'], ri['slot'], ri['conf'])
+        n       = len(items)
+        matched = sum(1 for i in items if i.get('name'))
         icon    = SCREEN_TYPE_ICONS.get(stype, '?')
         label   = SCREEN_TYPE_LABELS.get(stype, stype)
+        ship    = (items[0].get('ship_name') or '--') if items else '--'
         self._review_summary.setText(
-            f'{matched}/{n} identified  '
-            f'Ship: {result.ship_name or "—"}  '
-            f'{icon} {label}')
+            f'{matched}/{n} identified  Ship: {ship}  {icon} {label}')
         self._set_review_buttons_enabled(n > 0)
         if n > 0:
             self._review_list.setCurrentRow(0)
+
 
     def _add_review_row(self, name: str, slot: str, conf: float):
         label = f'{slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
