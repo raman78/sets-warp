@@ -63,6 +63,9 @@ class AnnotationWidget(QWidget):
         self._offset_x: int            = 0
         self._offset_y: int            = 0
 
+        # Mode flags — drawing/editing only active when explicitly enabled
+        self._draw_mode_forced: bool = False   # set by + Add BBox / Edit BBox
+
         # Drawing state
         self._drawing       = False
         self._draw_start:   QPoint | None = None
@@ -78,7 +81,13 @@ class AnnotationWidget(QWidget):
         self._pending_bbox: tuple | None = None
 
         self._highlight_bbox: tuple | None = None
-        self._draw_mode_forced: bool = False
+
+        # Drag/resize state
+        self._drag_mode:  str | None = None   # 'move' | 'resize_NW' | etc.
+        self._drag_start: QPoint | None = None
+        self._drag_orig:  tuple | None = None  # original bbox at drag start
+        # Handle size in screen pixels
+        self._HANDLE = 9
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -236,37 +245,99 @@ class AnnotationWidget(QWidget):
             painter.setFont(QFont("", FONT_SIZE_BADGE))
             painter.drawText(rect.bottomLeft() + QPoint(2, 12), badge[:24])
 
+        # Draw resize/move handles when selected
+        if selected:
+            h = self._HANDLE
+            hc = QColor(255, 255, 255, 220)
+            painter.setPen(QPen(QColor(0, 0, 0, 180), 1))
+            painter.setBrush(QBrush(hc))
+            for hx, hy in self._handle_positions(rect):
+                painter.drawRect(hx - h//2, hy - h//2, h, h)
+
     # ---------------------------------------------------------------- mouse events
 
     def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MouseButton.LeftButton:
-            pos = event.pos()
-            # Check if clicking existing annotation
-            clicked = self._hit_test(pos)
-            if clicked >= 0:
-                self._selected_idx = clicked
-                self._pending_bbox = None
-                ann = self._annotations[clicked]
-                self.item_selected.emit({
-                    "slot": ann.slot,
-                    "name": ann.name,
-                    "bbox": ann.bbox,
-                })
-            else:
-                # Start drawing new bbox
-                self._drawing      = True
-                self._draw_start   = pos
-                self._draw_current = pos
-                self._selected_idx = -1
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        pos = event.pos()
+
+        if self._draw_mode_forced:
+            # Draw mode: always start a new bbox
+            self._drawing      = True
+            self._draw_start   = pos
+            self._draw_current = pos
+            self._selected_idx = -1
             self.update()
+            return
+
+        # No active mode — check if clicking handle of selected bbox (resize/move)
+        if self._selected_idx >= 0:
+            handle = self._handle_hit_test(pos, self._selected_idx)
+            if handle:
+                self._drag_mode  = handle
+                self._drag_start = pos
+                self._drag_orig  = self._annotations[self._selected_idx].bbox
+                self.setCursor(self._cursor_for_handle(handle))
+                self.update()
+                return
+
+        # Check if clicking body of any annotation (select only — no drawing)
+        clicked = self._hit_test(pos)
+        if clicked >= 0:
+            self._selected_idx = clicked
+            self._pending_bbox = None
+            ann = self._annotations[clicked]
+            self.item_selected.emit({
+                'slot': ann.slot,
+                'name': ann.name,
+                'bbox': ann.bbox,
+            })
+        else:
+            # Click on empty area — deselect
+            self._selected_idx = -1
+        self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        pos = event.pos()
         if self._drawing:
-            self._draw_current = event.pos()
+            self._draw_current = pos
             self.update()
+            return
+        if self._drag_mode and self._drag_start and self._drag_orig:
+            dx = int((pos.x() - self._drag_start.x()) / self._scale)
+            dy = int((pos.y() - self._drag_start.y()) / self._scale)
+            ox, oy, ow, oh = self._drag_orig
+            m = self._drag_mode
+            if m == 'move':
+                nx, ny, nw, nh = ox + dx, oy + dy, ow, oh
+            elif m == 'resize_NW': nx, ny, nw, nh = ox+dx, oy+dy, ow-dx, oh-dy
+            elif m == 'resize_NE': nx, ny, nw, nh = ox,    oy+dy, ow+dx, oh-dy
+            elif m == 'resize_SW': nx, ny, nw, nh = ox+dx, oy,    ow-dx, oh+dy
+            elif m == 'resize_SE': nx, ny, nw, nh = ox,    oy,    ow+dx, oh+dy
+            elif m == 'resize_N':  nx, ny, nw, nh = ox,    oy+dy, ow,    oh-dy
+            elif m == 'resize_S':  nx, ny, nw, nh = ox,    oy,    ow,    oh+dy
+            elif m == 'resize_W':  nx, ny, nw, nh = ox+dx, oy,    ow-dx, oh
+            elif m == 'resize_E':  nx, ny, nw, nh = ox,    oy,    ow+dx, oh
+            else:                  nx, ny, nw, nh = ox, oy, ow, oh
+            if nw > 8 and nh > 8:   # enforce minimum size
+                ann = self._annotations[self._selected_idx]
+                self._data_mgr.update_annotation(
+                    self._img_path, ann, bbox=(nx, ny, nw, nh))
+                self._annotations = self._data_mgr.get_annotations(self._img_path)
+            self.update()
+            return
+        # Update cursor based on what's under the pointer
+        if self._selected_idx >= 0:
+            handle = self._handle_hit_test(pos, self._selected_idx)
+            if handle:
+                self.setCursor(self._cursor_for_handle(handle))
+                return
+        self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
-        if self._drawing and event.button() == Qt.MouseButton.LeftButton:
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._drawing:
             self._drawing = False
             if self._draw_start and self._draw_current:
                 screen_rect = QRect(self._draw_start, self._draw_current).normalized()
@@ -275,7 +346,12 @@ class AnnotationWidget(QWidget):
                     self.annotation_added.emit(self._pending_bbox)
             self._draw_start   = None
             self._draw_current = None
-            self.update()
+        if self._drag_mode:
+            self._drag_mode  = None
+            self._drag_start = None
+            self._drag_orig  = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Delete and self._selected_idx >= 0:
@@ -287,6 +363,58 @@ class AnnotationWidget(QWidget):
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             # Forward to bottom controls via parent
             pass
+
+    # ---------------------------------------------------------------- handle helpers
+
+    def _handle_positions(self, rect: QRect) -> list[tuple[int, int]]:
+        """Returns screen (x, y) centre of each resize/move handle."""
+        l, t, r, b = rect.left(), rect.top(), rect.right(), rect.bottom()
+        mx, my = (l + r) // 2, (t + b) // 2
+        return [
+            (l, t), (mx, t), (r, t),   # NW N NE
+            (l, my),         (r, my),   # W     E
+            (l, b), (mx, b), (r, b),   # SW S SE
+            (mx, my),                  # centre = move
+        ]
+
+    def _handle_hit_test(self, pos: QPoint, ann_idx: int) -> str | None:
+        """Return handle name if pos is within HANDLE px of any handle."""
+        if ann_idx < 0 or ann_idx >= len(self._annotations):
+            return None
+        rect = self._img_to_screen_rect(self._annotations[ann_idx].bbox)
+        h = self._HANDLE + 2   # slightly larger hit area
+        l, t, r, b = rect.left(), rect.top(), rect.right(), rect.bottom()
+        mx, my = (l + r) // 2, (t + b) // 2
+        handles = [
+            ('resize_NW', l,  t ),
+            ('resize_N',  mx, t ),
+            ('resize_NE', r,  t ),
+            ('resize_W',  l,  my),
+            ('resize_E',  r,  my),
+            ('resize_SW', l,  b ),
+            ('resize_S',  mx, b ),
+            ('resize_SE', r,  b ),
+            ('move',      mx, my),
+        ]
+        x, y = pos.x(), pos.y()
+        for name, hx, hy in handles:
+            if abs(x - hx) <= h and abs(y - hy) <= h:
+                return name
+        return None
+
+    @staticmethod
+    def _cursor_for_handle(handle: str) -> Qt.CursorShape:
+        return {
+            'move':      Qt.CursorShape.SizeAllCursor,
+            'resize_NW': Qt.CursorShape.SizeFDiagCursor,
+            'resize_SE': Qt.CursorShape.SizeFDiagCursor,
+            'resize_NE': Qt.CursorShape.SizeBDiagCursor,
+            'resize_SW': Qt.CursorShape.SizeBDiagCursor,
+            'resize_N':  Qt.CursorShape.SizeVerCursor,
+            'resize_S':  Qt.CursorShape.SizeVerCursor,
+            'resize_W':  Qt.CursorShape.SizeHorCursor,
+            'resize_E':  Qt.CursorShape.SizeHorCursor,
+        }.get(handle, Qt.CursorShape.ArrowCursor)
 
     def resizeEvent(self, event):
         self._compute_transform()

@@ -143,11 +143,18 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
 
 # Slots that represent free-text strings, not icons.
 # Matching / crop logic is skipped for these.
-TEXT_SLOTS: frozenset[str] = frozenset([
-    'Ship Name',
-    'Ship Type',
-    'Ship Tier',
-])
+# Slots whose value is a free-text string (no icon matching / no autocomplete)
+TEXT_SLOTS: frozenset[str] = frozenset(['Ship Name'])
+# Slots with a fixed/searchable dropdown of values (no icon matching)
+FIXED_VALUE_SLOTS: frozenset[str] = frozenset(['Ship Tier', 'Ship Type'])
+# All non-icon slots combined
+NON_ICON_SLOTS: frozenset[str] = TEXT_SLOTS | FIXED_VALUE_SLOTS
+
+SHIP_TIER_VALUES: list[str] = [
+    'T1', 'T2', 'T3', 'T4',
+    'T5', 'T5-U', 'T5-X', 'T5-X2',
+    'T6', 'T6-X', 'T6-X2',
+]
 
 # Ship info slots are available on every equipment screen
 _SHIP_INFO_SLOTS = ['Ship Name', 'Ship Type', 'Ship Tier']
@@ -602,26 +609,53 @@ class WarpCoreWindow(QMainWindow):
         self._slot_combo.setEditable(False)
         for s in ALL_SLOTS:
             self._slot_combo.addItem(s)
+        self._slot_combo.currentTextChanged.connect(self._on_slot_changed)
         sc.addWidget(self._slot_combo)
         lay.addLayout(sc)
 
         nc = QVBoxLayout()
-        nc.addWidget(QLabel('Item name:'))
+        self._name_label = QLabel('Item name:')
+        nc.addWidget(self._name_label)
+
+        # Free-text name entry (icon slots + Ship Name / Ship Type)
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
         self._name_edit.returnPressed.connect(self._on_accept)
         self._name_edit.textEdited.connect(self._on_name_edited)
-        # Autocomplete
         self._completer_model = QStandardItemModel()
         self._completer = QCompleter(self._completer_model, self._name_edit)
-        self._completer.setCompletionMode(
-            QCompleter.CompletionMode.PopupCompletion)
+        self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self._completer.setMaxVisibleItems(12)
         self._completer.activated.connect(self._name_edit.setText)
         self._name_edit.setCompleter(self._completer)
         nc.addWidget(self._name_edit)
+
+        # Fixed-value combo for Ship Tier
+        self._tier_combo = QComboBox()
+        for t in SHIP_TIER_VALUES:
+            self._tier_combo.addItem(t)
+        self._tier_combo.hide()
+        nc.addWidget(self._tier_combo)
+
+        # Searchable combo for Ship Type (populated from SETS cache)
+        self._ship_type_combo = QComboBox()
+        self._ship_type_combo.setEditable(True)
+        self._ship_type_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._ship_type_combo.lineEdit().setPlaceholderText('Type to search ship...')
+        ship_type_completer = QCompleter(self._ship_type_combo.model(),
+                                         self._ship_type_combo)
+        ship_type_completer.setCompletionMode(
+            QCompleter.CompletionMode.PopupCompletion)
+        ship_type_completer.setCaseSensitivity(
+            Qt.CaseSensitivity.CaseInsensitive)
+        ship_type_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        ship_type_completer.setMaxVisibleItems(14)
+        self._ship_type_combo.setCompleter(ship_type_completer)
+        self._ship_type_combo.hide()
+        nc.addWidget(self._ship_type_combo)
+
         lay.addLayout(nc, 1)
 
         bc = QVBoxLayout()
@@ -1044,13 +1078,44 @@ class WarpCoreWindow(QMainWindow):
         self.statusBar().showMessage('Recognition cancelled.')
 
     def _populate_review_panel(self, items: list, stype: str):
-        """Fill right-panel review list from cached recognition items."""
-        self._recognition_items = list(items)
+        """Fill right-panel review list.
+        Merges recognition results with already-confirmed items from data_mgr
+        so previous work is visible and Accept never creates duplicates.
+        """
+        confirmed_by_id: dict[str, dict] = {}
+        if self._current_idx >= 0:
+            path = self._screenshots[self._current_idx]
+            for ann in self._data_mgr.get_annotations(path):
+                if ann.state == AnnotationState.CONFIRMED:
+                    confirmed_by_id[ann.ann_id] = {
+                        'name': ann.name, 'slot': ann.slot,
+                        'bbox': ann.bbox, 'state': 'confirmed',
+                        'conf': 1.0, 'thumb': None,
+                        'crop_bgr': None, 'orig_name': ann.name,
+                        'ship_name': '', 'ann_id': ann.ann_id,
+                    }
+        from warp.trainer.training_data import Annotation as _Ann
+        merged: list[dict] = []
+        seen_ids: set[str] = set()
+        for ri in items:
+            bbox = ri.get('bbox')
+            if bbox:
+                aid = _Ann(bbox=bbox, slot=ri.get('slot',''),
+                           name=ri.get('name','')).ann_id
+                if aid in confirmed_by_id:
+                    ri = dict(confirmed_by_id[aid])
+                seen_ids.add(aid)
+            merged.append(ri)
+        for aid, ci in confirmed_by_id.items():
+            if aid not in seen_ids:
+                merged.append(ci)
+        self._recognition_items = merged
         self._review_list.clear()
         self._review_summary.setText('')
         self._set_review_buttons_enabled(False)
         for ri in self._recognition_items:
-            self._add_review_row(ri['name'], ri['slot'], ri['conf'])
+            self._add_review_row(ri['name'], ri['slot'], ri.get('conf', 0.0),
+                                 confirmed=(ri.get('state') == 'confirmed'))
         n       = len(items)
         matched = sum(1 for i in items if i.get('name'))
         icon    = SCREEN_TYPE_ICONS.get(stype, '?')
@@ -1063,10 +1128,16 @@ class WarpCoreWindow(QMainWindow):
             self._review_list.setCurrentRow(0)
 
 
-    def _add_review_row(self, name: str, slot: str, conf: float):
-        label = f'{slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
-        item  = QListWidgetItem(label)
-        if not name:
+    def _add_review_row(self, name: str, slot: str, conf: float,
+                        confirmed: bool = False):
+        if confirmed:
+            label = f'{slot}  ->  {name or "—"}  [confirmed]'
+        else:
+            label = f'{slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
+        item = QListWidgetItem(label)
+        if confirmed:
+            item.setForeground(QColor('#7effc8'))
+        elif not name:
             item.setForeground(QColor('#ff7e7e'))
         elif conf >= CONF_HIGH:
             item.setForeground(QColor('#7effc8'))
@@ -1225,7 +1296,7 @@ class WarpCoreWindow(QMainWindow):
                     pass
             slot = self._slot_combo.currentText()
             # Don't run icon matching for free-text slots
-            if slot in TEXT_SLOTS:
+            if slot in NON_ICON_SLOTS:
                 name, conf, thumb, crop_bgr = '', 0.0, None, None
             new_item = {
                 'name':      name,
@@ -1260,7 +1331,7 @@ class WarpCoreWindow(QMainWindow):
             return
         # Skip icon matching for free-text slots
         if 0 <= row < len(self._recognition_items):
-            if self._recognition_items[row].get('slot', '') in TEXT_SLOTS:
+            if self._recognition_items[row].get('slot', '') in NON_ICON_SLOTS:
                 return
         try:
             import cv2
@@ -1293,8 +1364,23 @@ class WarpCoreWindow(QMainWindow):
             self.statusBar().showMessage(f'Rematch error: {e}')
 
     def _on_item_selected(self, ann: dict):
-        self._slot_combo.setCurrentText(ann.get('slot', ''))
-        self._name_edit.setText(ann.get('name', ''))
+        slot = ann.get('slot', '')
+        self._slot_combo.setCurrentText(slot)
+        self._on_slot_changed(slot)   # update visible widget
+        name = ann.get('name', '')
+        if slot == 'Ship Tier':
+            idx = self._tier_combo.findText(name)
+            if idx >= 0:
+                self._tier_combo.setCurrentIndex(idx)
+        elif slot == 'Ship Type':
+            self._populate_ship_type_combo()
+            idx = self._ship_type_combo.findText(name)
+            if idx >= 0:
+                self._ship_type_combo.setCurrentIndex(idx)
+            else:
+                self._ship_type_combo.lineEdit().setText(name)
+        else:
+            self._name_edit.setText(name)
 
     def _on_accept(self):
         """
@@ -1303,7 +1389,12 @@ class WarpCoreWindow(QMainWindow):
         knowledge, and advances to the next unconfirmed item.
         """
         slot = self._slot_combo.currentText()
-        name = self._name_edit.text().strip()
+        if slot == 'Ship Tier':
+            name = self._tier_combo.currentText()
+        elif slot == 'Ship Type':
+            name = self._ship_type_combo.currentText().strip()
+        else:
+            name = self._name_edit.text().strip()
         row  = self._review_list.currentRow()
 
         if 0 <= row < len(self._recognition_items):
@@ -1362,6 +1453,44 @@ class WarpCoreWindow(QMainWindow):
         candidates.extend(SPECIALIZATION_NAMES)
         return sorted(set(candidates))
 
+    def _on_slot_changed(self, slot: str):
+        """Show the right input widget depending on slot type."""
+        is_tier      = (slot == 'Ship Tier')
+        is_ship_type = (slot == 'Ship Type')
+        is_text      = (slot in TEXT_SLOTS)
+        self._tier_combo.setVisible(is_tier)
+        self._ship_type_combo.setVisible(is_ship_type)
+        self._name_edit.setVisible(not is_tier and not is_ship_type)
+        if is_tier:
+            self._name_label.setText('Tier:')
+        elif is_ship_type:
+            self._name_label.setText('Ship Type:')
+            self._populate_ship_type_combo()
+        elif is_text:
+            self._name_label.setText('Value:')
+        else:
+            self._name_label.setText('Item name:')
+
+    def _populate_ship_type_combo(self):
+        """Lazily fill _ship_type_combo from SETS cache (once per session)."""
+        if self._ship_type_combo.count() > 0:
+            return   # already populated
+        names: list[str] = []
+        if self._sets:
+            try:
+                names = sorted(self._sets.cache.ships.keys())
+            except Exception:
+                pass
+        if not names:
+            self._ship_type_combo.lineEdit().setPlaceholderText(
+                'SETS cache not loaded — type manually')
+            return
+        for n in names:
+            self._ship_type_combo.addItem(n)
+        # Clear the text so placeholder shows
+        self._ship_type_combo.setCurrentIndex(-1)
+        self._ship_type_combo.lineEdit().clear()
+
     def _on_name_edited(self, text: str):
         """
         Called on every keystroke in Item name field.
@@ -1369,7 +1498,7 @@ class WarpCoreWindow(QMainWindow):
         For icon slots -- filters SETS cache and updates the QCompleter popup.
         """
         slot = self._slot_combo.currentText()
-        if slot in TEXT_SLOTS:
+        if slot in NON_ICON_SLOTS:
             self._completer_model.clear()
             return
         query = text.strip().lower()

@@ -92,20 +92,24 @@ class TrainingDataManager:
         name: str = "",
         state: AnnotationState = AnnotationState.PENDING,
     ) -> Annotation:
-        """Add a new annotation, save crop image, return the Annotation."""
+        """Add or update annotation by ann_id (no duplicates)."""
         ann = Annotation(bbox=bbox, slot=slot, name=name, state=state)
         key = image_path.name
         if key not in self._annotations:
             self._annotations[key] = []
+        # Update in-place if ann_id already exists
+        for i, d in enumerate(self._annotations[key]):
+            if d.get('ann_id') == ann.ann_id:
+                self._annotations[key][i] = asdict(ann)
+                self._dirty = True
+                return ann
+        # New annotation
         self._annotations[key].append(asdict(ann))
         self._dirty = True
-
-        # Export crop immediately (needs original image path)
         try:
             self._export_crop(image_path, ann)
         except Exception as e:
             logger.warning(f"Could not export crop for {image_path.name}: {e}")
-
         return ann
 
     def add_candidate(
@@ -136,8 +140,15 @@ class TrainingDataManager:
         self._dirty = True
         return True
 
-    def update_annotation(self, image_path: Path, ann: Annotation):
-        """Update an existing annotation in-place (matched by ann_id)."""
+    def update_annotation(
+        self, image_path: Path, ann: Annotation,
+        bbox: tuple | None = None,
+    ):
+        """Update an existing annotation in-place (matched by ann_id).
+        If bbox is provided, replaces ann.bbox before saving."""
+        from dataclasses import replace as dc_replace
+        if bbox is not None:
+            ann = dc_replace(ann, bbox=bbox)
         key = image_path.name
         dicts = self._annotations.get(key, [])
         for i, d in enumerate(dicts):
