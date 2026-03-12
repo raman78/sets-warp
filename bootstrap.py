@@ -887,6 +887,16 @@ def _quick_check_venv() -> list[str]:
     if not broken and 'torch' in installed and not _torch_cpu_sentinel().exists():
         broken += ['torch>=2.1', 'torchvision>=0.16']
 
+    # If CPU sentinel exists but triton reappeared (e.g. installed as a dep),
+    # remove it silently without triggering a full repair
+    if _torch_cpu_sentinel().exists() and 'triton' in installed:
+        try:
+            subprocess.run(
+                [py, '-m', 'pip', 'uninstall', '-y', 'triton'],
+                capture_output=True, timeout=30)
+        except Exception:
+            pass
+
     if broken:
         return broken  # metadata already shows problems, skip import checks
 

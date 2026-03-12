@@ -87,15 +87,6 @@ class LocalTrainWorker(QThread):
 
         # ── 2. Check torch ───────────────────────────────────────────────────
         try:
-            import sys as _sys, types as _types
-            if 'triton' not in _sys.modules or not hasattr(
-                    _sys.modules.get('triton.language', None), 'dtype'):
-                _lang = _types.ModuleType('triton.language')
-                _lang.dtype = type('dtype', (), {})()
-                _stub = _types.ModuleType('triton')
-                _stub.language = _lang
-                _sys.modules['triton'] = _stub
-                _sys.modules['triton.language'] = _lang
             import torch
             import torchvision
         except ImportError:
