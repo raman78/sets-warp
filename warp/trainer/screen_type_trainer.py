@@ -100,13 +100,6 @@ class ScreenTypeTrainerWorker:
         # ── Imports ────────────────────────────────────────────────────────────
         prog(0, 'Importing PyTorch...')
         try:
-            import sys as _sys
-            _triton = _sys.modules.get('triton')
-            if _triton is not None:
-                import logging
-                logging.getLogger('SETS').warning(
-                    f'triton already in sys.modules: file={getattr(_triton, "__file__", "?")}'
-                    f' path={getattr(_triton, "__path__", "?")}')
             import torch
             import torch.nn as nn
             from torch.utils.data import DataLoader, Dataset
@@ -280,33 +273,15 @@ class ScreenTypeTrainerWorker:
         onnx_path = self._models_dir / 'screen_classifier.onnx'
         dummy     = torch.zeros(1, 3, INPUT_SIZE, INPUT_SIZE)
         try:
-            import importlib.util, torch.onnx
-            has_onnxscript = importlib.util.find_spec('onnxscript') is not None
-            if has_onnxscript:
-                torch.onnx.export(
-                    model, dummy, str(onnx_path),
-                    input_names=['input'],
-                    output_names=['output'],
-                    dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}},
-                    opset_version=17,
-                )
-            else:
-                # onnxscript not yet installed — use legacy TorchScript path.
-                # Restart SETS to auto-install onnxscript via bootstrap.
-                scripted = torch.jit.trace(model, dummy)
-                torch.onnx.export(
-                    scripted, dummy, str(onnx_path),
-                    input_names=['input'],
-                    output_names=['output'],
-                    opset_version=12,
-                )
+            scripted = torch.jit.trace(model, dummy)
+            torch.onnx.export(
+                scripted, dummy, str(onnx_path),
+                input_names=['input'],
+                output_names=['output'],
+                opset_version=12,
+            )
         except Exception as e:
-            if 'onnxscript' in str(e):
-                done(False,
-                     'Missing module: onnxscript.\n\n'
-                     'Restart SETS — bootstrap will install it automatically.')
-            else:
-                done(False, f'ONNX export failed: {e}')
+            done(False, f'ONNX export failed: {e}')
             return
 
         # ── Save label map ─────────────────────────────────────────────────────
