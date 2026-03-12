@@ -1150,6 +1150,7 @@ class WarpCoreWindow(QMainWindow):
     def _on_review_row_changed(self, row: int):
         if row < 0 or row >= len(self._recognition_items):
             self._set_review_buttons_enabled(False)
+            self._ann_widget.clear_highlight()
             return
         self._set_review_buttons_enabled(True)
         ri   = self._recognition_items[row]
@@ -1224,6 +1225,7 @@ class WarpCoreWindow(QMainWindow):
         n = len(self._recognition_items)
         if n == 0:
             self._set_review_buttons_enabled(False)
+            self._ann_widget.clear_highlight()
         else:
             self._review_list.setCurrentRow(min(row, n - 1))
         self._update_progress()

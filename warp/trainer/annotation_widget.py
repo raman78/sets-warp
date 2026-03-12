@@ -159,6 +159,10 @@ class AnnotationWidget(QWidget):
             for a in self._annotations
         )
 
+    def clear_highlight(self):
+        self._highlight_bbox = None
+        self.update()
+
     def highlight_bbox(self, bbox: tuple):
         """Highlight a specific bbox from recognition (shown as orange dashed rect)."""
         self._highlight_bbox = bbox
