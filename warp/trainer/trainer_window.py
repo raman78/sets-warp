@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QListWidget, QListWidgetItem,
     QFileDialog, QComboBox, QLineEdit, QGroupBox,
     QProgressBar, QToolBar, QStatusBar, QMessageBox,
-    QInputDialog, QSizePolicy, QFrame,
+    QInputDialog, QSizePolicy, QFrame, QScrollArea,
     QAbstractItemView
 )
 from PySide6.QtCore import Qt, QSettings, QThread, Signal
@@ -470,10 +470,19 @@ class WarpCoreWindow(QMainWindow):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
 
+        # AnnotationWidget displays at 1:1 pixel scale.
+        # QScrollArea provides panning when the image is larger than the viewport.
         self._ann_widget = AnnotationWidget(self._data_mgr)
         self._ann_widget.annotation_added.connect(self._on_bbox_drawn)
         self._ann_widget.item_selected.connect(self._on_item_selected)
-        cl.addWidget(self._ann_widget, 1)
+
+        self._scroll_area = QScrollArea()
+        self._scroll_area.setWidget(self._ann_widget)
+        self._scroll_area.setWidgetResizable(False)  # keep 1:1 — no auto-resize
+        self._scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scroll_area.setStyleSheet('QScrollArea { background: #111; border: none; }')
+
+        cl.addWidget(self._scroll_area, 1)
         cl.addWidget(self._make_bottom_panel())
         return center
 

@@ -19,8 +19,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtWidgets import QWidget, QSizePolicy
-from PySide6.QtCore    import Qt, QRect, QPoint, QRectF, Signal
+from PySide6.QtWidgets import QWidget, QSizePolicy, QScrollArea
+from PySide6.QtCore    import Qt, QRect, QPoint, QRectF, Signal, QSize
 from PySide6.QtGui     import (
     QPainter, QPixmap, QColor, QPen, QBrush, QFont,
     QMouseEvent, QPaintEvent, QKeyEvent
@@ -291,20 +291,27 @@ class AnnotationWidget(QWidget):
 
     # ---------------------------------------------------------------- coordinate transforms
 
+    def sizeHint(self):
+        """Report 1:1 image size so QScrollArea sets scrollbars correctly."""
+        if self._pixmap:
+            return QSize(self._pixmap.width(), self._pixmap.height())
+        return QSize(800, 600)
+
     def _compute_transform(self):
-        """Compute scale and offset to fit image in widget while preserving aspect ratio."""
+        """
+        Always display at original 1:1 pixel scale (no stretching).
+        Centre the image in the widget when the widget is larger than the image.
+        When the widget is smaller the scroll area handles panning.
+        """
         if not self._pixmap:
             return
         pw = self._pixmap.width()
         ph = self._pixmap.height()
         ww = self.width()
         wh = self.height()
-
-        self._scale    = min(ww / pw, wh / ph)
-        scaled_w       = int(pw * self._scale)
-        scaled_h       = int(ph * self._scale)
-        self._offset_x = (ww - scaled_w) // 2
-        self._offset_y = (wh - scaled_h) // 2
+        self._scale    = 1.0
+        self._offset_x = max(0, (ww - pw) // 2)
+        self._offset_y = max(0, (wh - ph) // 2)
 
     def _img_to_screen_rect(self, bbox: tuple) -> QRect:
         x, y, w, h = bbox

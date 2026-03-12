@@ -79,7 +79,7 @@ def _open_warp_core(sets_app) -> None:
     if win is None or not win.isVisible():
         win = WarpCoreWindow(sets_app=sets_app)
         sets_app._warp_core_window = win
-        win.show()
+        win.showMaximized()
     else:
         win.raise_()
         win.activateWindow()
