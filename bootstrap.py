@@ -94,9 +94,16 @@ def venv_python() -> Path:
 
 
 def running_in_our_venv() -> bool:
-    """True only when sys.executable IS our venv Python."""
+    """True only when sys.executable IS our venv Python (handles symlinks)."""
     try:
-        return Path(sys.executable).resolve() == venv_python().resolve()
+        exe     = Path(sys.executable).resolve()
+        venv_py = venv_python().resolve()
+        if exe == venv_py:
+            return True
+        # sys.executable may be python3.13 while venv_python() points to 'python'
+        # — both resolve to the same directory, accept any python* in venv bin/
+        return (exe.parent == venv_py.parent and
+                exe.name.startswith('python'))
     except Exception:
         return False
 
@@ -324,48 +331,48 @@ def install_dependencies(on_line, deps: list | None = None, force: bool = False)
 
     if deps is None:
         deps = parse_pyproject()
-    total_deps = len(deps)
-    if total_deps == 0:
+    if not deps:
         on_line("  All packages already up to date.")
         return
 
-    on_line(f"  Installing {total_deps} package(s)...")
+    # ── Split: torch/torchvision need CPU-only index, rest use PyPI ───────────
+    TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+    TORCH_PKGS      = {'torch', 'torchvision', 'torchaudio'}
+
+    torch_deps  = [d for d in deps if re.split(r'[><=!\[]', d)[0].strip().lower() in TORCH_PKGS]
+    other_deps  = [d for d in deps if re.split(r'[><=!\[]', d)[0].strip().lower() not in TORCH_PKGS]
 
     install_start = time.monotonic()
-    times = []
 
-    for i, dep in enumerate(deps):
-        display = re.split(r"[><=!]", dep)[0].strip()
-        done = i
-        remaining = total_deps - done
-
-        if times:
-            avg = sum(times) / len(times)
-            eta_sec = avg * remaining
-            if eta_sec >= 60:
-                eta_str = f"~{int(eta_sec // 60)}m {int(eta_sec % 60)}s remaining"
-            else:
-                eta_str = f"~{int(eta_sec)}s remaining"
-            on_line(f"  [{done}/{total_deps}] Installing {display}...  ({eta_str})", replace_last=True)
-        else:
-            on_line(f"  [{done}/{total_deps}] Installing {display}...", replace_last=True)
-
-        t0 = time.monotonic()
+    def _install_batch(batch: list[str], extra_args: list[str], label: str):
+        if not batch:
+            return
+        on_line(f"  Installing {label}...")
         pip_args = [py, "-m", "pip", "install"]
         if force:
             pip_args.append("--force-reinstall")
-        pip_args.append(dep)
-        _run_pip(pip_args, on_line, display)
-        times.append(time.monotonic() - t0)
+        pip_args += extra_args + batch
+        _run_pip(pip_args, on_line, label)
+
+    # Install torch CPU-only first (separate index)
+    _install_batch(
+        torch_deps,
+        ["--index-url", TORCH_CPU_INDEX],
+        "torch (CPU-only)"
+    )
+
+    # Install everything else in one shot (pip resolves transitive deps)
+    _install_batch(
+        other_deps,
+        [],
+        f"{len(other_deps)} package(s)"
+    )
 
     total_elapsed = time.monotonic() - install_start
-    if total_elapsed >= 60:
-        elapsed_str = f"{int(total_elapsed // 60)}m {int(total_elapsed % 60)}s"
-    else:
-        elapsed_str = f"{int(total_elapsed)}s"
-    on_line(f"  [{total_deps}/{total_deps}] All packages installed  (total: {elapsed_str})", replace_last=True)
+    elapsed_str = (f"{int(total_elapsed // 60)}m {int(total_elapsed % 60)}s"
+                   if total_elapsed >= 60 else f"{int(total_elapsed)}s")
+    on_line(f"  All packages installed  (total: {elapsed_str})")
 
-    # Post-install: purge pip cache
     on_line("  Purging pip cache...")
     _cleanup_after_install(on_line)
 

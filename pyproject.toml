@@ -27,12 +27,17 @@ dependencies = [
   "easyocr>=1.7",
   "onnxruntime>=1.18",
   "huggingface-hub>=0.22",
-  # WARP — ML training dependencies
+  # WARP — ML training dependencies (CPU-only torch — no CUDA drivers needed)
   "torch>=2.1",
   "torchvision>=0.16",
   "onnx>=1.15",
   "onnxscript>=0.1",
-  "typing_extensions>=4.8"
+  "typing_extensions>=4.8",
+  "pillow>=9.0",
+  "sympy>=1.12",
+  "fsspec>=2024.1",
+  "networkx>=3.0",
+  "pyyaml>=6.0"
 ]
 dynamic = ["version"]
 
