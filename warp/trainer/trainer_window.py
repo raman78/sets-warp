@@ -1435,10 +1435,23 @@ class WarpCoreWindow(QMainWindow):
             fname = self._screenshots[self._current_idx].name
             self._recognition_cache[fname] = list(self._recognition_items)
 
-    def _build_search_candidates(self) -> list[str]:
-        """Collect all known item names from SETS cache + specializations."""
+    def _build_search_candidates(self, slot: str = '') -> list[str]:
+        """
+        Collect item names from SETS cache relevant to the given slot.
+        If slot starts with 'Boff' → only BOFF abilities.
+        Otherwise → equipment + traits + specializations.
+        """
         candidates: list[str] = []
-        if self._sets:
+        if not self._sets:
+            return candidates
+        is_boff = slot.startswith('Boff')
+        if is_boff:
+            try:
+                candidates.extend(
+                    self._sets.cache.boff_abilities.get('all', {}).keys())
+            except Exception:
+                pass
+        else:
             try:
                 for cat_items in self._sets.cache.equipment.values():
                     candidates.extend(cat_items)
@@ -1452,7 +1465,13 @@ class WarpCoreWindow(QMainWindow):
                 candidates.extend(self._sets.cache.traits)
             except Exception:
                 pass
-        candidates.extend(SPECIALIZATION_NAMES)
+            try:
+                # Also include boff abilities for mixed/unknown slots
+                candidates.extend(
+                    self._sets.cache.boff_abilities.get('all', {}).keys())
+            except Exception:
+                pass
+            candidates.extend(SPECIALIZATION_NAMES)
         return sorted(set(candidates))
 
     def _on_slot_changed(self, slot: str):
@@ -1507,7 +1526,7 @@ class WarpCoreWindow(QMainWindow):
         if len(query) < 2:
             self._completer_model.clear()
             return
-        all_names = self._build_search_candidates()
+        all_names = self._build_search_candidates(slot)
         matches   = [n for n in all_names if query in n.lower()][:60]
         self._completer_model.clear()
         for name in matches:
