@@ -97,6 +97,10 @@ class AnnotationWidget(QWidget):
         self._highlight_bbox = None
         self._drawing       = False
         self._compute_transform()
+        # Explicitly resize widget to image size so QScrollArea
+        # knows the full content area and shows scrollbars correctly.
+        if self._pixmap:
+            self.resize(self._pixmap.width(), self._pixmap.height())
         self.update()
 
     def confirm_current(self, slot: str, name: str):
@@ -168,10 +172,9 @@ class AnnotationWidget(QWidget):
 
         # Draw image
         if self._pixmap:
-            self._compute_transform()
             painter.drawPixmap(self._offset_x, self._offset_y,
-                               int(self._pixmap.width()  * self._scale),
-                               int(self._pixmap.height() * self._scale),
+                               self._pixmap.width(),
+                               self._pixmap.height(),
                                self._pixmap)
         else:
             painter.fillRect(self.rect(), QColor("#111"))
