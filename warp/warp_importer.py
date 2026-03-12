@@ -406,14 +406,19 @@ class WarpImporter:
         return result
 
     def _process_image(self, img: np.ndarray, source: str) -> ImportResult:
-        # Step 1 — extract ship info
-        text_info  = self._get_text().extract_ship_info(img)
-        ship_name  = text_info.get('ship_name', '')
-        ship_type  = text_info.get('ship_type', '')
-        # Use user-selected build_type if set; fall back to OCR detection
-        if self._build_type in ('SPACE', 'GROUND'):
+        # Step 1 — extract ship info via OCR only when build_type is unknown.
+        # When called from the trainer (build_type always set), skip OCR entirely.
+        if self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
+                                'GROUND_TRAITS', 'BOFFS', 'SPEC',
+                                'SPACE_MIXED', 'GROUND_MIXED'):
             build_type = self._build_type
+            ship_name  = ''
+            ship_type  = ''
+            text_info  = {}
         else:
+            text_info  = self._get_text().extract_ship_info(img)
+            ship_name  = text_info.get('ship_name', '')
+            ship_type  = text_info.get('ship_type', '')
             build_type = 'GROUND' if text_info.get('build_type') == 'GROUND' else 'SPACE'
 
         # Step 2 — get exact slot profile from ship_list.json
