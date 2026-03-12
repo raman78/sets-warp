@@ -210,38 +210,53 @@ class ScreenTypeDetectorWorker(QThread):
     progress = Signal(int, int, str, str)    # idx, total, filename, stype
     finished = Signal(dict)                  # {filename: stype}
 
-    def __init__(self, paths: list, parent=None):
+    def __init__(self, paths: list, models_dir=None, parent=None):
         super().__init__(parent)
-        self._paths = paths
+        self._paths      = paths
+        self._models_dir = models_dir
 
     def run(self):
         results: dict[str, str] = {}
         total = len(self._paths)
-        # Instantiate TextExtractor once — easyocr model loads only once
+
+        # Try ML classifier first (may not exist on first run)
+        classifier = None
+        if self._models_dir is not None:
+            try:
+                from warp.recognition.screen_classifier import ScreenTypeClassifier
+                classifier = ScreenTypeClassifier(self._models_dir)
+            except Exception as e:
+                log.debug(f'ScreenTypeDetector: classifier init failed: {e}')
+
+        # OCR fallback — loads easyocr model once
+        te = None
         try:
             from warp.recognition.text_extractor import TextExtractor
             te = TextExtractor()
         except Exception as e:
             log.warning(f'ScreenTypeDetector: TextExtractor init failed: {e}')
-            for p in self._paths:
-                results[p.name] = 'UNKNOWN'
-            self.finished.emit(results)
-            return
 
+        import cv2
         for idx, path in enumerate(self._paths):
             if self.isInterruptionRequested():
                 break
             stype = 'UNKNOWN'
             try:
-                import cv2
                 img = cv2.imread(str(path))
                 if img is not None:
-                    info  = te.extract_ship_info(img)
-                    btype = info.get('build_type', '')
-                    if btype in ('SPACE', 'GROUND', 'SPACE_TRAITS',
-                                 'GROUND_TRAITS', 'BOFFS', 'SPEC',
-                                 'SPACE_MIXED', 'GROUND_MIXED'):
-                        stype = btype
+                    # Stage 1+2: ML classifier (ONNX model + session k-NN)
+                    if classifier is not None:
+                        ml_stype, ml_conf = classifier.classify(img)
+                        if ml_stype and ml_conf >= 0.70:
+                            stype = ml_stype
+                    # Stage 3: OCR fallback when ML uncertain
+                    if stype == 'UNKNOWN' and te is not None:
+                        info  = te.extract_ship_info(img)
+                        btype = info.get('build_type', '')
+                        if btype in ('SPACE', 'GROUND', 'SPACE_TRAITS',
+                                     'GROUND_TRAITS', 'BOFFS', 'SPEC',
+                                     'SPACE_MIXED', 'GROUND_MIXED'):
+                            stype = btype
             except Exception as e:
                 log.debug(f'Screen type detection error for {path.name}: {e}')
             results[path.name] = stype
@@ -792,7 +807,7 @@ class WarpCoreWindow(QMainWindow):
         act('Open Folder',  'Open screenshots folder',              self._on_open)
         act('Save',         'Save annotations locally',             self._on_save)
         act('Auto-Detect',  'Auto-detect icons in all screenshots', self._on_auto_detect)
-        act('Train Model',  'Train local icon classifier on confirmed annotations',
+        act('Train Model',  'Train icon + screen-type classifiers on confirmed data',
             self._on_train)
         act('Sync to Hub',  'Upload annotations to Hugging Face Hub', self._on_sync)
 
@@ -835,7 +850,9 @@ class WarpCoreWindow(QMainWindow):
         self._detect_dlg = _DetectProgressDialog(total, parent=self)
         self._detect_dlg.cancelled.connect(self._on_detect_cancelled)
         self._detect_dlg.show()
-        self._detect_worker = ScreenTypeDetectorWorker(self._screenshots, parent=self)
+        models_dir = self._sets_root / 'warp' / 'models'
+        self._detect_worker = ScreenTypeDetectorWorker(
+            self._screenshots, models_dir=models_dir, parent=self)
         self._detect_worker.progress.connect(self._on_detect_progress)
         self._detect_worker.finished.connect(self._on_detect_finished)
         self._detect_worker.start()
@@ -981,7 +998,9 @@ class WarpCoreWindow(QMainWindow):
     def _on_type_override_changed(self, index: int):
         """
         User manually overrides screen type.
-        Clears cache and triggers background re-recognition.
+        - Updates in-memory screen type
+        - Saves 224×224 PNG as training example for the ML classifier
+        - Adds to session k-NN immediately
         """
         if self._current_idx < 0:
             return
@@ -995,7 +1014,7 @@ class WarpCoreWindow(QMainWindow):
             label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
             item.setText(f'{icon} {label}\n  {path.name}')
         self._update_screen_type_ui(stype)
-        self._start_recognition(path, stype)
+        self._save_screen_type_example(path, stype)
 
     # -- Auto-detect ----------------------------------------------------------
 
@@ -1163,6 +1182,33 @@ class WarpCoreWindow(QMainWindow):
         self._name_edit.setText(ri['name'])
         if ri.get('bbox'):
             self._ann_widget.set_selected_row(row)
+
+    def _save_screen_type_example(self, path: Path, stype: str) -> None:
+        """
+        Save a 224x224 PNG as an ML training example and register it
+        in the session k-NN so subsequent Auto-Detect uses it immediately.
+        """
+        try:
+            import cv2, hashlib
+            img = cv2.imread(str(path))
+            if img is None:
+                return
+            small   = cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)
+            out_dir = (self._sets_root / 'warp' / 'training_data'
+                       / 'screen_types' / stype)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            suffix   = hashlib.md5(path.name.encode()).hexdigest()[:8]
+            out_path = out_dir / f'{path.stem}_{suffix}.png'
+            cv2.imwrite(str(out_path), small)
+            log.debug(f'Screen type example saved: {out_path}')
+            # Session k-NN — effective immediately
+            from warp.recognition.screen_classifier import ScreenTypeClassifier
+            ScreenTypeClassifier.add_session_example(img, stype)
+            n = len(list(out_dir.glob('*.png')))
+            self.statusBar().showMessage(
+                f'Screen type set to {stype}  ({n} training example(s) saved)')
+        except Exception as e:
+            log.warning(f'_save_screen_type_example failed: {e}')
 
     def _init_sync_client(self):
         """Start sync client immediately and schedule periodic refresh."""
@@ -1565,27 +1611,135 @@ class WarpCoreWindow(QMainWindow):
         self.statusBar().showMessage('Annotations saved.')
 
     def _on_train(self):
-        """Start local training on confirmed annotations."""
-        from warp.trainer.local_trainer import LocalTrainWorker
-
+        """
+        Train both models in sequence:
+          1. Screen-type classifier  (MobileNetV3) — 0-45%
+          2. Icon classifier         (EfficientNet) — 45-100%
+        Uses all confirmed data: screen-type corrections + icon annotations.
+        """
         if self._train_worker and self._train_worker.isRunning():
             self.statusBar().showMessage('Training already running...')
             return
 
-        # Show progress dialog
         self._train_dlg = _TrainProgressDialog(parent=self)
         self._train_dlg.cancelled.connect(self._on_train_cancelled)
         self._train_dlg.show()
 
-        self._train_worker = LocalTrainWorker(
-            data_mgr  = self._data_mgr,
-            sets_root = self._sets_root,
-            parent    = self,
-        )
+        from PySide6.QtCore import QThread, Signal as _Signal
+
+        data_root  = self._sets_root / 'warp' / 'training_data'
+        models_dir = self._sets_root / 'warp' / 'models'
+        data_mgr   = self._data_mgr
+        sets_root  = self._sets_root
+
+        class _CombinedTrainWorker(QThread):
+            progress = _Signal(int, str)
+            finished = _Signal(bool, str)
+
+            def __init__(self_, parent=None):
+                super().__init__(parent)
+
+            def run(self_):
+                interrupted = self_.isInterruptionRequested
+
+                # ── Phase 1: Screen-type classifier (0-45%) ────────────────
+                sc_ok  = True
+                sc_msg = ''
+                sc_dir = data_root / 'screen_types'
+                has_sc_data = sc_dir.exists() and any(
+                    len(list(d.glob('*.png'))) > 0
+                    for d in sc_dir.iterdir() if d.is_dir()
+                ) if sc_dir.exists() else False
+
+                if has_sc_data:
+                    def sc_prog(pct, msg):
+                        self_.progress.emit(int(pct * 0.45), f'[Screen types] {msg}')
+                    def sc_done(ok, msg):
+                        nonlocal sc_ok, sc_msg
+                        sc_ok, sc_msg = ok, msg
+
+                    from warp.trainer.screen_type_trainer import ScreenTypeTrainerWorker
+                    w = ScreenTypeTrainerWorker(data_root, models_dir)
+                    w.run(sc_prog, sc_done, interrupted)
+                    if interrupted():
+                        self_.finished.emit(False, 'Cancelled')
+                        return
+                else:
+                    self_.progress.emit(5, '[Screen types] No data yet — skipping')
+
+                # ── Phase 2: Icon classifier (45-100%) ────────────────────
+                self_.progress.emit(45, '[Icons] Starting icon classifier training...')
+
+                ic_ok  = True
+                ic_msg = ''
+
+                try:
+                    from warp.trainer.local_trainer import LocalTrainWorker as _LTW
+                    from PySide6.QtCore import QThread as _QT, Signal as _S
+
+                    class _IconThread(_QT):
+                        progress = _S(int, str)
+                        finished = _S(bool, str)
+                        def __init__(self2, parent=None):
+                            super().__init__(parent)
+                            self2._worker = _LTW.__new__(_LTW)
+                            self2._worker._data_mgr  = data_mgr
+                            self2._worker._sets_root = sets_root
+                            # Wire worker signals to thread signals
+                            self2._worker.progress = self2.progress
+                            self2._worker.finished = self2.finished
+                        def run(self2):
+                            self2._worker._train()
+
+                    # Run synchronously in current thread via direct call
+                    icon_worker = _LTW.__new__(_LTW)
+                    icon_worker._data_mgr  = data_mgr
+                    icon_worker._sets_root = sets_root
+
+                    # Capture progress/finished via monkey-patch
+                    class _FakeSignal:
+                        def __init__(self2, cb): self2._cb = cb
+                        def emit(self2, *a):     self2._cb(*a)
+
+                    icon_worker.progress = _FakeSignal(
+                        lambda pct, msg: self_.progress.emit(
+                            45 + int(pct * 0.55), f'[Icons] {msg}'))
+                    icon_worker.finished = _FakeSignal(
+                        lambda ok, msg: (
+                            ic_ok.__class__,  # noop, captured below
+                        ))
+
+                    results = {}
+                    icon_worker.progress = _FakeSignal(
+                        lambda pct, msg: self_.progress.emit(
+                            45 + int(pct * 0.55), f'[Icons] {msg}'))
+                    icon_worker.finished = _FakeSignal(
+                        lambda ok, msg: results.update({'ok': ok, 'msg': msg}))
+
+                    icon_worker._train()
+                    ic_ok  = results.get('ok',  False)
+                    ic_msg = results.get('msg', 'No result')
+                except Exception as e:
+                    ic_ok  = False
+                    ic_msg = str(e)
+
+                if interrupted():
+                    self_.finished.emit(False, 'Cancelled')
+                    return
+
+                # ── Summary ───────────────────────────────────────────────
+                parts = []
+                if has_sc_data:
+                    parts.append(f'Screen types: {"OK" if sc_ok else "FAILED"} — {sc_msg}')
+                parts.append(f'Icons: {"OK" if ic_ok else "FAILED"} — {ic_msg}')
+                overall_ok = ic_ok and (sc_ok if has_sc_data else True)
+                self_.finished.emit(overall_ok, '\n\n'.join(parts))
+
+        self._train_worker = _CombinedTrainWorker(parent=self)
         self._train_worker.progress.connect(self._train_dlg.update_progress)
         self._train_worker.finished.connect(self._on_train_finished)
         self._train_worker.start()
-        self.statusBar().showMessage('Local training started...')
+        self.statusBar().showMessage('Training started (screen types + icons)...')
 
     def _on_train_cancelled(self):
         if self._train_worker and self._train_worker.isRunning():
@@ -1603,12 +1757,18 @@ class WarpCoreWindow(QMainWindow):
         from PySide6.QtWidgets import QMessageBox
         if success:
             QMessageBox.information(self, 'Training Complete', message)
-            # Invalidate all recognition caches so next view uses new model
+            # Clear caches — next Auto-Detect and folder-open use new models
             self._recognition_cache.clear()
-            if self._current_idx >= 0:
-                path  = self._screenshots[self._current_idx]
-                stype = self._screen_types.get(path.name, 'UNKNOWN')
-                self._start_recognition(path, stype)
+            try:
+                from warp.recognition.icon_matcher import SETSIconMatcher
+                SETSIconMatcher.reset_ml_session()
+            except Exception:
+                pass
+            try:
+                from warp.recognition.screen_classifier import ScreenTypeClassifier
+                ScreenTypeClassifier.clear_session()
+            except Exception:
+                pass
         else:
             QMessageBox.warning(self, 'Training Failed', message)
         self._train_worker = None
