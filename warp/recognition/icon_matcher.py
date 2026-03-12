@@ -355,7 +355,6 @@ class SETSIconMatcher:
             return None
 
     @classmethod
-    @classmethod
     def add_session_example(cls, crop_bgr: 'np.ndarray', name: str) -> None:
         """
         Add a user-confirmed crop to the in-memory session index.

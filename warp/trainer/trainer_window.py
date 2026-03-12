@@ -764,7 +764,7 @@ class WarpCoreWindow(QMainWindow):
         self._btn_add_bbox.setCheckable(True)
         self._btn_add_bbox.clicked.connect(self._on_add_bbox_toggle)
 
-        self._btn_remove_item = QPushButton('Remove')
+        self._btn_remove_item = QPushButton('- Remove BBox')
         self._btn_remove_item.setToolTip(
             'Remove selected item from Recognition Review list')
         self._btn_remove_item.setStyleSheet(
@@ -1165,8 +1165,16 @@ class WarpCoreWindow(QMainWindow):
             self._set_review_buttons_enabled(False)
             self._ann_widget.clear_highlight()
             return
-        self._set_review_buttons_enabled(True)
-        ri   = self._recognition_items[row]
+        ri = self._recognition_items[row]
+        is_confirmed = ri.get('state') == 'confirmed'
+        # Always enable Remove; Edit BBox only when confirmed (to unlock editing)
+        # or when pending/new (already editable via Edit BBox toggle)
+        self._btn_remove_item.setEnabled(True)
+        self._btn_edit_bbox.setEnabled(True)
+        # Confirmed items: force canvas into view-only mode until Edit BBox clicked
+        if is_confirmed:
+            self._btn_edit_bbox.setChecked(False)
+            self._ann_widget.set_draw_mode(False)
         slot = ri['slot']
         # Try to find slot in current combo; if missing expand to ALL
         idx = self._slot_combo.findText(slot)
@@ -1297,14 +1305,22 @@ class WarpCoreWindow(QMainWindow):
         self._manual_bbox_mode = True
         self._btn_edit_bbox.setChecked(True)
         row  = self._review_list.currentRow()
-        slot = (self._recognition_items[row]['slot']
-                if 0 <= row < len(self._recognition_items) else '?')
+        if 0 <= row < len(self._recognition_items):
+            ri   = self._recognition_items[row]
+            slot = ri['slot']
+            # Unlock confirmed item back to pending so canvas allows move/resize
+            if ri.get('state') == 'confirmed':
+                ri['state'] = 'pending'
+                self._ann_widget.set_review_items(self._recognition_items)
+                self._ann_widget.set_selected_row(row)
+        else:
+            slot = '?'
         self._manual_mode_lbl.setText(
             f'Draw a rectangle to redefine region for:\n{slot}')
         self._manual_mode_lbl.setVisible(True)
         self._ann_widget.set_draw_mode(True)
         self.statusBar().showMessage(
-            'Manual bbox mode — drag a rectangle on the image.')
+            'Edit BBox mode — drag a rectangle on the image.')
 
     def _exit_manual_bbox_mode(self):
         self._manual_bbox_mode = False
