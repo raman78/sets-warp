@@ -891,6 +891,7 @@ class WarpCoreWindow(QMainWindow):
             self._review_summary.setText(
                 'Recognition not yet run for this screenshot.')
             self._set_review_buttons_enabled(False)
+        self._update_add_bbox_btn()
         icon  = SCREEN_TYPE_ICONS.get(stype, '?')
         label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
         self.statusBar().showMessage(
@@ -947,6 +948,10 @@ class WarpCoreWindow(QMainWindow):
     # -- Auto-detect ----------------------------------------------------------
 
     def _on_auto_detect(self):
+        """
+        Run layout detection on all screenshots, add bboxes to data_mgr,
+        then run recognition on the current screenshot so Review updates.
+        """
         if not self._screenshots:
             return
         from warp.recognition.layout_detector import LayoutDetector
@@ -958,20 +963,30 @@ class WarpCoreWindow(QMainWindow):
             if img is None:
                 continue
             stype = self._screen_types.get(path.name, 'UNKNOWN')
-            if stype not in ('SPACE', 'GROUND', 'UNKNOWN'):
+            # Map screen type -> detector build_type
+            if stype in ('GROUND', 'GROUND_MIXED'):
+                build_type = 'GROUND'
+            elif stype in ('SPACE', 'SPACE_MIXED', 'UNKNOWN'):
+                build_type = 'SPACE'
+            else:
+                # TRAITS, BOFFS, SPEC -- layout detector not calibrated for these yet
                 continue
-            build_type = 'GROUND' if stype == 'GROUND' else 'SPACE'
             for slot_name, bboxes in det.detect(img, build_type).items():
                 for i, bbox in enumerate(bboxes):
                     if self._data_mgr.add_candidate(path, slot_name, i, bbox):
                         new += 1
         self._update_progress()
+        # Invalidate recognition cache for all screenshots so next view re-runs
+        self._recognition_cache.clear()
+        # Re-run recognition on current screenshot to refresh Review panel
         if self._current_idx >= 0:
             path  = self._screenshots[self._current_idx]
             stype = self._screen_types.get(path.name, 'UNKNOWN')
             self._ann_widget.load_image(path)
             self._update_screen_type_ui(stype)
-        self.statusBar().showMessage(f'Auto-detect done -- {new} candidates added.')
+            self._start_recognition(path, stype)
+        self.statusBar().showMessage(
+            f'Auto-detect done -- {new} new candidate(s) added.')
 
     # -- Recognition background worker ----------------------------------------
 
@@ -1168,9 +1183,14 @@ class WarpCoreWindow(QMainWindow):
                 return
 
     def _set_review_buttons_enabled(self, enabled: bool):
-        for btn in (self._btn_edit_bbox, self._btn_remove_item,
-                    self._btn_add_bbox):
+        """Enable/disable per-item buttons. Add BBox is always on when a
+        screenshot is loaded -- managed separately by _update_add_bbox_btn."""
+        for btn in (self._btn_edit_bbox, self._btn_remove_item):
             btn.setEnabled(enabled)
+
+    def _update_add_bbox_btn(self):
+        """+ Add BBox is active whenever a screenshot is displayed."""
+        self._btn_add_bbox.setEnabled(self._current_idx >= 0)
 
     # ── Canvas callbacks ──────────────────────────────────────────────────────
 
