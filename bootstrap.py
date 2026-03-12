@@ -882,11 +882,6 @@ def _quick_check_venv() -> list[str]:
     if not broken and 'torch' in installed and not _torch_cpu_sentinel().exists():
         broken += ['torch>=2.1', 'torchvision>=0.16']
 
-    # If CPU sentinel exists but triton is still present, flag for cleanup
-    # (triton is GPU-only and breaks CPU torch import)
-    if not broken and _torch_cpu_sentinel().exists() and 'triton' in installed:
-        broken += ['torch>=2.1', 'torchvision>=0.16']  # trigger reinstall+cleanup
-
     if broken:
         return broken  # metadata already shows problems, skip import checks
 
@@ -1218,8 +1213,6 @@ def _repair_worker(on_line, on_done, on_error, broken: list[str]):
         for dep in broken:
             on_line(f"  • {dep}")
         on_line("")
-        on_line("Removing obsolete packages...")
-        _uninstall_obsolete_packages(on_line)
         on_line("Cleaning stale .venv cache...")
         _cleanup_venv_pycache(on_line)
         install_dependencies(on_line, deps=broken, force=True)
