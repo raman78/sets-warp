@@ -115,6 +115,14 @@ class LayoutDetector:
         ship_profile: dict | None = None,
     ) -> dict[str, list[tuple[int, int, int, int]]]:
 
+        # Dispatch non-equipment build types to specialized detectors
+        if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
+            return self._detect_traits(img, build_type)
+        if build_type == 'BOFFS':
+            return self._detect_boffs(img)
+        if build_type == 'SPEC':
+            return self._detect_spec(img)
+
         profile = ship_profile or {}
         slot_order = (SPACE_SLOT_ORDER_CARRIER
                       if profile.get('Hangar', 0) > 0
@@ -135,6 +143,293 @@ class LayoutDetector:
         # Strategy 3: anchor fallback
         log.debug('LayoutDetector: using anchor fallback')
         return self._detect_via_anchors(img, slot_order, profile)
+
+    # ── Traits detection ───────────────────────────────────────────────────────
+    # Traits are displayed as horizontal grids of icons under a text header.
+    # We OCR headers then crop icon rows beneath each.
+
+    def _detect_traits(
+        self,
+        img:        np.ndarray,
+        build_type: str,
+    ) -> dict[str, list[tuple[int, int, int, int]]]:
+        """
+        Detect trait icon grids by finding section headers via OCR,
+        then extracting icon bboxes from the row below each header.
+
+        Works for both the standalone Traits tab and the STOCD overlay
+        (where traits occupy the middle column).
+        """
+        h, w = img.shape[:2]
+
+        # Section headers we look for (lowercase)
+        if 'GROUND' in build_type:
+            section_map = {
+                'personal ground traits': 'Personal Ground Traits',
+                'ground reputation':       'Ground Reputation',
+                'active ground rep':       'Active Ground Rep',
+            }
+        else:
+            section_map = {
+                'personal space traits':  'Personal Space Traits',
+                'starship traits':        'Starship Traits',
+                'space reputation':       'Space Reputation',
+                'active space rep':       'Active Space Rep',
+                # custom ship traits shown as "[Name] Traits"
+            }
+
+        try:
+            ocr_out = self._get_ocr().readtext(img)
+        except Exception as e:
+            log.debug(f'Traits OCR failed: {e}')
+            return {}
+
+        # Find header positions
+        headers: list[tuple[str, int, int]] = []  # (canonical, cy, x_right)
+        for (bbox, text, conf) in ocr_out:
+            if conf < 0.3:
+                continue
+            tl, tr = bbox[0], bbox[1]
+            y_center = int((tl[1] + bbox[2][1]) / 2)
+            text_low = text.lower().strip()
+
+            # Exact or fuzzy match against known headers
+            matched = None
+            for kw, canonical in section_map.items():
+                if kw in text_low or text_low in kw:
+                    matched = canonical
+                    break
+            # Custom "[Ship] Traits" header
+            if matched is None and text_low.endswith('traits') and len(text_low) > 6:
+                matched = text.strip()   # keep as-is
+
+            if matched:
+                x_right = int(max(p[0] for p in bbox))
+                headers.append((matched, y_center, x_right))
+
+        if not headers:
+            log.debug('Traits: no section headers found via OCR')
+            return {}
+
+        headers.sort(key=lambda x: x[1])   # sort by y position
+
+        # Estimate icon size from image dimensions
+        # Typical trait icon: ~40–55px on a 1366×768 screenshot
+        icon_est = max(32, int(h * 0.055))
+
+        result: dict[str, list[tuple[int, int, int, int]]] = {}
+
+        for i, (section, hy, x_right) in enumerate(headers):
+            # Icon row starts ~20px below the header text
+            row_y = hy + int(icon_est * 0.5)
+            row_y_end = (headers[i + 1][1] - 10) if i + 1 < len(headers) else (row_y + icon_est + 20)
+
+            # Scan that horizontal strip for icon clusters
+            strip = img[max(0, row_y): min(h, row_y_end), :]
+            if strip.size == 0:
+                continue
+
+            bboxes = self._find_icon_bboxes_in_strip(
+                strip,
+                y_offset=max(0, row_y),
+                icon_size=icon_est,
+            )
+            if bboxes:
+                result[section] = bboxes
+
+        return result
+
+    def _find_icon_bboxes_in_strip(
+        self,
+        strip:     np.ndarray,
+        y_offset:  int,
+        icon_size: int,
+    ) -> list[tuple[int, int, int, int]]:
+        """
+        Find individual icon bboxes in a horizontal strip.
+        Uses brightness variance to locate icon cells.
+        """
+        import cv2
+
+        sh, sw = strip.shape[:2]
+        if sh == 0 or sw == 0:
+            return []
+
+        # Threshold: bright pixels (icons have colored art vs dark background)
+        gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
+
+        # Column brightness profile — find icon-dense columns
+        col_bright = np.sum(mask, axis=0).astype(float) / 255
+
+        # Find runs of bright columns (icons)
+        in_icon = False
+        start = 0
+        bboxes = []
+        min_w = max(20, icon_size // 2)
+
+        for x in range(sw):
+            bright = col_bright[x] > sh * 0.2
+            if bright and not in_icon:
+                in_icon = True
+                start = x
+            elif not bright and in_icon:
+                in_icon = False
+                run_w = x - start
+                if run_w >= min_w:
+                    # Center vertically in strip
+                    y = max(0, (sh - icon_size) // 2)
+                    bboxes.append((start, y_offset + y, run_w, min(icon_size, sh)))
+                start = x
+        # Close last run
+        if in_icon:
+            run_w = sw - start
+            if run_w >= min_w:
+                y = max(0, (sh - icon_size) // 2)
+                bboxes.append((start, y_offset + y, run_w, min(icon_size, sh)))
+
+        return bboxes
+
+    # ── BOffs detection ────────────────────────────────────────────────────────
+    # BOffs panel (right side of Status or dedicated Boff tab):
+    # profession headers (Tactical / Engineering / Science / ...) with
+    # ability icons listed under each seat.
+
+    def _detect_boffs(
+        self,
+        img: np.ndarray,
+    ) -> dict[str, list[tuple[int, int, int, int]]]:
+        """
+        Detect Boff ability icons grouped by profession.
+        Uses OCR to find profession headers, then extracts icon rows.
+        """
+        h, w = img.shape[:2]
+
+        PROFESSION_MAP = {
+            'tactical':      'Boff Tactical',
+            'engineering':   'Boff Engineering',
+            'science':       'Boff Science',
+            'operations':    'Boff Operations',
+            'intelligence':  'Boff Intelligence',
+            'command':       'Boff Command',
+            'pilot':         'Boff Pilot',
+            'miracle worker':'Boff Miracle Worker',
+            'temporal':      'Boff Temporal',
+            'medical':       'Boff Science',   # Medical maps to Science abilities
+        }
+
+        try:
+            # Right 45% of image where boff panel lives
+            x_start = int(w * 0.55)
+            roi = img[:, x_start:]
+            ocr_out = self._get_ocr().readtext(roi)
+        except Exception as e:
+            log.debug(f'BOffs OCR failed: {e}')
+            return {}
+
+        # Find profession headers
+        headers: list[tuple[str, int]] = []  # (canonical_name, y_center)
+        for (bbox, text, conf) in ocr_out:
+            if conf < 0.3:
+                continue
+            text_low = text.lower().strip()
+            for kw, canonical in PROFESSION_MAP.items():
+                if kw in text_low:
+                    y_center = int((bbox[0][1] + bbox[2][1]) / 2)
+                    headers.append((canonical, y_center))
+                    break
+
+        if not headers:
+            log.debug('BOffs: no profession headers found')
+            return {}
+
+        headers.sort(key=lambda x: x[1])
+
+        # Merge duplicate professions (keep first occurrence per canonical)
+        seen: set[str] = set()
+        merged: list[tuple[str, int]] = []
+        for name, y in headers:
+            if name not in seen:
+                seen.add(name)
+                merged.append((name, y))
+        headers = merged
+
+        x_start = int(w * 0.55)
+        icon_est = max(32, int(h * 0.055))
+        result: dict[str, list[tuple[int, int, int, int]]] = {}
+
+        for i, (section, hy) in enumerate(headers):
+            # Boff abilities start right below the profession header
+            row_y     = hy + int(icon_est * 0.3)
+            row_y_end = (headers[i + 1][1] - 5) if i + 1 < len(headers) else (h)
+            row_y_end = min(h, row_y_end)
+
+            # Scan the entire right panel for this section
+            strip = img[max(0, row_y): row_y_end, x_start:]
+            if strip.size == 0:
+                continue
+
+            bboxes = self._find_icon_bboxes_in_strip(strip, row_y, icon_est)
+            # Offset x to account for roi crop
+            bboxes = [(x + x_start, y, ww, hh) for (x, y, ww, hh) in bboxes]
+            if bboxes:
+                result.setdefault(section, []).extend(bboxes)
+
+        return result
+
+    # ── Spec detection ─────────────────────────────────────────────────────────
+    # Primary/Secondary spec shown as large icon + text label at bottom.
+
+    def _detect_spec(
+        self,
+        img: np.ndarray,
+    ) -> dict[str, list[tuple[int, int, int, int]]]:
+        """
+        Detect Primary and Secondary specialization icons.
+        They appear as large icons (~60px) with text labels at bottom of screen.
+        """
+        h, w = img.shape[:2]
+
+        # Specs are always in bottom 25% of screen
+        bottom = img[int(h * 0.75):, :]
+        y_off  = int(h * 0.75)
+
+        try:
+            ocr_out = self._get_ocr().readtext(bottom)
+        except Exception as e:
+            log.debug(f'Spec OCR failed: {e}')
+            return {}
+
+        KNOWN_SPECS = {
+            'temporal operative', 'strategist', 'intelligence', 'commando',
+            'miracle worker', 'pilot', 'command', 'constable', 'emergence',
+        }
+
+        found: list[tuple[int, int, int, int, str]] = []  # (x,y,w,h, label)
+        for (bbox, text, conf) in ocr_out:
+            if conf < 0.3:
+                continue
+            text_low = text.lower().strip()
+            is_spec = any(s in text_low for s in KNOWN_SPECS)
+            if is_spec:
+                # Look for an icon to the left of the text
+                tx = int(bbox[0][0])
+                ty = int(bbox[0][1]) + y_off
+                # Estimate icon to the left: ~60px wide
+                icon_size = max(40, int(h * 0.07))
+                ix = max(0, tx - icon_size - 5)
+                iy = max(0, ty - icon_size // 4)
+                found.append((ix, iy, icon_size, icon_size, text.strip()))
+
+        result: dict[str, list[tuple[int, int, int, int]]] = {}
+        if len(found) >= 1:
+            result['Primary Specialization'] = [(found[0][0], found[0][1], found[0][2], found[0][3])]
+        if len(found) >= 2:
+            result['Secondary Specialization'] = [(found[1][0], found[1][1], found[1][2], found[1][3])]
+
+        return result
+
+
 
     # ── Strategy 1: Pixel analysis ─────────────────────────────────────────────
 

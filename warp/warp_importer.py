@@ -58,12 +58,74 @@ GROUND_SLOT_ORDER: list[dict] = [
     {'name': 'Ground Devices',   'key': 'ground_devices', 'mandatory': False, 'max': 3, 'weapon': False, 'exp': False},
 ]
 
-SLOT_ORDER = {'SPACE': SPACE_SLOT_ORDER, 'GROUND': GROUND_SLOT_ORDER}
+# ── Traits (Personal / Starship / Reputation / Active) ─────────────────────────
+# Separate screenshots from the Traits tab or STOCD overlay.
+# Personal traits: up to 10 space + 5 ground active.
+# Starship traits: up to 7 (5 base + 2 from Legendary/T6-X2).
+# Reputation traits: up to 5 space + 5 ground.
 
-SPACE_SLOTS  = [(s['name'], s['max']) for s in SPACE_SLOT_ORDER]
-GROUND_SLOTS = [(s['name'], s['max']) for s in GROUND_SLOT_ORDER]
-SLOT_SPECS   = {'SPACE': SPACE_SLOTS, 'GROUND': GROUND_SLOTS,
-                'SPACE_SKILLS': [], 'GROUND_SKILLS': []}
+SPACE_TRAITS_SLOT_ORDER: list[dict] = [
+    {'name': 'Personal Space Traits',  'key': 'personal_traits',   'mandatory': True,  'max': 10, 'weapon': False, 'exp': False},
+    {'name': 'Starship Traits',        'key': 'starship_traits',   'mandatory': True,  'max': 7,  'weapon': False, 'exp': False},
+    {'name': 'Space Reputation',       'key': 'rep_traits',        'mandatory': True,  'max': 5,  'weapon': False, 'exp': False},
+    {'name': 'Active Space Rep',       'key': 'active_rep_traits', 'mandatory': False, 'max': 5,  'weapon': False, 'exp': False},
+]
+
+GROUND_TRAITS_SLOT_ORDER: list[dict] = [
+    {'name': 'Personal Ground Traits', 'key': 'personal_ground',   'mandatory': True,  'max': 10, 'weapon': False, 'exp': False},
+    {'name': 'Ground Reputation',      'key': 'rep_ground_traits', 'mandatory': True,  'max': 5,  'weapon': False, 'exp': False},
+    {'name': 'Active Ground Rep',      'key': 'active_ground_rep', 'mandatory': False, 'max': 5,  'weapon': False, 'exp': False},
+]
+
+# ── Bridge Officers ─────────────────────────────────────────────────────────────
+# Boff abilities in the Status tab right panel.
+# We treat each (profession, seat_index, rank) as a slot entry.
+
+BOFFS_SLOT_ORDER: list[dict] = [
+    {'name': 'Boff Tactical',      'key': 'boff_tac', 'mandatory': True,  'max': 20, 'weapon': False, 'exp': False},
+    {'name': 'Boff Engineering',   'key': 'boff_eng', 'mandatory': True,  'max': 20, 'weapon': False, 'exp': False},
+    {'name': 'Boff Science',       'key': 'boff_sci', 'mandatory': True,  'max': 20, 'weapon': False, 'exp': False},
+    {'name': 'Boff Operations',    'key': 'boff_ops', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
+    {'name': 'Boff Intelligence',  'key': 'boff_int', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
+    {'name': 'Boff Command',       'key': 'boff_cmd', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
+    {'name': 'Boff Pilot',         'key': 'boff_plt', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
+    {'name': 'Boff Miracle Worker', 'key': 'boff_mw', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
+    {'name': 'Boff Temporal',      'key': 'boff_tmp', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
+]
+
+# ── Captain Specializations ─────────────────────────────────────────────────────
+
+SPEC_SLOT_ORDER: list[dict] = [
+    {'name': 'Primary Specialization',   'key': 'spec_primary',   'mandatory': True,  'max': 1, 'weapon': False, 'exp': False},
+    {'name': 'Secondary Specialization', 'key': 'spec_secondary', 'mandatory': False, 'max': 1, 'weapon': False, 'exp': False},
+]
+
+SLOT_ORDER = {
+    'SPACE':         SPACE_SLOT_ORDER,
+    'GROUND':        GROUND_SLOT_ORDER,
+    'SPACE_TRAITS':  SPACE_TRAITS_SLOT_ORDER,
+    'GROUND_TRAITS': GROUND_TRAITS_SLOT_ORDER,
+    'BOFFS':         BOFFS_SLOT_ORDER,
+    'SPEC':          SPEC_SLOT_ORDER,
+}
+
+SPACE_SLOTS        = [(s['name'], s['max']) for s in SPACE_SLOT_ORDER]
+GROUND_SLOTS       = [(s['name'], s['max']) for s in GROUND_SLOT_ORDER]
+SPACE_TRAITS_SLOTS = [(s['name'], s['max']) for s in SPACE_TRAITS_SLOT_ORDER]
+GROUND_TRAITS_SLOTS= [(s['name'], s['max']) for s in GROUND_TRAITS_SLOT_ORDER]
+BOFFS_SLOTS        = [(s['name'], s['max']) for s in BOFFS_SLOT_ORDER]
+SPEC_SLOTS         = [(s['name'], s['max']) for s in SPEC_SLOT_ORDER]
+
+SLOT_SPECS = {
+    'SPACE':         SPACE_SLOTS,
+    'GROUND':        GROUND_SLOTS,
+    'SPACE_TRAITS':  SPACE_TRAITS_SLOTS,
+    'GROUND_TRAITS': GROUND_TRAITS_SLOTS,
+    'BOFFS':         BOFFS_SLOTS,
+    'SPEC':          SPEC_SLOTS,
+    'SPACE_SKILLS':  [],
+    'GROUND_SKILLS': [],
+}
 
 # Weapon types that can only go in Experimental slot
 EXPERIMENTAL_TYPES = frozenset({'Experimental Weapon'})
@@ -180,7 +242,7 @@ class ShipDB:
             'Aft Weapons':          _int(e.get('aft'),          3),
             'Experimental':         1 if e.get('experimental')  else 0,
             'Devices':              _int(e.get('devices'),      4),
-            'Universal Consoles':   _int(e.get('uniconsole'),   0),
+            'Universal Consoles':   _int(e.get('uniconsole'), 0) + _int(e.get('t5uconsole'), 0),
             'Engineering Consoles': _int(e.get('consoleseng'),  3),
             'Science Consoles':     _int(e.get('consolessci'),  3),
             'Tactical Consoles':    _int(e.get('consolestac'),  3),
