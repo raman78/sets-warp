@@ -38,7 +38,7 @@ MODEL_IMG_SIZE  = 224         # EfficientNet input
 BATCH_SIZE      = 16
 MAX_EPOCHS      = 30
 LR              = 3e-4
-MIN_SAMPLES     = 5           # minimum confirmed items to start training
+MIN_SAMPLES     = 1           # minimum confirmed items to start training
 PATIENCE        = 5           # early-stop patience (epochs without improvement)
 
 
@@ -78,10 +78,9 @@ class LocalTrainWorker(QThread):
 
         if len(crops) < MIN_SAMPLES:
             self.finished.emit(
-                False,
-                f'Not enough confirmed items to train '
-                f'({len(crops)} found, need at least {MIN_SAMPLES}).\n'
-                f'Confirm more items in Recognition Review first.')
+                True,
+                f'No confirmed icon annotations yet — icon classifier skipped.\n'
+                f'Confirm items in Recognition Review to train icon recognition.')
             return
 
         self.progress.emit(8, f'Loaded {len(crops)} crops, {n_classes} classes.')

@@ -36,7 +36,7 @@ SCREEN_TYPES = [
     'BOFFS', 'SPEC', 'SPACE_MIXED', 'GROUND_MIXED',
 ]
 
-MIN_IMAGES_PER_CLASS = 3    # refuse to train if any present class has fewer
+MIN_IMAGES_PER_CLASS = 1    # accept any class with at least 1 image
 INPUT_SIZE           = 224
 BATCH_SIZE           = 8
 MAX_EPOCHS           = 20
@@ -136,11 +136,6 @@ class ScreenTypeTrainerWorker:
             label_map[idx] = cls
             cls_dir = screen_types_dir / cls
             pngs    = list(cls_dir.glob('*.png'))
-            if len(pngs) < MIN_IMAGES_PER_CLASS:
-                log.warning(
-                    f'ScreenTypeTrainer: class {cls} has only {len(pngs)} '
-                    f'image(s), need {MIN_IMAGES_PER_CLASS}. Skipping.')
-                continue
             for p in pngs:
                 samples.append((p, idx))
 
