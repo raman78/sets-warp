@@ -259,11 +259,10 @@ class LocalTrainWorker(QThread):
         model.eval().to('cpu')
         dummy = torch.zeros(1, 3, MODEL_IMG_SIZE, MODEL_IMG_SIZE)
         try:
-            scripted = torch.jit.trace(model, dummy)
             torch.onnx.export(
-                scripted, dummy, str(onnx_path),
+                model, dummy, str(onnx_path),
                 input_names=['input'], output_names=['output'],
-                opset_version=12,
+                opset_version=18,
             )
         except Exception as e:
             self.finished.emit(False, f'ONNX export failed: {e}')

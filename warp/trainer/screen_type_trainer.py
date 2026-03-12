@@ -273,12 +273,11 @@ class ScreenTypeTrainerWorker:
         onnx_path = self._models_dir / 'screen_classifier.onnx'
         dummy     = torch.zeros(1, 3, INPUT_SIZE, INPUT_SIZE)
         try:
-            scripted = torch.jit.trace(model, dummy)
             torch.onnx.export(
-                scripted, dummy, str(onnx_path),
+                model, dummy, str(onnx_path),
                 input_names=['input'],
                 output_names=['output'],
-                opset_version=12,
+                opset_version=18,
             )
         except Exception as e:
             done(False, f'ONNX export failed: {e}')
