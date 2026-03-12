@@ -31,7 +31,8 @@ dependencies = [
   "torch>=2.1",
   "torchvision>=0.16",
   "onnx>=1.15",
-  "onnxscript>=0.1"
+  "onnxscript>=0.1",
+  "typing_extensions>=4.8"
 ]
 dynamic = ["version"]
 
