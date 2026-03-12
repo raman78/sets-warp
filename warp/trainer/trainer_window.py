@@ -329,6 +329,42 @@ class _DetectProgressDialog(QWidget):
         self._file_lbl.setText(f'{filename}  →  {icon} {label}')
 
 
+class _RecognitionProgressDialog(QWidget):
+    cancelled = Signal()
+
+    def __init__(self, filename: str, stype: str, parent=None):
+        super().__init__(parent,
+                         Qt.WindowType.Window |
+                         Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowTitle('WARP CORE -- Recognising Icons')
+        self.setFixedSize(420, 130)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(8)
+        icon  = SCREEN_TYPE_ICONS.get(stype, '?')
+        label = SCREEN_TYPE_LABELS.get(stype, stype)
+        title = QLabel('Matching icons against SETS library...')
+        title.setFont(QFont('', 10, QFont.Weight.Bold))
+        title.setStyleSheet('color:#7ec8e3;')
+        file_lbl = QLabel(f'{icon} {label}   {filename}')
+        file_lbl.setStyleSheet('color:#aaa;font-size:10px;')
+        file_lbl.setWordWrap(True)
+        bar = QProgressBar()
+        bar.setRange(0, 0)   # indeterminate busy indicator
+        bar.setFixedHeight(12)
+        btn_cancel = QPushButton('Cancel')
+        btn_cancel.setFixedWidth(80)
+        btn_cancel.clicked.connect(self.cancelled.emit)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+        lay.addWidget(title)
+        lay.addWidget(file_lbl)
+        lay.addWidget(bar)
+        lay.addLayout(btn_row)
+
+
 class WarpCoreWindow(QMainWindow):
     """
     WARP CORE trainer window.
@@ -357,6 +393,7 @@ class WarpCoreWindow(QMainWindow):
         self._detect_worker: ScreenTypeDetectorWorker | None = None
         self._recog_worker:  RecognitionWorker | None = None
         self._detect_dlg:    _DetectProgressDialog | None = None
+        self._recog_dlg:     _RecognitionProgressDialog | None = None
 
         self.setWindowTitle('WARP CORE — ML Trainer')
         self.setMinimumSize(1280, 740)
@@ -814,14 +851,21 @@ class WarpCoreWindow(QMainWindow):
     # -- Recognition background worker ----------------------------------------
 
     def _start_recognition(self, path: Path, stype: str):
-        """Launch RecognitionWorker for a single screenshot."""
+        """Launch RecognitionWorker with a progress dialog."""
         if self._recog_worker and self._recog_worker.isRunning():
             self._recog_worker.requestInterruption()
             self._recog_worker.wait(2000)
+        if self._recog_dlg:
+            self._recog_dlg.close()
+            self._recog_dlg = None
         self._recognition_items = []
         self._review_list.clear()
         self._review_summary.setText('Running recognition...')
         self._set_review_buttons_enabled(False)
+        self._recog_dlg = _RecognitionProgressDialog(
+            path.name, stype, parent=self)
+        self._recog_dlg.cancelled.connect(self._on_recognition_cancelled)
+        self._recog_dlg.show()
         self.statusBar().showMessage(f'Recognising icons in {path.name}...')
         self._recog_worker = RecognitionWorker(
             path, stype, self._sets, parent=self)
@@ -831,7 +875,10 @@ class WarpCoreWindow(QMainWindow):
         self._recog_worker.start()
 
     def _on_recognition_done(self, filename: str, stype: str, items: list):
-        """RecognitionWorker finished -- cache and display results."""
+        """RecognitionWorker finished -- close dialog, cache results."""
+        if self._recog_dlg:
+            self._recog_dlg.close()
+            self._recog_dlg = None
         self._recognition_cache[filename] = items
         if (self._current_idx >= 0 and
                 self._screenshots[self._current_idx].name == filename):
@@ -840,8 +887,21 @@ class WarpCoreWindow(QMainWindow):
             f'Recognition done -- {len(items)} item(s) found.')
 
     def _on_recognition_error(self, msg: str):
+        if self._recog_dlg:
+            self._recog_dlg.close()
+            self._recog_dlg = None
         self._review_summary.setText(f'Recognition error: {msg}')
         self.statusBar().showMessage(f'Recognition error: {msg}')
+
+    def _on_recognition_cancelled(self):
+        if self._recog_worker and self._recog_worker.isRunning():
+            self._recog_worker.requestInterruption()
+            self._recog_worker.wait(2000)
+        if self._recog_dlg:
+            self._recog_dlg.close()
+            self._recog_dlg = None
+        self._review_summary.setText('Recognition cancelled.')
+        self.statusBar().showMessage('Recognition cancelled.')
 
     def _populate_review_panel(self, items: list, stype: str):
         """Fill right-panel review list from cached recognition items."""

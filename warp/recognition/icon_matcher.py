@@ -48,6 +48,11 @@ ML_TRIGGER_THRESHOLD= 0.50   # if combined conf below this, try ML stage
 HF_REPO_ID          = 'sets-sto/icon-classifier'
 HF_MODEL_FILENAME   = 'icon_classifier.onnx'
 HF_LABELS_FILE      = 'label_map.json'
+# Sentinel file written after a failed availability check.
+# Prevents repeated 401/404 download attempts across sessions.
+HF_UNAVAILABLE_FILE = 'model_unavailable.flag'
+# How many hours to wait before retrying after a failed check
+HF_RETRY_HOURS      = 24
 
 
 class SETSIconMatcher:
@@ -269,19 +274,55 @@ class SETSIconMatcher:
         if self._ml_session:
             return self._ml_session
 
-        sets_root  = self._find_sets_root()
-        model_path = sets_root / 'warp' / 'models' / HF_MODEL_FILENAME
-        label_path = sets_root / 'warp' / 'models' / HF_LABELS_FILE
+        sets_root   = self._find_sets_root()
+        models_dir  = sets_root / 'warp' / 'models'
+        model_path  = models_dir / HF_MODEL_FILENAME
+        label_path  = models_dir / HF_LABELS_FILE
+        flag_path   = models_dir / HF_UNAVAILABLE_FILE
 
-        if not model_path.exists():
-            if not self._download_model(model_path, label_path):
-                self._ml_disabled = True   # don't retry on every call
+        # If model files are already present, load them directly
+        if model_path.exists() and label_path.exists():
+            try:
+                import onnxruntime as ort
+                self._ml_session = ort.InferenceSession(str(model_path))
+                with open(label_path) as f:
+                    raw = json.load(f)
+                    self._label_map = {int(k): v for k, v in raw.items()}
+                log.info('WARP: ML classifier loaded')
+                return self._ml_session
+            except Exception as e:
+                log.warning(f'WARP: ML load failed: {e}')
+                self._ml_disabled = True
                 return None
 
-        if not label_path.exists():
+        # Check sentinel: skip download if we failed recently
+        if flag_path.exists():
+            import time
+            age_h = (time.time() - flag_path.stat().st_mtime) / 3600
+            if age_h < HF_RETRY_HOURS:
+                self._ml_disabled = True
+                return None
+            # Sentinel expired — remove it and try again
+            flag_path.unlink(missing_ok=True)
+
+        # Check if repo actually exists before downloading
+        if not self._check_repo_exists():
+            # Write sentinel so we don't retry for HF_RETRY_HOURS
+            models_dir.mkdir(parents=True, exist_ok=True)
+            flag_path.touch()
+            log.debug('WARP: ML model repo not available yet -- will retry in '
+                      f'{HF_RETRY_HOURS}h')
             self._ml_disabled = True
             return None
 
+        # Repo exists -- attempt download
+        if not self._download_model(model_path, label_path):
+            models_dir.mkdir(parents=True, exist_ok=True)
+            flag_path.touch()
+            self._ml_disabled = True
+            return None
+
+        # Load freshly downloaded model
         try:
             import onnxruntime as ort
             self._ml_session = ort.InferenceSession(str(model_path))
@@ -294,6 +335,20 @@ class SETSIconMatcher:
             log.warning(f'WARP: ML load failed: {e}')
             self._ml_disabled = True
             return None
+
+    def _check_repo_exists(self) -> bool:
+        """
+        Do a lightweight HEAD request to check if the HF repo exists.
+        Returns False silently on 401/404 or any network error.
+        """
+        try:
+            import urllib.request
+            url = f'https://huggingface.co/{HF_REPO_ID}'
+            req = urllib.request.Request(url, method='HEAD')
+            with urllib.request.urlopen(req, timeout=6) as r:
+                return r.status == 200
+        except Exception:
+            return False
 
     def _download_model(self, dest: Path, label_path: Path) -> bool:
         try:
