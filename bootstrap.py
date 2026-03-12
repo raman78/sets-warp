@@ -360,6 +360,12 @@ def install_dependencies(on_line, deps: list | None = None, force: bool = False)
         ["--index-url", TORCH_CPU_INDEX],
         "torch (CPU-only)"
     )
+    if torch_deps:
+        # Write sentinel so _quick_check_venv knows torch is CPU-only
+        try:
+            _torch_cpu_sentinel().write_text("cpu")
+        except Exception:
+            pass
 
     # Install everything else in one shot (pip resolves transitive deps)
     _install_batch(
@@ -824,6 +830,10 @@ def _warp_scraper_needed() -> bool:
     return False
 
 
+def _torch_cpu_sentinel() -> Path:
+    return VENV_DIR / 'torch_cpu_only.flag'
+
+
 def _quick_check_venv() -> list[str]:
     """
     Fast silent venv health check. Returns list of broken dep strings.
@@ -859,6 +869,10 @@ def _quick_check_venv() -> list[str]:
         ver = installed.get(name)
         if ver is None or not _satisfies(ver, specs):
             broken.append(dep)
+
+    # If torch is installed but NOT from CPU index, force reinstall
+    if not broken and 'torch' in installed and not _torch_cpu_sentinel().exists():
+        broken += ['torch>=2.1', 'torchvision>=0.16']
 
     if broken:
         return broken  # metadata already shows problems, skip import checks
