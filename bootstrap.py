@@ -845,13 +845,161 @@ def _quick_check_venv() -> list[str]:
     return broken
 
 
-def _run_repair(broken: list[str]):
-    """Show installer GUI (or plain text) to fix broken packages, then return."""
+def _run_repair(broken: list[str], allow_gui: bool = False):
+    """Install/update broken packages.
+
+    allow_gui=True only on genuine first-run (no venv yet) where it is safe
+    to open a tkinter window.  In all other cases (venv repair, --repair flag)
+    we use plain terminal output to avoid XCB/Qt assertion crashes that happen
+    when tkinter tries to open a display that Qt has already claimed.
+    When PySide6 is available we show a simple Qt progress window instead.
+    """
+    if allow_gui:
+        try:
+            import tkinter  # noqa: F401
+            _run_repair_gui(broken)
+            return
+        except Exception:
+            pass
+    # Try Qt progress window (safe — Qt is already in the venv)
     try:
-        import tkinter  # noqa: F401
-        _run_repair_gui(broken)
-    except ImportError:
-        _run_repair_plain(broken)
+        _run_repair_qt(broken)
+        return
+    except Exception:
+        pass
+    _run_repair_plain(broken)
+
+
+def _run_repair_qt(broken: list[str]):
+    """
+    Show a minimal Qt window while pip installs missing packages.
+    Uses PySide6 which is already installed in the venv.
+    Safe to call even when Qt environment is active (no XCB conflict).
+    """
+    from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout,
+                                   QLabel, QTextEdit, QProgressBar)
+    from PySide6.QtCore import Qt, QThread, Signal, QMetaObject, Q_ARG
+    from PySide6.QtGui import QFont, QColor, QPalette
+    import sys as _sys
+
+    app = QApplication.instance() or QApplication(_sys.argv[:1])
+
+    # ── Window ────────────────────────────────────────────────────────────────
+    win = QWidget()
+    win.setWindowTitle('SETS-WARP — Installing packages')
+    win.setFixedSize(560, 340)
+    win.setWindowFlags(Qt.WindowType.Window |
+                       Qt.WindowType.WindowTitleHint |
+                       Qt.WindowType.CustomizeWindowHint)
+
+    pal = win.palette()
+    pal.setColor(QPalette.ColorRole.Window, QColor('#1a1a1a'))
+    win.setAutoFillBackground(True)
+    win.setPalette(pal)
+
+    lay = QVBoxLayout(win)
+    lay.setContentsMargins(18, 18, 18, 18)
+    lay.setSpacing(10)
+
+    title = QLabel('Installing missing packages...')
+    title.setStyleSheet('color:#c59129; font-size:13px; font-weight:bold;')
+    lay.addWidget(title)
+
+    pkgs_lbl = QLabel('Packages: ' + ', '.join(
+        p.split('>=')[0].split('==')[0] for p in broken))
+    pkgs_lbl.setStyleSheet('color:#aaaaaa; font-size:11px;')
+    pkgs_lbl.setWordWrap(True)
+    lay.addWidget(pkgs_lbl)
+
+    bar = QProgressBar()
+    bar.setRange(0, 0)          # indeterminate
+    bar.setStyleSheet(
+        'QProgressBar{background:#2a2a2a;border-radius:4px;height:8px;text-align:center;}'
+        'QProgressBar::chunk{background:#c59129;border-radius:4px;}')
+    bar.setFixedHeight(12)
+    lay.addWidget(bar)
+
+    log = QTextEdit()
+    log.setReadOnly(True)
+    log.setStyleSheet(
+        'background:#111111;color:#cccccc;font-size:10px;border:1px solid #333;')
+    log.setFont(QFont('Monospace', 9))
+    lay.addWidget(log)
+
+    status = QLabel('Starting...')
+    status.setStyleSheet('color:#888888; font-size:10px;')
+    lay.addWidget(status)
+
+    win.show()
+    app.processEvents()
+
+    # ── Worker thread ─────────────────────────────────────────────────────────
+    done_flag   = [False]
+    error_flag  = [None]
+
+    def on_line(msg, replace_last=False):
+        # Append to log widget (called from worker thread → must be thread-safe)
+        import sys as _sys
+        print(msg, flush=True)
+        _write_log = _setup_log_writer()
+        _write_log(msg)
+        # Schedule UI update on main thread
+        QMetaObject.invokeMethod(
+            log, 'append',
+            Qt.ConnectionType.QueuedConnection,
+            Q_ARG(str, msg))
+        QMetaObject.invokeMethod(
+            status, 'setText',
+            Qt.ConnectionType.QueuedConnection,
+            Q_ARG(str, msg[-80:] if len(msg) > 80 else msg))
+
+    def on_done():
+        done_flag[0] = True
+
+    def on_error(m):
+        error_flag[0] = m
+        done_flag[0]  = True
+
+    import threading as _th
+    t = _th.Thread(
+        target=_repair_worker, args=(on_line, on_done, on_error, broken),
+        daemon=True)
+    t.start()
+
+    # ── Event loop — spin until worker done ───────────────────────────────────
+    while not done_flag[0]:
+        app.processEvents()
+        import time; time.sleep(0.05)
+
+    app.processEvents()
+
+    # Final state
+    if error_flag[0]:
+        bar.setRange(0, 1); bar.setValue(0)
+        bar.setStyleSheet(
+            'QProgressBar{background:#2a2a2a;border-radius:4px;}'
+            'QProgressBar::chunk{background:#ff6b6b;border-radius:4px;}')
+        status.setStyleSheet('color:#ff6b6b; font-size:10px;')
+        status.setText(f'Repair failed: {error_flag[0]}')
+        title.setText('Installation failed — see log above')
+        # Keep window open for 5 s so user can read error
+        import time
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.05)
+    else:
+        bar.setRange(0, 1); bar.setValue(1)
+        bar.setStyleSheet(
+            'QProgressBar{background:#2a2a2a;border-radius:4px;}'
+            'QProgressBar::chunk{background:#7effc8;border-radius:4px;}')
+        status.setStyleSheet('color:#7effc8; font-size:10px;')
+        status.setText('Done — starting SETS-WARP...')
+        title.setText('Packages installed successfully')
+        import time; time.sleep(1.2)
+        app.processEvents()
+
+    win.close()
 
 
 def _run_repair_gui(broken: list[str]):
@@ -1043,8 +1191,13 @@ def main():
                 run_plain_text()
         return  # don't relaunch — main.py handles re-exec via os.execv
 
-    # Already running inside our venv → just run
+    # Already running inside our venv → health-check then run
     if running_in_our_venv():
+        # Check for missing/outdated packages (e.g. after pyproject.toml update)
+        broken = _quick_check_venv()
+        if broken:
+            print(f"[bootstrap] packages missing/outdated: {broken} — repairing", flush=True)
+            _run_repair(broken)
         # Silently refresh WARP data in background if cargo is newer than item_db
         if _warp_scraper_needed():
             print("[bootstrap] WARP data stale — refreshing in background...", flush=True)
