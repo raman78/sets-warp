@@ -100,6 +100,17 @@ class ScreenTypeTrainerWorker:
         # ── Imports ────────────────────────────────────────────────────────────
         prog(0, 'Importing PyTorch...')
         try:
+            # Stub out system triton if it's broken (no GPU / wrong version).
+            # torch._dynamo.utils accesses triton.language.dtype at import time.
+            import sys as _sys, types as _types
+            if 'triton' not in _sys.modules or not hasattr(
+                    _sys.modules.get('triton.language', None), 'dtype'):
+                _lang = _types.ModuleType('triton.language')
+                _lang.dtype = type('dtype', (), {})()   # dummy dtype object
+                _stub = _types.ModuleType('triton')
+                _stub.language = _lang
+                _sys.modules['triton'] = _stub
+                _sys.modules['triton.language'] = _lang
             import torch
             import torch.nn as nn
             from torch.utils.data import DataLoader, Dataset
