@@ -200,7 +200,7 @@ SPECIALIZATION_NAMES: list[str] = [
 
 class ScreenTypeDetectorWorker(QThread):
     """
-    Detects screen type for each screenshot using OCR.
+    Detects screen type for each screenshot using ML classifier.
     Runs in background — never blocks the UI.
 
     Signals:
@@ -341,7 +341,7 @@ class _DetectProgressDialog(QWidget):
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(10)
 
-        self._title_lbl = QLabel('Analysing screenshots with OCR…')
+        self._title_lbl = QLabel('Classifying screenshots with ML model…')
         self._title_lbl.setFont(QFont('', 10, QFont.Weight.Bold))
         self._title_lbl.setStyleSheet('color:#7ec8e3;')
 
@@ -832,7 +832,7 @@ class WarpCoreWindow(QMainWindow):
         self._start_screen_type_detection()
 
     def _start_screen_type_detection(self):
-        """Launch background OCR worker to detect screen types."""
+        """Launch ML screen type classifier worker."""
         total = len(self._screenshots)
         self._detect_dlg = _DetectProgressDialog(total, parent=self)
         self._detect_dlg.cancelled.connect(self._on_detect_cancelled)
@@ -931,7 +931,7 @@ class WarpCoreWindow(QMainWindow):
     def _load_screenshot(self, row: int):
         """
         Load screenshot into canvas and restore cached recognition.
-        Does NOT run OCR -- that only happens once per unique screen type.
+        Screen type comes from ML classifier; OCR only used for reading labelled bboxes.
         """
         if row < 0 or row >= len(self._screenshots):
             return
@@ -1029,7 +1029,7 @@ class WarpCoreWindow(QMainWindow):
 
     def _on_detect_screen_types(self):
         """Re-run screen type classification on all loaded screenshots.
-        Uses the trained ONNX model if available, falls back to OCR.
+        Uses the trained ONNX model; UNKNOWN if no model exists yet.
         Call this after Train Model to apply the new classifier."""
         if not self._screenshots:
             self.statusBar().showMessage('No screenshots loaded.')
