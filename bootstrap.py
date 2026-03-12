@@ -366,6 +366,14 @@ def install_dependencies(on_line, deps: list | None = None, force: bool = False)
             _torch_cpu_sentinel().write_text("cpu")
         except Exception:
             pass
+        # Remove GPU-only packages that conflict with CPU torch
+        _run_pip([py, '-m', 'pip', 'uninstall', '-y', 'triton', 'nvidia-cublas-cu12',
+                  'nvidia-cuda-cupti-cu12', 'nvidia-cuda-nvrtc-cu12', 'nvidia-cuda-runtime-cu12',
+                  'nvidia-cudnn-cu12', 'nvidia-cufft-cu12', 'nvidia-curand-cu12',
+                  'nvidia-cusolver-cu12', 'nvidia-cusparse-cu12', 'nvidia-nccl-cu12',
+                  'nvidia-nvtx-cu12', 'nvidia-nvjitlink-cu12', 'cuda-bindings',
+                  'nvidia-cufile-cu12', 'nvidia-cusparselt-cu12', 'nvidia-nvshmem-cu12'],
+                 on_line, 'remove GPU packages')
 
     # Install everything else in one shot (pip resolves transitive deps)
     _install_batch(
@@ -873,6 +881,11 @@ def _quick_check_venv() -> list[str]:
     # If torch is installed but NOT from CPU index, force reinstall
     if not broken and 'torch' in installed and not _torch_cpu_sentinel().exists():
         broken += ['torch>=2.1', 'torchvision>=0.16']
+
+    # If CPU sentinel exists but triton is still present, flag for cleanup
+    # (triton is GPU-only and breaks CPU torch import)
+    if not broken and _torch_cpu_sentinel().exists() and 'triton' in installed:
+        broken += ['torch>=2.1', 'torchvision>=0.16']  # trigger reinstall+cleanup
 
     if broken:
         return broken  # metadata already shows problems, skip import checks
