@@ -841,7 +841,10 @@ class WarpCoreWindow(QMainWindow):
             f'Detecting screen types for {total} screenshot(s)...')
 
     def _on_detect_progress(self, idx: int, total: int, filename: str, stype: str):
-        """Update badge live as each screenshot is processed."""
+        """Update badge live as each screenshot is processed.
+        As soon as the first screenshot's type is known, load it immediately
+        so the user sees recognition results without waiting for all OCR.
+        """
         self._screen_types[filename] = stype
         for row, p in enumerate(self._screenshots):
             if p.name == filename:
@@ -853,7 +856,12 @@ class WarpCoreWindow(QMainWindow):
                     item.setForeground(
                         QColor('#7effc8') if self._data_mgr.has_annotations(p)
                         else Qt.GlobalColor.white)
+                # Load first screenshot as soon as its type is known
+                if row == 0 and self._current_idx < 0:
+                    self._file_list.setCurrentRow(0)
                 break
+        self.statusBar().showMessage(
+            f'Detecting screen types... {idx}/{total}  ({filename})')
         if self._detect_dlg:
             self._detect_dlg.update_progress(idx, total, filename, stype)
 
@@ -875,7 +883,11 @@ class WarpCoreWindow(QMainWindow):
             self._detect_dlg = None
         self._detect_worker = None
         if self._screenshots:
-            self._file_list.setCurrentRow(0)
+            if self._current_idx < 0:
+                self._file_list.setCurrentRow(0)
+            else:
+                # Refresh current view — type badge and recognition may now be correct
+                self._load_screenshot(self._current_idx)
         self._update_progress()
         self.statusBar().showMessage(
             f'Ready -- {len(self._screenshots)} screenshot(s) loaded.')
@@ -919,11 +931,18 @@ class WarpCoreWindow(QMainWindow):
         cached = self._recognition_cache.get(path.name)
         if cached is not None:
             self._populate_review_panel(cached, stype)
-        else:
+        elif stype != 'UNKNOWN':
+            # Screen type known — start recognition immediately
             self._recognition_items = []
             self._review_list.clear()
-            self._review_summary.setText(
-                'Recognition not yet run for this screenshot.')
+            self._review_summary.setText('Recognising...')
+            self._set_review_buttons_enabled(False)
+            self._start_recognition(path, stype)
+        else:
+            # Type still UNKNOWN — detection still running
+            self._recognition_items = []
+            self._review_list.clear()
+            self._review_summary.setText('Detecting screen type...')
             self._set_review_buttons_enabled(False)
         self._update_add_bbox_btn()
         icon  = SCREEN_TYPE_ICONS.get(stype, '?')
