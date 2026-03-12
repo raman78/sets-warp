@@ -31,5 +31,5 @@ warp/knowledge/rate_limit.json
 # WARP models (pobierane automatycznie)
 warp/models/
 
-# WARP training data
-training_data/crops/
+# WARP training data (dane lokalne użytkownika — crops, screen_types, annotations)
+warp/training_data/

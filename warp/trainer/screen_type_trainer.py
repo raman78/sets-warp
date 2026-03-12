@@ -274,13 +274,24 @@ class ScreenTypeTrainerWorker:
         dummy      = torch.zeros(1, 3, INPUT_SIZE, INPUT_SIZE)
         try:
             import torch.onnx
-            torch.onnx.export(
-                model, dummy, str(onnx_path),
-                input_names=['input'],
-                output_names=['output'],
-                dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}},
-                opset_version=12,
-            )
+            # Try new-style export first (torch>=2.1, requires onnxscript)
+            try:
+                torch.onnx.export(
+                    model, dummy, str(onnx_path),
+                    input_names=['input'],
+                    output_names=['output'],
+                    dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}},
+                    opset_version=17,
+                )
+            except Exception:
+                # Fallback: legacy TorchScript-based export (no onnxscript needed)
+                scripted = torch.jit.trace(model, dummy)
+                torch.onnx.export(
+                    scripted, dummy, str(onnx_path),
+                    input_names=['input'],
+                    output_names=['output'],
+                    opset_version=12,
+                )
         except Exception as e:
             done(False, f'ONNX export failed: {e}')
             return
