@@ -928,7 +928,9 @@ def _run_repair_qt(broken: list[str]):
     from PySide6.QtGui import QFont, QColor, QPalette
     import sys as _sys
 
-    app = QApplication.instance() or QApplication(_sys.argv[:1])
+    existing_app = QApplication.instance()
+    app = existing_app or QApplication(_sys.argv[:1])
+    we_own_app = existing_app is None
 
     # ── Window ────────────────────────────────────────────────────────────────
     win = QWidget()
@@ -1046,6 +1048,7 @@ def _run_repair_qt(broken: list[str]):
         app.processEvents()
 
     win.close()
+    app.processEvents()
 
 
 def _run_repair_gui(broken: list[str]):
@@ -1244,6 +1247,10 @@ def main():
         if broken:
             print(f"[bootstrap] packages missing/outdated: {broken} — repairing", flush=True)
             _run_repair(broken)
+            # Relaunch in a fresh process so main.py gets a clean QApplication
+            print("[bootstrap] repair done — relaunching", flush=True)
+            relaunch_in_venv()
+            return  # not reached on Linux/macOS (execv)
         # Silently refresh WARP data in background if cargo is newer than item_db
         if _warp_scraper_needed():
             print("[bootstrap] WARP data stale — refreshing in background...", flush=True)
