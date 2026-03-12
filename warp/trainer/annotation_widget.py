@@ -169,6 +169,14 @@ class AnnotationWidget(QWidget):
         self._selected_row = -1
         self.update()
 
+    def clear_pending(self):
+        """Clear any pending (yellow NEW) bbox that hasn't been accepted yet."""
+        self._pending_bbox = None
+        self._drawing      = False
+        self._draw_start   = None
+        self._draw_current = None
+        self.update()
+
     def highlight_bbox(self, bbox: tuple):
         """Highlight a specific bbox — kept for compatibility, uses new path."""
         self._highlight_bbox = bbox
@@ -294,7 +302,18 @@ class AnnotationWidget(QWidget):
         pos = event.pos()
 
         if self._draw_mode_forced:
-            # Draw mode: always start a new bbox
+            # In draw mode: first check if clicking a handle of a selected bbox
+            # (Edit BBox mode — user wants to resize/move existing box, not draw new)
+            if self._selected_idx >= 0:
+                handle = self._handle_hit_test(pos, self._selected_idx)
+                if handle:
+                    self._drag_mode  = handle
+                    self._drag_start = pos
+                    self._drag_orig  = self._annotations[self._selected_idx].bbox
+                    self.setCursor(self._cursor_for_handle(handle))
+                    self.update()
+                    return
+            # No handle hit — start drawing a new bbox
             self._drawing      = True
             self._draw_start   = pos
             self._draw_current = pos

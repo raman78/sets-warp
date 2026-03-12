@@ -44,6 +44,7 @@ TEMPLATE_THRESHOLD  = 0.55   # min TM_CCOEFF_NORMED score to accept a match
 HIST_WEIGHT         = 0.20   # weight of histogram score when blending with template
 HIST_THRESHOLD      = 0.50   # min histogram correlation to contribute
 ML_TRIGGER_THRESHOLD= 0.50   # if combined conf below this, try ML stage
+HIST_BINS           = [18, 8] # H×S bins for _hist_hsv — must match everywhere
 
 HF_REPO_ID          = 'sets-sto/icon-classifier'
 HF_MODEL_FILENAME   = 'icon_classifier.onnx'
@@ -122,7 +123,10 @@ class SETSIconMatcher:
 
         # ── Stage 0.5: session examples (user-confirmed this session) ─────────
         # Checked first — highest priority, no threshold guard
+        expected_shape = tuple(HIST_BINS)
         for entry in self._session_examples:
+            if entry['hist_hsv'].shape != expected_shape:
+                continue   # stale entry from old histogram size — skip safely
             res      = cv2.matchTemplate(crop64, entry['tmpl64'],
                                          cv2.TM_CCOEFF_NORMED)
             tm_score = float(res.max())
@@ -261,7 +265,7 @@ class SETSIconMatcher:
         import cv2
         hsv  = cv2.cvtColor(icon_bgr, cv2.COLOR_BGR2HSV)
         hist = cv2.calcHist(
-            [hsv], [0, 1], None, [18, 8], [0, 180, 0, 256]
+            [hsv], [0, 1], None, HIST_BINS, [0, 180, 0, 256]
         )
         cv2.normalize(hist, hist)
         return hist
@@ -366,11 +370,7 @@ class SETSIconMatcher:
             return
         tmpl64 = cv2.resize(crop_bgr, (MATCH_SIZE, MATCH_SIZE),
                              interpolation=cv2.INTER_AREA)
-        # Build a small helper to get hist (can't call self._hist_hsv as classmethod)
-        hsv  = cv2.cvtColor(tmpl64, cv2.COLOR_BGR2HSV)
-        hist = cv2.calcHist([hsv], [0, 1], None, [36, 32],
-                             [0, 180, 0, 256])
-        cv2.normalize(hist, hist)
+        hist = cls._hist_hsv(tmpl64)
         cls._session_examples.append({
             'name':     name,
             'tmpl64':   tmpl64,

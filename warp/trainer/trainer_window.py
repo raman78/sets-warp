@@ -1518,6 +1518,7 @@ class WarpCoreWindow(QMainWindow):
         if self._current_idx >= 0:
             fname = self._screenshots[self._current_idx].name
             self._recognition_cache[fname] = list(self._recognition_items)
+        self._ann_widget.clear_pending()          # remove yellow NEW bbox
         self._ann_widget.set_review_items(self._recognition_items)
 
     def _build_search_candidates(self, slot: str = '') -> list[str]:
