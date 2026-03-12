@@ -138,6 +138,8 @@ def _parse_specifier(dep: str) -> tuple[str, list[tuple[str, tuple]]]:
 
 def _version_tuple(ver_str: str) -> tuple:
     try:
+        # Strip local version suffix e.g. '2.10.0+cpu' → '2.10.0'
+        ver_str = ver_str.split('+')[0]
         return tuple(int(x) for x in re.split(r'[.\-]', ver_str)[:3])
     except Exception:
         return (0,)
