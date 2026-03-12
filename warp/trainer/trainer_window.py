@@ -377,6 +377,68 @@ class _RecognitionProgressDialog(QWidget):
         lay.addLayout(btn_row)
 
 
+class _TrainProgressDialog(QWidget):
+    """
+    Progress dialog for local model training.
+    Shows epoch progress bar + live log lines + Cancel button.
+    """
+    cancelled = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent,
+                         Qt.WindowType.Window |
+                         Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowTitle('WARP CORE -- Training Icon Classifier')
+        self.setFixedSize(520, 200)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(8)
+
+        title = QLabel('Training local icon classifier...')
+        title.setFont(QFont('', 11, QFont.Weight.Bold))
+        title.setStyleSheet('color:#e8d870;')
+
+        self._status_lbl = QLabel('Starting...')
+        self._status_lbl.setStyleSheet('color:#ccc;font-size:10px;')
+        self._status_lbl.setWordWrap(True)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+
+        self._log = QLabel('')
+        self._log.setStyleSheet(
+            'color:#888;font-size:9px;font-family:monospace;'
+            'background:#111;border:1px solid #333;padding:3px;border-radius:2px;')
+        self._log.setWordWrap(True)
+        self._log.setFixedHeight(36)
+
+        btn_cancel = QPushButton('Cancel')
+        btn_cancel.setFixedWidth(80)
+        btn_cancel.clicked.connect(self.cancelled.emit)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+
+        lay.addWidget(title)
+        lay.addWidget(self._status_lbl)
+        lay.addWidget(self._bar)
+        lay.addWidget(self._log)
+        lay.addLayout(btn_row)
+
+        self._log_lines: list[str] = []
+
+    def update_progress(self, pct: int, message: str):
+        self._bar.setValue(pct)
+        self._status_lbl.setText(message)
+        self._log_lines.append(message)
+        if len(self._log_lines) > 3:
+            self._log_lines = self._log_lines[-3:]
+        self._log.setText('\n'.join(self._log_lines))
+
+
 class WarpCoreWindow(QMainWindow):
     """
     WARP CORE trainer window.
@@ -401,7 +463,9 @@ class WarpCoreWindow(QMainWindow):
         self._recognition_cache: dict[str, list] = {} # filename -> recognition items
         self._recognition_items: list[dict] = []
         self._manual_bbox_mode = False
+        self._add_bbox_mode    = False
         self._sync_client = None
+        self._train_worker = None
         self._detect_worker: ScreenTypeDetectorWorker | None = None
         self._recog_worker:  RecognitionWorker | None = None
         self._detect_dlg:    _DetectProgressDialog | None = None
@@ -603,7 +667,7 @@ class WarpCoreWindow(QMainWindow):
             'QPushButton:hover{background:#2a8c5a;}')
         self._btn_confirm.clicked.connect(self._on_review_confirm)
 
-        self._btn_edit_bbox = QPushButton('Edit bbox')
+        self._btn_edit_bbox = QPushButton('Edit BBox')
         self._btn_edit_bbox.setStyleSheet(
             'QPushButton{background:#1a3a5c;color:#7ec8e3;border:1px solid #3a6aac;'
             'border-radius:3px;padding:4px 8px;}'
@@ -623,6 +687,32 @@ class WarpCoreWindow(QMainWindow):
         btn_row.addWidget(self._btn_edit_bbox)
         btn_row.addWidget(self._btn_reject)
         pl.addLayout(btn_row)
+
+        # Add bbox / Remove row
+        bbox_mgmt_row = QHBoxLayout()
+        self._btn_add_bbox = QPushButton('+ Add BBox')
+        self._btn_add_bbox.setToolTip(
+            'Draw a new bounding box on the canvas to add a missing item')
+        self._btn_add_bbox.setStyleSheet(
+            'QPushButton{background:#2a2a1a;color:#e8d870;border:1px solid #8a8030;'
+            'border-radius:3px;padding:4px 8px;}'
+            'QPushButton:hover{background:#4a4a2a;}'
+            'QPushButton:checked{background:#1a1a08;border:2px solid #e8d870;}')
+        self._btn_add_bbox.setCheckable(True)
+        self._btn_add_bbox.clicked.connect(self._on_add_bbox_toggle)
+
+        self._btn_remove_item = QPushButton('Remove')
+        self._btn_remove_item.setToolTip(
+            'Remove selected item from Recognition Review list')
+        self._btn_remove_item.setStyleSheet(
+            'QPushButton{background:#2a1a2a;color:#e870e8;border:1px solid #803080;'
+            'border-radius:3px;padding:4px 8px;}'
+            'QPushButton:hover{background:#4a2a4a;}')
+        self._btn_remove_item.clicked.connect(self._on_remove_item)
+
+        bbox_mgmt_row.addWidget(self._btn_add_bbox)
+        bbox_mgmt_row.addWidget(self._btn_remove_item)
+        pl.addLayout(bbox_mgmt_row)
 
         self._manual_mode_lbl = QLabel('')
         self._manual_mode_lbl.setStyleSheet(
@@ -651,10 +741,12 @@ class WarpCoreWindow(QMainWindow):
             tb.addSeparator()
             return a
 
-        act('Open Folder', 'Open screenshots folder',              self._on_open)
-        act('Save',        'Save annotations locally',             self._on_save)
-        act('Auto-Detect', 'Auto-detect icons in all screenshots', self._on_auto_detect)
-        act('Sync to Hub', 'Upload annotations to Hugging Face Hub', self._on_sync)
+        act('Open Folder',  'Open screenshots folder',              self._on_open)
+        act('Save',         'Save annotations locally',             self._on_save)
+        act('Auto-Detect',  'Auto-detect icons in all screenshots', self._on_auto_detect)
+        act('Train Model',  'Train local icon classifier on confirmed annotations',
+            self._on_train)
+        act('Sync to Hub',  'Upload annotations to Hugging Face Hub', self._on_sync)
 
     # ── File handling ─────────────────────────────────────────────────────────
 
@@ -1043,9 +1135,45 @@ class WarpCoreWindow(QMainWindow):
 
     def _on_edit_bbox_toggle(self, checked: bool):
         if checked:
+            self._btn_add_bbox.setChecked(False)
             self._enter_manual_bbox_mode()
         else:
             self._exit_manual_bbox_mode()
+
+    def _on_add_bbox_toggle(self, checked: bool):
+        """Start drawing a brand-new bbox (not tied to an existing review item)."""
+        if checked:
+            self._btn_edit_bbox.setChecked(False)
+            self._manual_bbox_mode = False
+            self._add_bbox_mode = True
+            self._manual_mode_lbl.setText(
+                'Draw a rectangle to add a new item to the review list.')
+            self._manual_mode_lbl.setVisible(True)
+            self._ann_widget.set_draw_mode(True)
+            self.statusBar().showMessage(
+                'Add BBox mode -- drag a rectangle on the image.')
+        else:
+            self._add_bbox_mode = False
+            self._manual_mode_lbl.setVisible(False)
+            self._ann_widget.set_draw_mode(False)
+
+    def _on_remove_item(self):
+        """Remove the selected item from the recognition review list."""
+        row = self._review_list.currentRow()
+        if row < 0 or row >= len(self._recognition_items):
+            return
+        self._review_list.takeItem(row)
+        self._recognition_items.pop(row)
+        # Invalidate cache for this screenshot so the removal sticks
+        if self._current_idx >= 0:
+            fname = self._screenshots[self._current_idx].name
+            self._recognition_cache[fname] = list(self._recognition_items)
+        n = len(self._recognition_items)
+        if n == 0:
+            self._set_review_buttons_enabled(False)
+        else:
+            self._review_list.setCurrentRow(min(row, n - 1))
+        self._update_progress()
 
     def _enter_manual_bbox_mode(self):
         self._manual_bbox_mode = True
@@ -1073,18 +1201,66 @@ class WarpCoreWindow(QMainWindow):
                 return
 
     def _set_review_buttons_enabled(self, enabled: bool):
-        for btn in (self._btn_confirm, self._btn_edit_bbox, self._btn_reject):
+        for btn in (self._btn_confirm, self._btn_edit_bbox, self._btn_reject,
+                    self._btn_remove_item):
             btn.setEnabled(enabled)
 
     # ── Canvas callbacks ──────────────────────────────────────────────────────
 
     def _on_bbox_drawn(self, bbox: tuple):
         if self._manual_bbox_mode:
+            # Edit existing item's bbox
             row = self._review_list.currentRow()
             if 0 <= row < len(self._recognition_items):
                 self._recognition_items[row]['bbox'] = bbox
             self._exit_manual_bbox_mode()
             self._rematch_current_item(row, bbox)
+        elif getattr(self, '_add_bbox_mode', False):
+            # Add a brand-new item to the review list
+            self._add_bbox_mode = False
+            self._btn_add_bbox.setChecked(False)
+            self._manual_mode_lbl.setVisible(False)
+            self._ann_widget.set_draw_mode(False)
+            # Rematch the crop to get a name suggestion
+            name, conf, thumb = '', 0.0, None
+            crop_bgr = None
+            if self._current_idx >= 0:
+                try:
+                    import cv2
+                    path = self._screenshots[self._current_idx]
+                    img  = cv2.imread(str(path))
+                    if img is not None:
+                        x, y, w, h = bbox
+                        crop_bgr = img[y:y+h, x:x+w].copy()
+                        from warp.recognition.icon_matcher import SETSIconMatcher
+                        name, conf, thumb = SETSIconMatcher(self._sets).match(crop_bgr)
+                except Exception:
+                    pass
+            slot = self._slot_combo.currentText()
+            new_item = {
+                'name':      name,
+                'slot':      slot,
+                'conf':      conf,
+                'bbox':      bbox,
+                'state':     'pending',
+                'thumb':     thumb,
+                'crop_bgr':  crop_bgr,
+                'orig_name': name,
+                'ship_name': '',
+            }
+            self._recognition_items.append(new_item)
+            self._add_review_row(name, slot, conf)
+            new_row = len(self._recognition_items) - 1
+            self._review_list.setCurrentRow(new_row)
+            self._set_review_buttons_enabled(True)
+            # Update cache
+            if self._current_idx >= 0:
+                fname = self._screenshots[self._current_idx].name
+                self._recognition_cache[fname] = list(self._recognition_items)
+            self._name_edit.setText(name)
+            self._name_edit.setFocus()
+            self.statusBar().showMessage(
+                f'New item added -- fill in name and click Confirm.')
         else:
             self._name_edit.setFocus()
             self._name_edit.clear()
@@ -1187,6 +1363,55 @@ class WarpCoreWindow(QMainWindow):
         self._data_mgr.save()
         self._update_progress()
         self.statusBar().showMessage('Annotations saved.')
+
+    def _on_train(self):
+        """Start local training on confirmed annotations."""
+        from warp.trainer.local_trainer import LocalTrainWorker
+
+        if self._train_worker and self._train_worker.isRunning():
+            self.statusBar().showMessage('Training already running...')
+            return
+
+        # Show progress dialog
+        self._train_dlg = _TrainProgressDialog(parent=self)
+        self._train_dlg.cancelled.connect(self._on_train_cancelled)
+        self._train_dlg.show()
+
+        self._train_worker = LocalTrainWorker(
+            data_mgr  = self._data_mgr,
+            sets_root = self._sets_root,
+            parent    = self,
+        )
+        self._train_worker.progress.connect(self._train_dlg.update_progress)
+        self._train_worker.finished.connect(self._on_train_finished)
+        self._train_worker.start()
+        self.statusBar().showMessage('Local training started...')
+
+    def _on_train_cancelled(self):
+        if self._train_worker and self._train_worker.isRunning():
+            self._train_worker.requestInterruption()
+            self._train_worker.wait(3000)
+        if hasattr(self, '_train_dlg') and self._train_dlg:
+            self._train_dlg.close()
+            self._train_dlg = None
+        self.statusBar().showMessage('Training cancelled.')
+
+    def _on_train_finished(self, success: bool, message: str):
+        if hasattr(self, '_train_dlg') and self._train_dlg:
+            self._train_dlg.close()
+            self._train_dlg = None
+        from PySide6.QtWidgets import QMessageBox
+        if success:
+            QMessageBox.information(self, 'Training Complete', message)
+            # Invalidate all recognition caches so next view uses new model
+            self._recognition_cache.clear()
+            if self._current_idx >= 0:
+                path  = self._screenshots[self._current_idx]
+                stype = self._screen_types.get(path.name, 'UNKNOWN')
+                self._start_recognition(path, stype)
+        else:
+            QMessageBox.warning(self, 'Training Failed', message)
+        self._train_worker = None
 
     def _on_sync(self):
         token = self._settings.value(_KEY_HF_TOKEN, '')

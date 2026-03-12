@@ -336,6 +336,21 @@ class SETSIconMatcher:
             self._ml_disabled = True
             return None
 
+    @classmethod
+    def reset_ml_session(cls):
+        """
+        Force reload of the ML model on next inference call.
+        Called after local training completes.
+        """
+        # Walk all live instances via a class-level weak reference dict
+        # Simple approach: just clear the module-level session cache flag
+        # Each new SETSIconMatcher() will reload fresh from disk.
+        # Existing instances need _ml_session cleared.
+        cls._shared_ml_session  = None
+        cls._shared_label_map   = {}
+        cls._shared_ml_disabled = False
+        log.info('WARP: ML session reset -- will reload on next match')
+
     def _check_repo_exists(self) -> bool:
         """
         Do a lightweight HEAD request to check if the HF repo exists.
