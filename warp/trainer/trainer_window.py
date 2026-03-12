@@ -75,11 +75,13 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Kit Modules',
         'Ground Devices',
     ],
-    'TRAITS': [
+    'SPACE_TRAITS': [
         'Personal Space Traits',
         'Starship Traits',
         'Space Reputation',
         'Active Space Rep',
+    ],
+    'GROUND_TRAITS': [
         'Personal Ground Traits',
         'Ground Reputation',
         'Active Ground Rep',
@@ -109,6 +111,8 @@ SCREEN_TYPE_LABELS: dict[str, str] = {
     'GROUND_TRAITS': 'Ground Traits',
     'BOFFS':         'Bridge Officers',
     'SPEC':          'Specializations',
+    'SPACE_MIXED':   'Space Mixed (merged)',
+    'GROUND_MIXED':  'Ground Mixed (merged)',
     'UNKNOWN':       'Unknown',
 }
 
@@ -119,6 +123,8 @@ SCREEN_TYPE_ICONS: dict[str, str] = {
     'GROUND_TRAITS': '🌿',
     'BOFFS':         '👥',
     'SPEC':          '🎯',
+    'SPACE_MIXED':   '🌌',
+    'GROUND_MIXED':  '🗺️',
     'UNKNOWN':       '❓',
 }
 
@@ -126,19 +132,22 @@ SCREEN_TYPE_ICONS: dict[str, str] = {
 SCREEN_TO_SLOT_GROUP: dict[str, str] = {
     'SPACE':         'SPACE',
     'GROUND':        'GROUND',
-    'SPACE_TRAITS':  'TRAITS',
-    'GROUND_TRAITS': 'TRAITS',
+    'SPACE_TRAITS':  'SPACE_TRAITS',
+    'GROUND_TRAITS': 'GROUND_TRAITS',
     'BOFFS':         'BOFFS',
     'SPEC':          'SPEC',
+    'SPACE_MIXED':   'ALL',
+    'GROUND_MIXED':  'ALL',
     'UNKNOWN':       'SPACE',
 }
 
-# All slots combined (fallback)
+# All slots combined (fallback + MIXED screens)
 ALL_SLOTS: list[str] = []
 for _slots in SLOT_GROUPS.values():
     for _s in _slots:
         if _s not in ALL_SLOTS:
             ALL_SLOTS.append(_s)
+SLOT_GROUPS['ALL'] = ALL_SLOTS
 
 # Specialization names known to WARP (from STO wiki)
 SPECIALIZATION_NAMES: list[str] = [
@@ -196,7 +205,8 @@ class ScreenTypeDetectorWorker(QThread):
                     info  = te.extract_ship_info(img)
                     btype = info.get('build_type', '')
                     if btype in ('SPACE', 'GROUND', 'SPACE_TRAITS',
-                                 'GROUND_TRAITS', 'BOFFS', 'SPEC'):
+                                 'GROUND_TRAITS', 'BOFFS', 'SPEC',
+                                 'SPACE_MIXED', 'GROUND_MIXED'):
                         stype = btype
             except Exception as e:
                 log.debug(f'Screen type detection error for {path.name}: {e}')
@@ -232,6 +242,8 @@ class RecognitionWorker(QThread):
             'GROUND_TRAITS': 'GROUND_TRAITS',
             'BOFFS':         'BOFFS',
             'SPEC':          'SPEC',
+            'SPACE_MIXED':   'SPACE',
+            'GROUND_MIXED':  'GROUND',
         }.get(self._stype, 'SPACE')
 
         try:
