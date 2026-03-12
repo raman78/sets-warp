@@ -82,6 +82,11 @@ class AnnotationWidget(QWidget):
 
         self._highlight_bbox: tuple | None = None
 
+        # Review items from trainer_window (replaces _annotations for drawing)
+        # Each dict: {bbox, state, name, slot}
+        self._review_items: list[dict] = []
+        self._selected_row: int = -1   # selected row in review list
+
         # Drag/resize state
         self._drag_mode:  str | None = None   # 'move' | 'resize_NW' | etc.
         self._drag_start: QPoint | None = None
@@ -161,11 +166,23 @@ class AnnotationWidget(QWidget):
 
     def clear_highlight(self):
         self._highlight_bbox = None
+        self._selected_row = -1
         self.update()
 
     def highlight_bbox(self, bbox: tuple):
-        """Highlight a specific bbox from recognition (shown as orange dashed rect)."""
+        """Highlight a specific bbox — kept for compatibility, uses new path."""
         self._highlight_bbox = bbox
+        self.update()
+
+    def set_review_items(self, items: list[dict]):
+        """Set the full list of recognition/review items to draw on canvas."""
+        self._review_items = items
+        self.update()
+
+    def set_selected_row(self, row: int):
+        """Highlight the item at the given row index (from review list)."""
+        self._selected_row = row
+        self._highlight_bbox = None   # no longer needed
         self.update()
 
     def set_draw_mode(self, enabled: bool):
@@ -196,11 +213,17 @@ class AnnotationWidget(QWidget):
                              "No image loaded\nOpen a folder to start")
             return
 
-        # Draw annotations
-        for idx, ann in enumerate(self._annotations):
-            self._draw_annotation(painter, ann, selected=(idx == self._selected_idx))
+        # Draw review items (single source of truth from trainer_window)
+        for idx, ri in enumerate(self._review_items):
+            bbox = ri.get('bbox')
+            if not bbox:
+                continue
+            state = ri.get('state', 'pending')
+            selected = (idx == self._selected_row)
+            self._draw_review_item(painter, bbox, state, ri.get('name',''),
+                                   ri.get('slot',''), selected)
 
-        # Draw in-progress bbox
+        # Draw in-progress bbox (while mouse is held)
         if self._drawing and self._draw_start and self._draw_current:
             pen = QPen(QColor(255, 255, 0), DRAW_PEN_WIDTH, Qt.PenStyle.DashLine)
             painter.setPen(pen)
@@ -208,55 +231,60 @@ class AnnotationWidget(QWidget):
             rect = QRect(self._draw_start, self._draw_current).normalized()
             painter.drawRect(rect)
 
-        # Draw pending bbox (drawn, awaiting confirmation)
+        # Draw pending bbox (drawn, not yet accepted)
         if self._pending_bbox:
             prect = self._img_to_screen_rect(self._pending_bbox)
-            pen   = QPen(QColor(255, 180, 0), DRAW_PEN_WIDTH + 1, Qt.PenStyle.SolidLine)
+            pen   = QPen(QColor(255, 220, 0), DRAW_PEN_WIDTH + 1, Qt.PenStyle.SolidLine)
             painter.setPen(pen)
-            painter.setBrush(QBrush(QColor(255, 180, 0, 50)))
+            painter.setBrush(QBrush(QColor(255, 220, 0, 45)))
             painter.drawRect(prect)
-            painter.setPen(QColor(255, 180, 0))
+            painter.setPen(QColor(255, 220, 0))
             painter.setFont(QFont("", FONT_SIZE_BADGE, QFont.Weight.Bold))
             painter.drawText(prect.topLeft() + QPoint(2, -3), "NEW")
 
-        # Draw recognition highlight (from review panel selection)
-        if self._highlight_bbox:
-            hrect = self._img_to_screen_rect(self._highlight_bbox)
-            pen   = QPen(QColor(126, 200, 227), 2, Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.setBrush(QBrush(QColor(126, 200, 227, 25)))
-            painter.drawRect(hrect)
+    # Colour per review state
+    _STATE_COLOR = {
+        'pending':   QColor(100, 160, 255, 200),  # blue  — auto-detected / pending
+        'confirmed': QColor( 60, 220, 100, 220),  # green — accepted by user
+        'new':       QColor(255, 220,   0, 200),  # yellow — just drawn by user
+    }
 
-    def _draw_annotation(self, painter: QPainter, ann: Annotation, selected: bool):
-        # Skip CANDIDATE annotations — they clutter the view
-        if ann.state == AnnotationState.CANDIDATE:
-            return
-        color = STATE_COLORS.get(ann.state, QColor(200, 200, 200, 150))
-        pen   = QPen(color, SELECTED_PEN_WIDTH if selected else DRAW_PEN_WIDTH)
-        if selected:
-            pen.setStyle(Qt.PenStyle.DashLine)
-
+    def _draw_review_item(
+        self, painter: QPainter,
+        bbox: tuple, state: str, name: str, slot: str,
+        selected: bool,
+    ):
+        color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180))
+        pw    = SELECTED_PEN_WIDTH if selected else DRAW_PEN_WIDTH
+        style = Qt.PenStyle.DashLine if state == 'pending' else Qt.PenStyle.SolidLine
+        pen   = QPen(color, pw, style)
         painter.setPen(pen)
-        painter.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 30)))
-
-        rect = self._img_to_screen_rect(ann.bbox)
+        painter.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 25)))
+        rect  = self._img_to_screen_rect(bbox)
         painter.drawRect(rect)
-
-        # Label badge
-        if ann.name or ann.slot:
-            badge = ann.name or ann.slot
+        # Label
+        badge = name or slot
+        if badge:
             painter.setPen(color)
             painter.setFont(QFont("", FONT_SIZE_BADGE))
-            painter.drawText(rect.bottomLeft() + QPoint(2, 12), badge[:24])
-
-        # Draw resize/move handles when selected
+            painter.drawText(rect.bottomLeft() + QPoint(2, 12), badge[:28])
+        # Handles when selected
         if selected:
-            h = self._HANDLE
-            hc = QColor(255, 255, 255, 220)
+            h  = self._HANDLE
             painter.setPen(QPen(QColor(0, 0, 0, 180), 1))
-            painter.setBrush(QBrush(hc))
+            painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
             for hx, hy in self._handle_positions(rect):
                 painter.drawRect(hx - h//2, hy - h//2, h, h)
+
+    # kept for legacy callers that still use Annotation objects
+    def _draw_annotation(self, painter: QPainter, ann: 'Annotation', selected: bool):
+        if ann.state == AnnotationState.CANDIDATE:
+            return
+        self._draw_review_item(
+            painter, ann.bbox,
+            ann.state.value if hasattr(ann.state, 'value') else str(ann.state),
+            ann.name, ann.slot, selected,
+        )
 
     # ---------------------------------------------------------------- mouse events
 

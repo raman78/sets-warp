@@ -1116,6 +1116,9 @@ class WarpCoreWindow(QMainWindow):
         for ri in self._recognition_items:
             self._add_review_row(ri['name'], ri['slot'], ri.get('conf', 0.0),
                                  confirmed=(ri.get('state') == 'confirmed'))
+        # Push to canvas so it draws from review items (single source of truth)
+        self._ann_widget.set_review_items(self._recognition_items)
+        self._ann_widget.set_selected_row(-1)
         n       = len(items)
         matched = sum(1 for i in items if i.get('name'))
         icon    = SCREEN_TYPE_ICONS.get(stype, '?')
@@ -1168,7 +1171,7 @@ class WarpCoreWindow(QMainWindow):
             self._slot_combo.setCurrentIndex(idx)
         self._name_edit.setText(ri['name'])
         if ri.get('bbox'):
-            self._ann_widget.highlight_bbox(ri['bbox'])
+            self._ann_widget.set_selected_row(row)
 
     def _contribute(self, ri: dict, confirmed_name: str):
         try:
@@ -1228,6 +1231,7 @@ class WarpCoreWindow(QMainWindow):
             self._ann_widget.clear_highlight()
         else:
             self._review_list.setCurrentRow(min(row, n - 1))
+        self._ann_widget.set_review_items(self._recognition_items)
         self._update_progress()
 
     def _enter_manual_bbox_mode(self):
@@ -1281,6 +1285,7 @@ class WarpCoreWindow(QMainWindow):
             self._btn_add_bbox.setChecked(False)
             self._manual_mode_lbl.setVisible(False)
             self._ann_widget.set_draw_mode(False)
+            self._ann_widget.set_review_items(self._recognition_items)
             # Rematch the crop to get a name suggestion
             name, conf, thumb = '', 0.0, None
             crop_bgr = None
@@ -1430,10 +1435,11 @@ class WarpCoreWindow(QMainWindow):
         self._name_edit.clear()
         self._update_progress()
         self._advance_to_next_unconfirmed(row)
-        # Update cache
+        # Update cache and canvas
         if self._current_idx >= 0:
             fname = self._screenshots[self._current_idx].name
             self._recognition_cache[fname] = list(self._recognition_items)
+        self._ann_widget.set_review_items(self._recognition_items)
 
     def _build_search_candidates(self, slot: str = '') -> list[str]:
         """
