@@ -259,15 +259,16 @@ class LocalTrainWorker(QThread):
         model.eval().to('cpu')
         dummy = torch.zeros(1, 3, MODEL_IMG_SIZE, MODEL_IMG_SIZE)
         try:
-            import torch.onnx
-            try:
+            import importlib.util, torch.onnx
+            has_onnxscript = importlib.util.find_spec('onnxscript') is not None
+            if has_onnxscript:
                 torch.onnx.export(
                     model, dummy, str(onnx_path),
                     input_names=['input'], output_names=['output'],
                     dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}},
                     opset_version=17,
                 )
-            except Exception:
+            else:
                 scripted = torch.jit.trace(model, dummy)
                 torch.onnx.export(
                     scripted, dummy, str(onnx_path),
@@ -275,7 +276,12 @@ class LocalTrainWorker(QThread):
                     opset_version=12,
                 )
         except Exception as e:
-            self.finished.emit(False, f'ONNX export failed: {e}')
+            if 'onnxscript' in str(e):
+                self.finished.emit(False,
+                    'Missing module: onnxscript.\n\n'
+                    'Restart SETS — bootstrap will install it automatically.')
+            else:
+                self.finished.emit(False, f'ONNX export failed: {e}')
             return
 
         # ── 8. Write label map ───────────────────────────────────────────────
