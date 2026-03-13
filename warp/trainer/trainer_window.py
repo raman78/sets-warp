@@ -238,8 +238,11 @@ class ScreenTypeDetectorWorker(QThread):
                 img = cv2.imread(str(path))
                 if img is not None and classifier is not None:
                     ml_stype, ml_conf = classifier.classify(img)
+                    log.warning(f'ScreenTypeDetector: {path.name} → {ml_stype!r} conf={ml_conf:.3f}')
                     if ml_stype and ml_conf >= 0.70:
                         stype = ml_stype
+                elif classifier is None:
+                    log.warning(f'ScreenTypeDetector: no classifier, {path.name} → UNKNOWN')
             except Exception as e:
                 log.debug(f'Screen type detection error for {path.name}: {e}')
             results[path.name] = stype
@@ -789,13 +792,11 @@ class WarpCoreWindow(QMainWindow):
             return a
 
         act('Open Folder',  'Open screenshots folder',              self._on_open)
-        act('Save',         'Save annotations locally',             self._on_save)
-        act('Auto-Detect Slots', 'Auto-detect icons in all screenshots', self._on_auto_detect)
         act('Detect Screen Types', 'Re-classify screen types using trained model',
             self._on_detect_screen_types)
+        act('Auto-Detect Slots', 'Auto-detect icons in all screenshots', self._on_auto_detect)
         act('Train Model',  'Train icon + screen-type classifiers on confirmed data',
             self._on_train)
-        act('Sync to Hub',  'Upload annotations to Hugging Face Hub', self._on_sync)
 
     # ── File handling ─────────────────────────────────────────────────────────
 
@@ -1524,6 +1525,8 @@ class WarpCoreWindow(QMainWindow):
             self._recognition_cache[fname] = list(self._recognition_items)
         self._ann_widget.clear_pending()          # remove yellow NEW bbox
         self._ann_widget.set_review_items(self._recognition_items)
+        self._data_mgr.save()                     # autosave after every confirm
+        self._auto_sync()                         # background sync if token set
 
     def _build_search_candidates(self, slot: str = '') -> list[str]:
         """
@@ -1625,6 +1628,12 @@ class WarpCoreWindow(QMainWindow):
             self._completer.complete()
 
     # ── Save / Sync ───────────────────────────────────────────────────────────
+
+    def closeEvent(self, event):
+        """Autosave annotations on close so nothing is lost."""
+        if self._data_mgr:
+            self._data_mgr.save()
+        event.accept()
 
     def _on_save(self):
         self._data_mgr.save()
@@ -1797,22 +1806,25 @@ class WarpCoreWindow(QMainWindow):
             QMessageBox.warning(self, 'Training Failed', message)
         self._train_worker = None
 
-    def _on_sync(self):
-        token = self._settings.value(_KEY_HF_TOKEN, '')
-        if not token:
-            dlg = HFTokenDialog(self)
-            if dlg.exec():
-                token = dlg.get_token()
-                self._settings.setValue(_KEY_HF_TOKEN, token)
-            else:
-                return
+    def _auto_sync(self):
+        """Silently upload annotations in background using bundled HF token."""
+        try:
+            token_file = Path(__file__).parent.parent / 'warp' / 'hub_token.txt'
+            token = token_file.read_text().strip()
+        except Exception:
+            return   # file missing or unreadable — sync disabled
+        if not token or token == 'YOUR_HF_TOKEN_HERE':
+            return   # placeholder not replaced yet
+        # Don't start a new sync if one is already running
+        if self._sync_worker and self._sync_worker.isRunning():
+            return
         self._sync_worker = SyncWorker(
             data_manager=self._data_mgr, hf_token=token, mode='upload')
         self._sync_worker.progress.connect(
             lambda p, m: self.statusBar().showMessage(f'Sync: {m} ({p}%)'))
         self._sync_worker.finished.connect(
             lambda ok: self.statusBar().showMessage(
-                'Sync complete.' if ok else 'Sync failed — check log.'))
+                'Synced to Hub.' if ok else 'Sync failed — check log.'))
         self._sync_worker.start()
 
     # ── Helpers ───────────────────────────────────────────────────────────────

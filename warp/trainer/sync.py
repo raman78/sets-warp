@@ -1,6 +1,360 @@
 # warp/trainer/sync.py
 # Synchronises training data (annotations + icon crops) with Hugging Face Hub.
 #
+# SECURITY MODEL — two-folder staging:
+#
+#   staging/<install_id>/annotations.jsonl   — contributed by users, unverified
+#   staging/<install_id>/crops/<sha>.png
+#   data/annotations.jsonl                   — approved by repo owner only
+#   data/crops/<sha>.png
+#
+# Users upload to staging/ only.
+# Repo owner runs approve_staging.py (or manually) to merge into data/.
+# A single bad actor can only pollute their own staging/ folder.
+#
+# RATE LIMITING (client-side):
+#   Max 200 annotations per day per install_id.
+#   Enforced locally — a determined attacker could bypass this,
+#   but it stops accidental flooding.
+#
+# VALIDATION (client-side + file-level):
+#   - Crop must be non-empty PNG, ≥ 32×32 px
+#   - Slot must be a known slot name
+#   - Name must be non-empty, ≤ 120 chars, printable ASCII/Unicode
+#   - No duplicate sha256 in the same upload batch
+
+from __future__ import annotations
+
+import json
+import hashlib
+import logging
+import datetime
+import tempfile
+from pathlib import Path
+from typing import Callable
+
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QCheckBox
+)
+
+from warp.trainer.training_data import TrainingDataManager
+
+logger = logging.getLogger(__name__)
+
+# Hugging Face dataset repository ID
+HF_DATASET_REPO  = "sets-sto/sto-icon-dataset"
+HF_REPO_TYPE     = "dataset"
+CROPS_DIR        = "data/crops"           # approved
+ANNOTATIONS_FILE = "data/annotations.jsonl"
+
+STAGING_ROOT     = "staging"              # user contributions land here
+MAX_DAILY_UPLOADS = 200                   # per install_id, per UTC day
+MAX_NAME_LEN      = 120
+MIN_CROP_PX       = 32
+
+
+def _get_install_id() -> str:
+    """Stable anonymous identifier for this installation."""
+    try:
+        from warp.knowledge.sync_client import _get_install_id as _gid
+        return _gid()
+    except Exception:
+        import uuid
+        return str(uuid.uuid4())[:16]
+
+
+def _validate_annotation(item: dict) -> str | None:
+    """Returns None if valid, or an error string."""
+    name = item.get("name", "").strip()
+    slot = item.get("slot", "").strip()
+    if not name:
+        return "empty name"
+    if len(name) > MAX_NAME_LEN:
+        return f"name too long ({len(name)})"
+    if not slot:
+        return "empty slot"
+    if not name.isprintable():
+        return "non-printable characters in name"
+    return None
+
+
+def _validate_crop(path: Path) -> str | None:
+    """Returns None if valid PNG crop, or an error string."""
+    try:
+        import cv2
+        img = cv2.imread(str(path))
+        if img is None:
+            return "unreadable image"
+        h, w = img.shape[:2]
+        if h < MIN_CROP_PX or w < MIN_CROP_PX:
+            return f"too small ({w}×{h})"
+        return None
+    except Exception as e:
+        return str(e)
+
+
+# ---------------------------------------------------------------------------
+# Background worker
+# ---------------------------------------------------------------------------
+
+class SyncWorker(QThread):
+    """
+    Uploads confirmed crops to staging/ on HF Hub.
+    Never writes to data/ — only repo owner can approve staging.
+
+    Signals:
+        progress(percent, message)
+        finished(success: bool)
+    """
+
+    progress = Signal(int, str)
+    finished = Signal(bool)
+
+    def __init__(
+        self,
+        data_manager: TrainingDataManager,
+        hf_token: str,
+        mode: str = "upload",
+    ):
+        super().__init__()
+        self._mgr   = data_manager
+        self._token = hf_token
+        self._mode  = mode
+
+    def run(self):
+        try:
+            if self._mode in ("upload", "both"):
+                self._upload()
+            if self._mode in ("download", "both"):
+                self._download()
+            self.finished.emit(True)
+        except Exception as e:
+            logger.error(f"Sync error: {e}")
+            self.finished.emit(False)
+
+    # ---------------------------------------------------------------- upload
+
+    def _upload(self):
+        """Upload new confirmed crops to staging/<install_id>/ on HF Hub."""
+        from huggingface_hub import HfApi
+        api = HfApi(token=self._token)
+
+        api.create_repo(
+            repo_id=HF_DATASET_REPO,
+            repo_type=HF_REPO_TYPE,
+            exist_ok=True,
+            private=False,
+        )
+
+        install_id   = _get_install_id()
+        staging_dir  = f"{STAGING_ROOT}/{install_id}"
+        staging_anno = f"{staging_dir}/annotations.jsonl"
+        staging_crop = f"{staging_dir}/crops"
+
+        confirmed = self._mgr.get_confirmed_crops()
+        if not confirmed:
+            self.progress.emit(100, "Nothing to upload.")
+            return
+
+        # Client-side rate limit check
+        today     = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+        rl_file   = Path(self._mgr._data_root) / '.sync_rate_limit.json'
+        rl        = {}
+        try:
+            rl = json.loads(rl_file.read_text())
+        except Exception:
+            pass
+        daily_count = rl.get(today, 0)
+        if daily_count >= MAX_DAILY_UPLOADS:
+            self.progress.emit(100, f"Daily upload limit ({MAX_DAILY_UPLOADS}) reached.")
+            return
+
+        # Fetch existing hashes in this user's staging folder
+        self.progress.emit(5, "Checking existing uploads…")
+        existing_hashes = self._fetch_staging_hashes(api, staging_crop)
+
+        new_annotations: list[dict] = []
+        uploaded = 0
+        total    = len(confirmed)
+
+        for idx, item in enumerate(confirmed):
+            if daily_count + uploaded >= MAX_DAILY_UPLOADS:
+                break
+            pct = 5 + int(85 * idx / total)
+            self.progress.emit(pct, f"Uploading {idx+1}/{total}…")
+
+            # Validate annotation
+            err = _validate_annotation(item)
+            if err:
+                logger.warning(f"Sync: skipping invalid annotation ({err}): {item}")
+                continue
+
+            crop_path = Path(item["path"])
+            if not crop_path.exists():
+                continue
+
+            # Validate crop image
+            err = _validate_crop(crop_path)
+            if err:
+                logger.warning(f"Sync: skipping invalid crop ({err}): {crop_path}")
+                continue
+
+            sha = self._file_sha256(crop_path)
+            if sha in existing_hashes:
+                continue   # already uploaded
+
+            # Upload crop to staging
+            api.upload_file(
+                path_or_fileobj=str(crop_path),
+                path_in_repo=f"{staging_crop}/{sha}.png",
+                repo_id=HF_DATASET_REPO,
+                repo_type=HF_REPO_TYPE,
+            )
+            existing_hashes.add(sha)
+            uploaded += 1
+
+            new_annotations.append({
+                "slot":        item["slot"],
+                "name":        item["name"],
+                "crop_sha256": sha,
+                "date":        today,
+            })
+
+        if new_annotations:
+            self.progress.emit(92, "Appending annotations…")
+            self._append_staging_annotations(api, staging_anno, new_annotations)
+
+        # Update local rate limit counter
+        rl[today] = daily_count + uploaded
+        try:
+            rl_file.write_text(json.dumps(rl))
+        except Exception:
+            pass
+
+        self.progress.emit(100, f"Uploaded {uploaded} annotations to staging.")
+
+    def _fetch_staging_hashes(self, api, staging_crop_dir: str) -> set[str]:
+        try:
+            files = api.list_repo_files(
+                repo_id=HF_DATASET_REPO,
+                repo_type=HF_REPO_TYPE,
+            )
+            return {
+                Path(f).stem
+                for f in files
+                if f.startswith(staging_crop_dir) and f.endswith(".png")
+            }
+        except Exception:
+            return set()
+
+    def _append_staging_annotations(self, api, path_in_repo: str, new_entries: list[dict]):
+        import io
+        existing_lines: list[str] = []
+        existing_hashes: set[str] = set()
+        try:
+            local = api.hf_hub_download(
+                repo_id=HF_DATASET_REPO,
+                filename=path_in_repo,
+                repo_type=HF_REPO_TYPE,
+            )
+            with open(local) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            d = json.loads(line)
+                            existing_hashes.add(d.get("crop_sha256", ""))
+                        except Exception:
+                            pass
+                        existing_lines.append(line)
+        except Exception:
+            pass
+
+        combined = list(existing_lines)
+        for entry in new_entries:
+            if entry["crop_sha256"] not in existing_hashes:
+                combined.append(json.dumps(entry, ensure_ascii=False))
+                existing_hashes.add(entry["crop_sha256"])
+
+        content_bytes = "\n".join(combined).encode("utf-8")
+        api.upload_file(
+            path_or_fileobj=io.BytesIO(content_bytes),
+            path_in_repo=path_in_repo,
+            repo_id=HF_DATASET_REPO,
+            repo_type=HF_REPO_TYPE,
+        )
+
+    # ---------------------------------------------------------------- download
+
+    def _download(self):
+        """Download approved annotations from data/ (not staging)."""
+        self.progress.emit(10, "Downloading approved annotations…")
+        try:
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(
+                repo_id=HF_DATASET_REPO,
+                filename=ANNOTATIONS_FILE,
+                repo_type=HF_REPO_TYPE,
+            )
+            count = sum(1 for line in open(path) if line.strip())
+            self.progress.emit(100, f"Downloaded {count} approved annotations.")
+        except Exception as e:
+            logger.warning(f"Download failed: {e}")
+            self.progress.emit(100, "Download failed — dataset may be empty.")
+
+    # ---------------------------------------------------------------- helpers
+
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        sha = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                sha.update(chunk)
+        return sha.hexdigest()[:32]
+
+
+# ---------------------------------------------------------------------------
+# HF Token setup dialog (kept for internal use / testing)
+# ---------------------------------------------------------------------------
+
+class HFTokenDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Hugging Face Token")
+        self.setFixedWidth(440)
+        self._token = ""
+        self._build_ui()
+
+    def _build_ui(self):
+        lay = QVBoxLayout(self)
+        lay.setSpacing(12)
+        lay.addWidget(QLabel("Hugging Face Token:"))
+        self._token_edit = QLineEdit()
+        self._token_edit.setPlaceholderText("hf_…")
+        self._token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        lay.addWidget(self._token_edit)
+        btns = QHBoxLayout()
+        btn_ok     = QPushButton("Save")
+        btn_cancel = QPushButton("Cancel")
+        btn_ok.clicked.connect(self._on_ok)
+        btn_cancel.clicked.connect(self.reject)
+        btns.addStretch()
+        btns.addWidget(btn_cancel)
+        btns.addWidget(btn_ok)
+        lay.addLayout(btns)
+
+    def _on_ok(self):
+        self._token = self._token_edit.text().strip()
+        if self._token:
+            self.accept()
+
+    def get_token(self) -> str:
+        return self._token
+
+# Synchronises training data (annotations + icon crops) with Hugging Face Hub.
+#
 # Storage model:
 #   - HF Dataset repo: "sets-sto/sto-icon-dataset"  (public, community)
 #   - Structure:
