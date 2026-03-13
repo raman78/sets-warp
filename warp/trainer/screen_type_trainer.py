@@ -208,6 +208,7 @@ class ScreenTypeTrainerWorker:
         ])
 
         import cv2, random
+        import numpy as np
         random.shuffle(samples)
         split    = max(1, int(len(samples) * 0.85))
         tr_s, va_s = samples[:split], samples[split:]
@@ -225,9 +226,22 @@ class ScreenTypeTrainerWorker:
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 return self._tf(img), lbl
 
-        import numpy as np
+        # ── Weighted sampler — equalises class imbalance ───────────────────────
+        import math
+        class_counts = [0] * n_classes
+        for _, lbl in tr_s:
+            class_counts[lbl] += 1
+        class_weights = [1.0 / max(c, 1) for c in class_counts]
+        sample_weights = torch.tensor([class_weights[lbl] for _, lbl in tr_s])
+        sampler = torch.utils.data.WeightedRandomSampler(
+            sample_weights, num_samples=len(tr_s), replacement=True)
+
+        # Loss weights — penalise errors on rare classes more
+        loss_weights = torch.tensor(class_weights, dtype=torch.float32)
+        loss_weights = loss_weights / loss_weights.sum() * n_classes  # normalise
+
         tr_loader = DataLoader(_DS(tr_s, aug),  batch_size=BATCH_SIZE,
-                               shuffle=True,  num_workers=0)
+                               sampler=sampler, num_workers=0)
         va_loader = DataLoader(_DS(va_s, val_tf), batch_size=BATCH_SIZE,
                                shuffle=False, num_workers=0)
 
@@ -240,30 +254,39 @@ class ScreenTypeTrainerWorker:
         model.classifier[-1] = nn.Linear(in_features, n_classes)
         model = model.to(device)
 
-        # Freeze backbone, train only classifier first
+        # Phase 1: freeze backbone, train only classifier head (warmup)
         for param in model.features.parameters():
             param.requires_grad = False
 
         optimiser = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, model.parameters()),
             lr=LR)
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(weight=loss_weights.to(device))
+
+        WARMUP_EPOCHS = 10  # epochs with frozen backbone
 
         # ── Training loop ──────────────────────────────────────────────────────
+        class_dist = ', '.join(f'{label_map[i]}:{class_counts[i]}' for i in range(n_classes))
+        prog(16, f'Class distribution: {class_dist}')
+
         best_val_acc = 0.0
         best_state   = None
         no_improve   = 0
+        backbone_unfrozen = False
 
         for epoch in range(MAX_EPOCHS):
             if interrupted():
                 done(False, 'Cancelled')
                 return
 
-            # Unfreeze backbone after epoch 3
-            if epoch == 3:
+            # Unfreeze backbone after warmup — fine-tune with lower LR
+            if epoch == WARMUP_EPOCHS and not backbone_unfrozen:
                 for param in model.features.parameters():
                     param.requires_grad = True
                 optimiser = torch.optim.AdamW(model.parameters(), lr=LR * 0.1)
+                backbone_unfrozen = True
+                prog(15 + int(75 * epoch / MAX_EPOCHS),
+                     f'Epoch {epoch+1}: backbone unfrozen, fine-tuning...')
 
             model.train()
             train_loss = 0.0

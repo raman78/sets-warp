@@ -40,8 +40,9 @@ from warp.trainer.sync               import SyncWorker, HFTokenDialog
 
 log = logging.getLogger(__name__)
 
-_KEY_LAST_DIR = 'warp_core/last_dir'
-_KEY_HF_TOKEN = 'warp_core/hf_token'
+_KEY_LAST_DIR      = 'warp_core/last_dir'
+_KEY_HF_TOKEN      = 'warp_core/hf_token'
+_KEY_TRAIN_REPEATS = 'warp_core/train_repeats'
 
 CONF_HIGH   = 0.85
 CONF_MEDIUM = 0.70
@@ -1018,19 +1019,42 @@ class WarpCoreWindow(QMainWindow):
             self.statusBar().showMessage('No screenshot selected.')
             return
         path  = self._screenshots[self._current_idx]
+        # Warn if this screenshot has manually confirmed annotations
+        if self._data_mgr.has_annotations(path):
+            from PySide6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self, 'Overwrite confirmed annotations?',
+                f'"{path.name}" already has confirmed annotations.\n\n'
+                f'Auto-Detect Slots will overwrite them with ML predictions.\n\n'
+                f'Continue?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         stype = self._screen_types.get(path.name, 'UNKNOWN')
         self._recognition_cache.pop(path.name, None)
         self._start_recognition(path, stype)
         self.statusBar().showMessage(f'Auto-Detect running on {path.name}...')
 
     def _on_detect_screen_types(self):
-        """Re-run screen type classification on all loaded screenshots.
-        Uses the trained ONNX model; UNKNOWN if no model exists yet.
-        Call this after Train Model to apply the new classifier."""
+        """Re-run screen type classification on all loaded screenshots."""
         if not self._screenshots:
             self.statusBar().showMessage('No screenshots loaded.')
             return
-        self._start_screen_type_detection("detect_screen_types_button")
+        if self._screen_types_manual:
+            from PySide6.QtWidgets import QMessageBox
+            n = len(self._screen_types_manual)
+            reply = QMessageBox.question(
+                self, 'Override manual corrections?',
+                f'You have manually set the screen type for {n} screenshot(s).\n\n'
+                f'Detect Screen Types will overwrite these with ML predictions.\n\n'
+                f'Continue?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            self._screen_types_manual.clear()
+        self._start_screen_type_detection('detect_screen_types_button')
 
     # -- Recognition background worker ----------------------------------------
 
@@ -1646,6 +1670,40 @@ class WarpCoreWindow(QMainWindow):
             self.statusBar().showMessage('Training already running...')
             return
 
+        # ── Ask how many passes over the data ─────────────────────────────────
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QPushButton, QDialogButtonBox
+        last_repeats = int(self._settings.value(_KEY_TRAIN_REPEATS, 1))
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Train Model')
+        dlg.setMinimumWidth(320)
+        vl = QVBoxLayout(dlg)
+        vl.addWidget(QLabel(
+            'How many times should the trainer repeat the full dataset?\n'
+            'More passes = better convergence but takes longer.\n'
+            'Recommended: 1–3 for first run, 5+ when adding new data.'))
+        hl = QHBoxLayout()
+        hl.addWidget(QLabel('Passes:'))
+        spin = QSpinBox()
+        spin.setRange(1, 20)
+        spin.setValue(last_repeats)
+        spin.setToolTip('Each pass trains the model on all available data once.')
+        hl.addWidget(spin)
+        hl.addStretch()
+        vl.addLayout(hl)
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        vl.addWidget(bb)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        train_repeats = spin.value()
+        self._settings.setValue(_KEY_TRAIN_REPEATS, train_repeats)
+        # ──────────────────────────────────────────────────────────────────────
+
         self._train_dlg = _TrainProgressDialog(parent=self)
         self._train_dlg.cancelled.connect(self._on_train_cancelled)
         self._train_dlg.show()
@@ -1677,18 +1735,26 @@ class WarpCoreWindow(QMainWindow):
                 ) if sc_dir.exists() else False
 
                 if has_sc_data:
-                    def sc_prog(pct, msg):
-                        self_.progress.emit(int(pct * 0.45), f'[Screen types] {msg}')
-                    def sc_done(ok, msg):
-                        nonlocal sc_ok, sc_msg
-                        sc_ok, sc_msg = ok, msg
+                    for rep in range(train_repeats):
+                        if interrupted():
+                            self_.finished.emit(False, 'Cancelled')
+                            return
+                        rep_label = f' (pass {rep+1}/{train_repeats})' if train_repeats > 1 else ''
+                        def sc_prog(pct, msg, _rep=rep):
+                            base = int(_rep / train_repeats * 45)
+                            span = int(45 / train_repeats)
+                            self_.progress.emit(base + int(pct * span / 100),
+                                                f'[Screen types{rep_label}] {msg}')
+                        def sc_done(ok, msg):
+                            nonlocal sc_ok, sc_msg
+                            sc_ok, sc_msg = ok, msg
 
-                    from warp.trainer.screen_type_trainer import ScreenTypeTrainerWorker
-                    w = ScreenTypeTrainerWorker(data_root, models_dir)
-                    w.run(sc_prog, sc_done, interrupted)
-                    if interrupted():
-                        self_.finished.emit(False, 'Cancelled')
-                        return
+                        from warp.trainer.screen_type_trainer import ScreenTypeTrainerWorker
+                        w = ScreenTypeTrainerWorker(data_root, models_dir)
+                        w.run(sc_prog, sc_done, interrupted)
+                        if interrupted():
+                            self_.finished.emit(False, 'Cancelled')
+                            return
                 else:
                     self_.progress.emit(5, '[Screen types] No data yet — skipping')
 
