@@ -39,9 +39,9 @@ SCREEN_TYPES = [
 MIN_IMAGES_PER_CLASS = 1    # accept any class with at least 1 image
 INPUT_SIZE           = 224
 BATCH_SIZE           = 8
-MAX_EPOCHS           = 20
-LR                   = 1e-4
-PATIENCE             = 4    # early stopping
+MAX_EPOCHS           = 60   # more epochs needed for small dataset
+LR                   = 3e-4
+PATIENCE             = 10   # early stopping
 
 
 # ── QThread worker ─────────────────────────────────────────────────────────────
@@ -152,11 +152,19 @@ class ScreenTypeTrainerWorker:
             return
 
         # ── Dataset ────────────────────────────────────────────────────────────
+        # Aggressive augmentation — essential for small datasets (10-30 images/class).
+        # Each image is seen with different crops/colors/flips each epoch,
+        # effectively multiplying the training set ~10x.
         aug = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize((INPUT_SIZE, INPUT_SIZE)),
+            transforms.Resize((INPUT_SIZE + 32, INPUT_SIZE + 32)),
+            transforms.RandomCrop(INPUT_SIZE),
             transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
+            transforms.RandomVerticalFlip(p=0.1),
+            transforms.RandomRotation(degrees=5),
+            transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                   saturation=0.2, hue=0.05),
+            transforms.RandomGrayscale(p=0.05),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406],
                                   [0.229, 0.224, 0.225]),

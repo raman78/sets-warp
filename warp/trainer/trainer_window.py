@@ -830,10 +830,11 @@ class WarpCoreWindow(QMainWindow):
         for p in self._screenshots:
             self._screen_types[p.name] = 'UNKNOWN'
             self._file_list.addItem(self._make_file_list_item(p, 'UNKNOWN'))
-        self._start_screen_type_detection()
+        self._start_screen_type_detection("open_folder")
 
-    def _start_screen_type_detection(self):
+    def _start_screen_type_detection(self, trigger: str = 'unknown'):
         """Launch ML screen type classifier worker."""
+        log.info(f'ScreenTypeDetection triggered by: {trigger}')
         total = len(self._screenshots)
         self._detect_dlg = _DetectProgressDialog(total, parent=self)
         self._detect_dlg.cancelled.connect(self._on_detect_cancelled)
@@ -1035,7 +1036,7 @@ class WarpCoreWindow(QMainWindow):
         if not self._screenshots:
             self.statusBar().showMessage('No screenshots loaded.')
             return
-        self._start_screen_type_detection()
+        self._start_screen_type_detection("detect_screen_types_button")
 
     # -- Recognition background worker ----------------------------------------
 
@@ -1799,9 +1800,11 @@ class WarpCoreWindow(QMainWindow):
                 ScreenTypeClassifier.clear_session()
             except Exception:
                 pass
-            # Re-run screen type detection with the newly trained model
+            # Re-run screen type detection once with the newly trained model
+            # Use singleShot to ensure it runs after any pending Qt events
             if self._screenshots:
-                self._start_screen_type_detection()
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(200, lambda: self._start_screen_type_detection("train_model_finished"))
         else:
             QMessageBox.warning(self, 'Training Failed', message)
         self._train_worker = None
