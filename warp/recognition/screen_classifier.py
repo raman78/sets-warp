@@ -38,8 +38,8 @@ log = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 SCREEN_TYPES = [
-    'SPACE', 'GROUND', 'SPACE_TRAITS', 'GROUND_TRAITS',
-    'BOFFS', 'SPEC', 'SPACE_MIXED', 'GROUND_MIXED',
+    'SPACE_EQ', 'GROUND_EQ', 'TRAITS',
+    'BOFFS', 'SPECIALIZATIONS', 'SPACE_MIXED', 'GROUND_MIXED',
 ]
 
 INPUT_SIZE        = 224     # MobileNetV3 input

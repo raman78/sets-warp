@@ -50,7 +50,7 @@ CONF_MEDIUM = 0.70
 # Used to populate the slot combo based on detected screen type.
 
 SLOT_GROUPS: dict[str, list[str]] = {
-    'SPACE': [
+    'SPACE_EQ': [
         'Fore Weapons',
         'Deflector',
         'Sec-Def',
@@ -66,7 +66,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Tactical Consoles',
         'Hangars',
     ],
-    'GROUND': [
+    'GROUND_EQ': [
         'Body Armor',
         'EV Suit',
         'Personal Shield',
@@ -75,13 +75,11 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Kit Modules',
         'Ground Devices',
     ],
-    'SPACE_TRAITS': [
+    'TRAITS': [
         'Personal Space Traits',
         'Starship Traits',
         'Space Reputation',
         'Active Space Rep',
-    ],
-    'GROUND_TRAITS': [
         'Personal Ground Traits',
         'Ground Reputation',
         'Active Ground Rep',
@@ -97,7 +95,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Boff Miracle Worker',
         'Boff Temporal',
     ],
-    'SPEC': [
+    'SPECIALIZATIONS': [
         'Primary Specialization',
         'Secondary Specialization',
     ],
@@ -105,40 +103,37 @@ SLOT_GROUPS: dict[str, list[str]] = {
 
 # Human-readable labels per screen type
 SCREEN_TYPE_LABELS: dict[str, str] = {
-    'SPACE':         'Space Equipment',
-    'GROUND':        'Ground Equipment',
-    'SPACE_TRAITS':  'Space Traits',
-    'GROUND_TRAITS': 'Ground Traits',
+    'SPACE_EQ':      'Space Equipment',
+    'GROUND_EQ':     'Ground Equipment',
+    'TRAITS':        'Traits',
     'BOFFS':         'Bridge Officers',
-    'SPEC':          'Specializations',
+    'SPECIALIZATIONS': 'Specializations',
     'SPACE_MIXED':   'Space Mixed (merged)',
     'GROUND_MIXED':  'Ground Mixed (merged)',
     'UNKNOWN':       'Unknown',
 }
 
 SCREEN_TYPE_ICONS: dict[str, str] = {
-    'SPACE':         '🚀',
-    'GROUND':        '🦶',
-    'SPACE_TRAITS':  '✨',
-    'GROUND_TRAITS': '🌿',
+    'SPACE_EQ':      '🚀',
+    'GROUND_EQ':     '🦶',
+    'TRAITS':        '✨',
     'BOFFS':         '👥',
-    'SPEC':          '🎯',
+    'SPECIALIZATIONS': '🎯',
     'SPACE_MIXED':   '🌌',
     'GROUND_MIXED':  '🗺️',
     'UNKNOWN':       '❓',
 }
 
-# Map detected build_type -> which SLOT_GROUPS key to use in combo
+# Map detected screen type -> which SLOT_GROUPS key to use in combo
 SCREEN_TO_SLOT_GROUP: dict[str, str] = {
-    'SPACE':         'SPACE',
-    'GROUND':        'GROUND',
-    'SPACE_TRAITS':  'SPACE_TRAITS',
-    'GROUND_TRAITS': 'GROUND_TRAITS',
+    'SPACE_EQ':      'SPACE_EQ',
+    'GROUND_EQ':     'GROUND_EQ',
+    'TRAITS':        'TRAITS',
     'BOFFS':         'BOFFS',
-    'SPEC':          'SPEC',
+    'SPECIALIZATIONS': 'SPECIALIZATIONS',
     'SPACE_MIXED':   'ALL',
     'GROUND_MIXED':  'ALL',
-    'UNKNOWN':       'SPACE',
+    'UNKNOWN':       'SPACE_EQ',
 }
 
 # Slots that represent free-text strings, not icons.
@@ -158,7 +153,7 @@ SHIP_TIER_VALUES: list[str] = [
 
 # Ship info slots are available on every equipment screen
 _SHIP_INFO_SLOTS = ['Ship Name', 'Ship Type', 'Ship Tier']
-for _grp in ('SPACE', 'GROUND', 'ALL'):
+for _grp in ('SPACE_EQ', 'GROUND_EQ', 'ALL'):
     pass   # added below after ALL_SLOTS is built
 
 # All slots combined (fallback + MIXED screens)
@@ -168,11 +163,11 @@ for _slots in SLOT_GROUPS.values():
         if _s not in ALL_SLOTS:
             ALL_SLOTS.append(_s)
 # Append ship info slots to groups where they are relevant
-for _grp_key in ('SPACE', 'GROUND'):
+for _grp_key in ('SPACE_EQ', 'GROUND_EQ'):
     for _s in _SHIP_INFO_SLOTS:
         if _s not in SLOT_GROUPS[_grp_key]:
             SLOT_GROUPS[_grp_key].append(_s)
-# Build ALL after extending SPACE/GROUND
+# Build ALL after extending SPACE_EQ/GROUND_EQ
 ALL_SLOTS = []
 for _slots in SLOT_GROUPS.values():
     for _s in _slots:
@@ -271,15 +266,14 @@ class RecognitionWorker(QThread):
 
     def run(self):
         importer_type = {
-            'SPACE':         'SPACE',
-            'GROUND':        'GROUND',
-            'SPACE_TRAITS':  'SPACE_TRAITS',
-            'GROUND_TRAITS': 'GROUND_TRAITS',
+            'SPACE_EQ':      'SPACE',
+            'GROUND_EQ':     'GROUND',
+            'TRAITS':        'SPACE_TRAITS',   # importer decides space/ground from content
             'BOFFS':         'BOFFS',
-            'SPEC':          'SPEC',
+            'SPECIALIZATIONS': 'SPEC',
             'SPACE_MIXED':   'SPACE',
             'GROUND_MIXED':  'GROUND',
-        }.get(self._stype, 'SPACE')
+        }.get(self._stype, 'SPACE_EQ')
 
         try:
             import cv2
@@ -979,7 +973,7 @@ class WarpCoreWindow(QMainWindow):
 
     def _refresh_slot_combo(self, stype: str):
         """Repopulate slot combo for the given screen type."""
-        group_key    = SCREEN_TO_SLOT_GROUP.get(stype, 'SPACE')
+        group_key    = SCREEN_TO_SLOT_GROUP.get(stype, 'SPACE_EQ')
         slots        = SLOT_GROUPS.get(group_key, ALL_SLOTS)
         current_slot = self._slot_combo.currentText()
         self._slot_combo.blockSignals(True)

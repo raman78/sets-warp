@@ -32,9 +32,18 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 SCREEN_TYPES = [
-    'SPACE', 'GROUND', 'SPACE_TRAITS', 'GROUND_TRAITS',
-    'BOFFS', 'SPEC', 'SPACE_MIXED', 'GROUND_MIXED',
+    'SPACE_EQ', 'GROUND_EQ', 'TRAITS',
+    'BOFFS', 'SPECIALIZATIONS', 'SPACE_MIXED', 'GROUND_MIXED',
 ]
+
+# Legacy folder names that map to the new TRAITS class
+TRAITS_LEGACY_FOLDERS = ['SPACE_TRAITS', 'GROUND_TRAITS', 'TRAITS']
+# Legacy top-level class names (before rename)
+LEGACY_CLASS_MAP = {
+    'SPACE':  'SPACE_EQ',
+    'GROUND': 'GROUND_EQ',
+    'SPEC':   'SPECIALIZATIONS',
+}
 
 MIN_IMAGES_PER_CLASS = 1    # accept any class with at least 1 image
 INPUT_SIZE           = 224
@@ -124,19 +133,39 @@ class ScreenTypeTrainerWorker:
         label_map: dict[int, str] = {}
         samples: list[tuple[Path, int]] = []   # (path, class_idx)
 
-        present_classes = sorted([
-            d.name for d in screen_types_dir.iterdir()
-            if d.is_dir() and d.name in SCREEN_TYPES
-        ])
+        def _canonical(folder_name: str) -> str | None:
+            """Map any folder name (including legacy) to current class name."""
+            if folder_name in TRAITS_LEGACY_FOLDERS:
+                return 'TRAITS'
+            if folder_name in LEGACY_CLASS_MAP:
+                return LEGACY_CLASS_MAP[folder_name]
+            if folder_name in SCREEN_TYPES:
+                return folder_name
+            return None
+
+        # Build class index from folders present on disk (deduplicated)
+        present_classes = sorted({
+            _canonical(d.name)
+            for d in screen_types_dir.iterdir()
+            if d.is_dir() and _canonical(d.name) is not None
+        })
         if not present_classes:
             done(False, 'No class folders found in screen_types/.')
             return
 
         for idx, cls in enumerate(present_classes):
             label_map[idx] = cls
-            cls_dir = screen_types_dir / cls
-            pngs    = list(cls_dir.glob('*.png'))
-            for p in pngs:
+
+        # Load samples — merge all legacy folders into canonical class index
+        cls_to_idx = {c: i for i, c in label_map.items()}
+        for d in screen_types_dir.iterdir():
+            if not d.is_dir():
+                continue
+            canonical = _canonical(d.name)
+            if canonical is None:
+                continue
+            idx = cls_to_idx[canonical]
+            for p in d.glob('*.png'):
                 samples.append((p, idx))
 
         if not samples:
@@ -145,7 +174,8 @@ class ScreenTypeTrainerWorker:
             return
 
         n_classes = len(label_map)
-        prog(10, f'{len(samples)} images across {n_classes} classes')
+        prog(10, f'{len(samples)} images across {n_classes} classes — '
+                 f'classes: {list(label_map.values())}')
 
         if interrupted():
             done(False, 'Cancelled')
