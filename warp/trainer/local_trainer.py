@@ -112,8 +112,9 @@ class LocalTrainWorker(QThread):
 
         transform_train = T.Compose([
             T.ToPILImage(),
-            T.Resize((MODEL_IMG_SIZE, MODEL_IMG_SIZE)),
-            T.RandomHorizontalFlip(),
+            # RandomResizedCrop simulates different UI scales (UI Scale in STO)
+            T.RandomResizedCrop(MODEL_IMG_SIZE, scale=(0.8, 1.0)),
+            # Slight rotation and color jitter for different Lighting 2.0 settings
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
             T.ToTensor(),
             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),

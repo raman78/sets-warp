@@ -44,7 +44,7 @@ TEMPLATE_THRESHOLD  = 0.55   # min TM_CCOEFF_NORMED score to accept a match
 HIST_WEIGHT         = 0.20   # weight of histogram score when blending with template
 HIST_THRESHOLD      = 0.50   # min histogram correlation to contribute
 ML_TRIGGER_THRESHOLD= 0.50   # if combined conf below this, try ML stage
-HIST_BINS           = [18, 8] # H×S bins for _hist_hsv — must match everywhere
+HIST_BINS           = [18, 16] # H×S bins for _hist_hsv — must match everywhere
 
 HF_REPO_ID          = 'sets-sto/icon-classifier'
 HF_MODEL_FILENAME   = 'icon_classifier.onnx'
@@ -260,7 +260,7 @@ class SETSIconMatcher:
     def _hist_hsv(icon_bgr: np.ndarray) -> np.ndarray:
         """
         Normalised HSV histogram.
-        Using H(18 bins) × S(8 bins) — ignores Value to be lighting-robust.
+        Using H(18 bins) × S(16 bins) — ignores Value to be lighting-robust.
         """
         import cv2
         hsv  = cv2.cvtColor(icon_bgr, cv2.COLOR_BGR2HSV)

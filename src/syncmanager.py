@@ -7,11 +7,12 @@ then downloads only what's needed using a bounded thread pool.
 Download discipline:
   - Max 5 concurrent threads (numbered T-1..T-5)
   - 404 = permanent failure, no retry
+  - 403 = Forbidden access, if repeated 3 times, disable source for session
   - Other errors retried up to MAX_RETRIES times with RETRY_DELAY_S pause
   - Stall timeout: STALL_TIMEOUT_S seconds of no data = abort attempt
 
 Logging:
-  - Terminal (stderr): one progress bar line per group, overwritten with \\r
+  - Terminal (stderr): one progress bar line per group, overwritten with \r
   - Log file: only final result per file (OK / FAILED), never per-attempt noise
   - Log prefix: always includes asset group name for easy grep
 
@@ -34,12 +35,13 @@ import time
 from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Callable
-from urllib.parse import quote_plus, unquote_plus
+from urllib.parse import quote, unquote_plus
 
-from .constants import GITHUB_CACHE_URL, WIKI_IMAGE_URL
+from .constants import WIKI_IMAGE_URL
 from .setsdebug import log
 
 GITHUB_API_TREE     = 'https://api.github.com/repos/STOCD/SETS-Data/git/trees/main?recursive=1'
+GITHUB_RAW_BASE     = 'https://raw.githubusercontent.com/STOCD/SETS-Data/main'
 TREE_CACHE_FILENAME = 'github_tree_cache.json'
 TREE_CACHE_MAX_AGE  = 60 * 60   # 1 hour
 
@@ -47,6 +49,7 @@ MAX_RETRIES     = 1
 RETRY_DELAY_S   = 3
 STALL_TIMEOUT_S = 10
 MAX_THREADS     = 5
+MAX_FORBIDDEN   = 3   # Disable source after 3 x 403 errors
 
 BAR_WIDTH = 20   # characters for the progress bar fill
 
@@ -66,7 +69,7 @@ class _TermProgress:
     Renders a single overwritten line on stderr for one asset group.
 
     While active, normal log.info/warning output to stderr is suppressed
-    (written to file only) so the \\r line is not torn by interleaved text.
+    (written to file only) so the \r line is not torn by interleaved text.
     After finish() the suppression is lifted and a final newline is printed.
 
     Thread-safe: update() may be called from any thread.
@@ -122,7 +125,7 @@ class _TermProgress:
             sys.stderr.flush()
 
     def finish(self, summary: str):
-        """Print final line (no \\r overwrite), re-enable stderr logging."""
+        """Print final line (no \r overwrite), re-enable stderr logging."""
         line = self._render(self._total, summary)
         with _TermProgress._suppress_lock:
             # final line: overwrite progress, then newline
@@ -238,6 +241,13 @@ class SyncManager:
         self._downloader       = downloader
         self._tree_cache_path  = Path(cache_dir) / TREE_CACHE_FILENAME
 
+        # Circuit breaker state
+        self._github_blocked   = False
+        self._github_403_count = 0
+        self._wiki_blocked     = False
+        self._wiki_403_count   = 0
+        self._cb_lock          = Lock()
+
     # -----------------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------------
@@ -299,7 +309,7 @@ class SyncManager:
                         return
 
                     fname = entry['path'].split('/', 1)[1]
-                    ok, source, attempts = self._download_with_result(
+                    ok, source, attempts, failed_url = self._download_with_result(
                         entry, local_path, _type, session)
 
                     with lock:
@@ -317,7 +327,7 @@ class SyncManager:
                     else:
                         log.warning(
                             f'SyncManager [{_label}] T-{thread_num}: '
-                            f'FAILED ({attempt_word}) — {fname}')
+                            f'FAILED ({attempt_word}) — {fname} (URL: {failed_url or "unknown"})')
 
                     # ── terminal: update progress line ─────────────────────
                     status = f'T-{thread_num}: {fname}'
@@ -379,7 +389,6 @@ class SyncManager:
         Uses _TermProgress for terminal output.
         Returns {name: timestamp} failed dict.
         """
-        from urllib.parse import quote_plus as _qp
         if not names:
             return {}
 
@@ -397,20 +406,37 @@ class SyncManager:
         images_dir = self._images_dir
 
         def _worker(name: str):
-            filename = _qp(name) + '.png'
+            if self._wiki_blocked:
+                with lock:
+                    counter[0] += 1
+                    n_failed[0] += 1
+                    failed[name] = int(time.time())
+                return
+
+            filename = quote(name) + '.png'
             local_path = images_dir / filename
             url = WIKI_IMAGE_URL + name.replace(' ', '_') + suffix
-            data, _ = self._fetch(session, url, min_size=10)
+            data, attempts, status = self._fetch(session, url, min_size=10)
             ok = False
             if data is not None:
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 local_path.write_bytes(data)
                 ok = True
+            
+            if not ok:
+                if status == 403:
+                    with self._cb_lock:
+                        self._wiki_403_count += 1
+                        if self._wiki_403_count >= MAX_FORBIDDEN and not self._wiki_blocked:
+                            self._wiki_blocked = True
+                            log.error('SyncManager: STOWiki access BLOCKED after repeated 403 errors.')
+
             with lock:
                 counter[0] += 1
                 if not ok:
                     n_failed[0] += 1
-                    failed[name] = int(__import__('time').time())
+                    failed[name] = int(time.time())
+                    log.warning(f'SyncManager [{label}] wiki download: FAILED — {name} (URL: {url}, Status: {status or "Err"})')
                 c = counter[0]
             tprog.update(c)
             prog(label, c, len(names))
@@ -449,16 +475,15 @@ class SyncManager:
         """
         session = self._downloader._session
         if type_tag == 'ship':
-            # Construct fake entry for _download_with_result
-            filename = quote_plus(quote_plus(name))
+            filename = quote(name)
             entry = {
                 'path': f'ship_images/{filename}',
                 'sha':  '',
                 'size': -1,
             }
-            local_path = self._ship_images_dir / quote_plus(name)
+            local_path = self._ship_images_dir / filename
         else:
-            filename = quote_plus(name) + '.png'
+            filename = quote(name) + '.png'
             entry = {
                 'path': f'images/{filename}',
                 'sha':  '',
@@ -466,11 +491,11 @@ class SyncManager:
             }
             local_path = self._images_dir / filename
 
-        ok, source, _ = self._download_with_result(entry, local_path, type_tag, session)
+        ok, source, _, failed_url = self._download_with_result(entry, local_path, type_tag, session)
         if ok:
             log.debug(f'SyncManager.download_one: OK ({source}) — {name!r}')
         else:
-            log.warning(f'SyncManager.download_one: FAILED — {name!r}')
+            log.warning(f'SyncManager.download_one: FAILED — {name!r} (URL: {failed_url or "unknown"})')
         return ok
 
     # -----------------------------------------------------------------------
@@ -507,45 +532,73 @@ class SyncManager:
 
     def _download_with_result(
             self, entry: dict, local_path: Path,
-            type_tag: str, session) -> tuple[bool, str, int]:
-        """Returns (success, source_label, total_attempts)."""
-        url  = f'{GITHUB_CACHE_URL}/{entry["path"]}'
-        data, attempts = self._fetch(session, url, min_size=10)
-        if data is not None:
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            local_path.write_bytes(data)
-            return True, 'github', attempts
+            type_tag: str, session) -> tuple[bool, str, int, str | None]:
+        """Returns (success, source_label, total_attempts, failed_url)."""
+        
+        # ── GitHub Attempt ────────────────────────────────────────────────
+        # Use quote() instead of quote_plus() to avoid '+' for spaces
+        # GitHub raw URLs require %20 for spaces.
+        encoded_path = quote(entry["path"])
+        url = f'{GITHUB_RAW_BASE}/{encoded_path}'
+        
+        if not self._github_blocked:
+            data, attempts, status = self._fetch(session, url, min_size=10)
+            if data is not None:
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_bytes(data)
+                return True, 'github', attempts, None
+            
+            if status == 403:
+                with self._cb_lock:
+                    self._github_403_count += 1
+                    if self._github_403_count >= MAX_FORBIDDEN and not self._github_blocked:
+                        self._github_blocked = True
+                        log.error('SyncManager: GitHub access BLOCKED after repeated 403 errors.')
+        else:
+            attempts = 0
 
-        if type_tag == 'ship':
+        # ── Wiki Fallback (Ships only) ────────────────────────────────────
+        if type_tag == 'ship' and not self._wiki_blocked:
             filename  = entry['path'].split('/', 1)[1]
             name      = unquote_plus(unquote_plus(filename))
-            wiki_url  = WIKI_IMAGE_URL + quote_plus(name.replace(' ', '_'), safe='._-')
-            wdata, wa = self._fetch(session, wiki_url, min_size=100)
+            wiki_url  = WIKI_IMAGE_URL + quote(name.replace(' ', '_'), safe='._-')
+            wdata, wa, wstatus = self._fetch(session, wiki_url, min_size=100)
             total     = attempts + wa
             if wdata is not None:
                 local_path.write_bytes(wdata)
-                return True, 'wiki', total
-            return False, 'all', total
+                return True, 'wiki', total, None
+            
+            if wstatus == 403:
+                with self._cb_lock:
+                    self._wiki_403_count += 1
+                    if self._wiki_403_count >= MAX_FORBIDDEN and not self._wiki_blocked:
+                        self._wiki_blocked = True
+                        log.error('SyncManager: STOWiki access BLOCKED after repeated 403 errors.')
+            
+            return False, 'all', total, wiki_url
 
-        return False, 'github', attempts
+        return False, 'github', attempts, url
 
-    def _fetch(self, session, url: str, min_size: int = 10) -> tuple[bytes | None, int]:
+    def _fetch(self, session, url: str, min_size: int = 10) -> tuple[bytes | None, int, int | None]:
         """
         Fetch with retry. 404 = instant permanent failure (no retry).
-        Returns (data_or_None, attempts_made).
+        Returns (data_or_None, attempts_made, last_status_code).
         Transient errors logged to file only (stderr is suppressed during progress bar).
         """
+        last_status = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 resp = session.get(url, timeout=(10, STALL_TIMEOUT_S), stream=False)
+                last_status = resp.status_code
                 if resp.ok and len(resp.content) >= min_size:
-                    return resp.content, attempt
+                    return resp.content, attempt, last_status
                 if resp.status_code == 404:
-                    return None, attempt   # permanent — don't retry
+                    return None, attempt, 404   # permanent — don't retry
                 error = f'HTTP {resp.status_code}'
             except Exception as e:
                 error = str(e)
+                last_status = None
             log.warning(f'SyncManager: attempt {attempt}/{MAX_RETRIES} — {url} → {error}')
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY_S)
-        return None, MAX_RETRIES
+        return None, MAX_RETRIES, last_status
