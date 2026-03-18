@@ -1,62 +1,124 @@
-# STARSHIP BUILDS SLOT RULES
+# STO SLOT RULES & WARP IMPLEMENTATION
 
-1. **Ship Class Priority**: The specific ship class and tier (T1-T6) determine the base number of available slots. Tier 6 (T6) and T5-U ships offer the maximum slot capacity. Fleet variants usually add +1 Console slot.
+## Space Equipment
 
-2. **Weaponry Structure**: 
-    - **Fore Weapons**: Located at the front. Most ships have 1 to 5 slots. Primary offensive slots. Supports all weapon types EXCEPT Mines (inefficient). **REQUIRED** slot for Dual Cannons and Dual Heavy Cannons.
-    - **Aft Weapons**: Located at the rear. Most ships have 1 to 4 slots. Support and tactical slots. Supports Beams, Turrets, and Torpedoes. **REQUIRED** slot for Mine Launchers. **STRATEGIC** slot for Omni-Directional Beams and Kinetic Cutting Beams.
-    - **Weapon Types**: Slots can contain Beams, Cannons, or Torpedoes/Mines. However, certain ships (e.g., Science Vessels) may have restrictions on Heavy Cannons.
-    - **Omni-Directional/Turrets**: Rear slots are often used for 360-degree firing arc weapons to complement forward-facing builds.
+### Weaponry
 
-3. **Experimental Weapons**: 
-    - Dedicated slot available only on certain ship types (Escorts, Raiders, Destroyers, and some Science Warships).
-    - This slot is **exclusive** to Experimental Weapons; standard weapons cannot be placed here.
+- **Fore Weapons** — 1 to 5 slots. Primary offensive slots. Supports all weapon types except Mines. Required slot for Dual Cannons and Dual Heavy Cannons.
+- **Aft Weapons** — 0 to 5 slots (optional; some ship types have none). Support and tactical slots. Supports Beams, Turrets, Torpedoes, and Mine Launchers. Strategic for Omni-Directional Beams and Kinetic Cutting Beams.
+- **Experimental Weapon** — 0 or 1 slot (optional). Exclusive to certain ship types (Escorts, Raiders, Destroyers, some Science Warships). Only Experimental Weapons can be placed here; standard weapons cannot.
 
-4. **Standard Equipment Layout (Sequence)**:
-    - **Fore Weapons**: Primary offensive slots.
-    - **Deflector Dish**: 1 slot (Core stat modifier).
-    - **Secondary Deflector**: 1 slot (**OPTIONAL** - Exclusive to Science Vessels).
-    - **Impulse Engines**: 1 slot (Mobility).
-    - **Warp Core / Singularity Core**: 1 slot (Power management; Singularity used by Romulan ships).
-    - **Shields**: 1 slot (Protection).
-    - **Aft Weapons**: Secondary offensive slots.
-    - **Experimental Weapon**: 1 slot (**OPTIONAL** - Ship-type dependent).
+> **WARP:** Experimental Weapon restriction is enforced explicitly in `warp_importer.py` via `_is_experimental()`. Items not of type `Experimental Weapon` are filtered out from this slot before the result is returned.
+>
+> **Gap:** Fore/aft weapon cross-validation is not enforced by WARP. A fore-only weapon (e.g., Dual Heavy Cannon) could be placed in an Aft slot if the icon matcher assigns it there. SETS handles this at the widget level, but WARP does not pre-filter it.
 
-5. **Consoles and Auxiliary Slots**:
-    - **Devices**: 1 to 4 slots (Consumables/Clickies).
-    - **Universal Consoles**: Available on T6-X/T6-X2 upgraded ships or specific Miracle Worker ships. Can hold any type of console.
-    - **Engineering Consoles**: Focus on hull, power, and damage resistance.
-    - **Science Consoles**: Focus on shields, exotic damage, and control.
-    - **Tactical Consoles**: Focus on weapon damage and critical hits.
-    - **Hangar Bays**: 1 or 2 slots (**OPTIONAL** - Exclusive to Carriers, Dreadnoughts, and Flight Deck ships).
+### Core Equipment (fixed 1 slot each)
 
-6. **Standard Consoles**:
-    - **Tactical Consoles**: Can ONLY be placed in Tactical or Universal slots. (Focus: Damage/Crit).
-    - **Engineering Consoles**: Can ONLY be placed in Engineering or Universal slots. (Focus: Hull/Power).
-    - **Science Consoles**: Can ONLY be placed in Science or Universal slots. (Focus: Shields/Exotic).
+- **Deflector Dish** — 1 slot. Mandatory.
+- **Secondary Deflector** — 0 or 1 slot (optional). Exclusive to Science Vessels.
+- **Impulse Engines** — 1 slot. Mandatory.
+- **Warp Core / Singularity Core** — 1 slot. Mandatory. Singularity Core is used by Romulan ships.
+- **Shields** — 1 slot. Mandatory.
 
-7. **Universal Consoles (The "Any Slot" Rule)**:
-    - **Definition**: Consoles identified as "Universal" (usually denoted by the word **Universal** in their name or tooltip) are not restricted by category.
-    - **Versatility**: These can be placed in **ANY** available console slot, including Engineering, Science, Tactical, or dedicated Universal slots.
-    - **Origin**: Most Universal consoles come from the C-Store (Ship-specific consoles), Lobi Store, Lockboxes, or as part of Event Reward sets.
+### Devices and Consoles
 
-8. **Upgrades (T6-X / T6-X2)**:
-    - Using Experimental Ship Upgrade Tokens adds +1 Universal Console slot, +1 Device slot (at X2), and +1 Starship Trait slot.
+- **Devices** — 1 to 6 slots. Maximum 6 (base 4; T6-X adds +1, T6-X2 adds another +1).
+- **Universal Consoles** — 0 to 3 slots (optional). Available on T6-X / T6-X2 upgraded ships or specific Miracle Worker hulls. Each T6-X upgrade token adds +1 Universal Console slot.
+- **Engineering Consoles** — 1 to 5 slots. Mandatory. Focus: hull, power, damage resistance.
+- **Science Consoles** — 1 to 5 slots. Mandatory. Focus: shields, exotic damage, control.
+- **Tactical Consoles** — 1 to 5 slots. Mandatory. Focus: weapon damage and critical hits.
+- **Hangars** — 0 to 4 slots (optional). Exclusive to Carriers, Dreadnoughts, and Flight Deck ships.
 
-# GROUND BUILDS SLOT RULES
+### Console Placement Rules
 
-1. **Personal Equipment**:
-    - **Body Armor**: 1 slot.
-    - **Personal Shield Generator**: 1 slot.
-    - **Primary Weapon**: 1 slot.
-    - **Secondary Weapon**: 1 slot.
+| Item type | Allowed slots |
+| :--- | :--- |
+| Universal Console | Universal, Tactical, Engineering, Science |
+| Tactical Console | Tactical, Universal |
+| Engineering Console | Engineering, Universal |
+| Science Console | Science, Universal |
+| Hangar Pet | Hangars only |
 
-2. **Kit and Modules**:
-    - **Kit Frame**: 1 slot. Determines the number of available Module slots.
-    - **Kit Modules**: 5 slots (Standard). Elite Bridge Officer Training can unlock additional flexibility. Modules are career-specific (Engineering, Science, Tactical) unless they are "Universal".
+> **WARP:** Console cross-compatibility is implemented at the cache level in `src/datafunctions.py`. Universal Consoles are copied into the Tac/Eng/Sci cache buckets, and each console type is also copied into the Universal bucket. `_make_equipment_item()` in `warp_dialog.py` enforces this implicitly — if an item is not present in the target slot's cache bucket, it is rejected and skipped. No separate validation function is required.
 
-3. **Devices**:
-    - **Device Slots**: 2 to 4 slots.
+### Ship Tier and Slot Counts
 
-4. **Elite Bridge Officers (BOffs)**:
-    - Using an Elite Training Token on a BOff unlocks a **Kit Frame slot** and a **Device slot**, allowing them to use player-like abilities on the ground.
+- Slot counts are determined by ship class and tier (T1–T6).
+- T6 and T5-U ships offer the maximum slot capacity for their class.
+- Fleet variants typically add +1 console slot compared to the base version.
+- T6-X upgrade: +1 Universal Console slot.
+- T6-X2 upgrade (on top of X): +1 Device slot, +1 Starship Trait slot.
+- Valid tier values: **T1, T2, T3, T4, T5, T5-U, T6, T6-X, T6-X2**.
+
+> **WARP:** Exact slot counts per ship are sourced from `ship_list.json` (783 ships) via `ShipDB` in `warp_importer.py`. Lookup order: exact name match → fuzzy match (cutoff 0.72) → type-keyword fallback profile. Ship tier is extracted from the screenshot via OCR in `TextExtractor`.
+
+---
+
+## Space Traits
+
+- **Personal Space Traits** — up to 10 slots.
+- **Starship Traits** — up to 7 slots (5 base + 2 from Legendary or T6-X2 upgrades).
+- **Space Reputation Traits** — up to 5 slots.
+- **Active Space Reputation Traits** — up to 5 slots (optional).
+
+---
+
+## Ground Equipment
+
+- **Body Armor** — 0 or 1 slot (optional).
+- **EV Suit** — 0 or 1 slot (optional).
+- **Personal Shield Generator** — 1 slot. Mandatory.
+- **Weapons** — 1 to 2 slots (primary + secondary). Mandatory.
+- **Kit Frame** — 1 slot. Mandatory. Determines available Module slots.
+- **Kit Modules** — 1 to 6 slots. Maximum 6. Career-specific (Engineering, Science, Tactical) unless labelled Universal.
+- **Ground Devices** — 0 to 3 slots (optional).
+
+---
+
+## Ground Traits
+
+- **Personal Ground Traits** — up to 10 slots.
+- **Ground Reputation Traits** — up to 5 slots.
+- **Active Ground Reputation Traits** — up to 5 slots (optional).
+
+---
+
+## Bridge Officers
+
+Ability slots grouped by profession. Each seat holds abilities up to its rank (Ensign, Lieutenant, Lt. Commander, Commander).
+
+Space professions: Tactical, Engineering, Science, Operations, Intelligence, Command, Pilot, Miracle Worker, Temporal. Operations and the specialist professions are optional (ship-type dependent).
+
+---
+
+## Captain Specializations
+
+- **Primary Specialization** — 1 slot. Mandatory.
+- **Secondary Specialization** — 0 or 1 slot (optional).
+
+Primary (30-point trees): Command Officer, Intelligence Officer, Miracle Worker, Pilot, Temporal Operative.
+Secondary-only (15-point trees): Constable, Commando, Strategist.
+
+---
+
+## Screen Type Restrictions (WARP)
+
+The **Screen Type** detected from a screenshot determines which slot types WARP will process.
+
+| Screen Type | Slot Restriction |
+| :--- | :--- |
+| **Unknown** | No restrictions; all slot types may be processed. |
+| **Space Mixed (merged)** | Space Build slots only: Weapons, Consoles, Space Gear, Traits, Devices, Bridge Officers, Specializations. |
+| **Ground Mixed (merged)** | Ground Build slots only: Armor, Personal Shield, Weapons, Kit, Kit Modules, Ground Devices, Traits, Bridge Officers, Specializations. |
+
+> **WARP:** Screen type classification uses a three-stage pipeline in `warp/recognition/screen_classifier.py`: (1) ONNX MobileNetV3-Small, (2) session k-NN on HSV histograms, (3) OCR keyword fallback. Recognised types: `SPACE_EQ`, `GROUND_EQ`, `TRAITS`, `BOFFS`, `SPECIALIZATIONS`, `SPACE_MIXED`, `GROUND_MIXED`.
+>
+> **Gap:** `SPACE_MIXED` / `GROUND_MIXED` are recognised and handled in `warp_importer.py`, but slot restriction enforcement for these types is not yet fully implemented in `warp_dialog.py` (pending feature).
+
+---
+
+## Dropdown Filtering Logic (WARP)
+
+When a user interacts with a specific slot during review, the item name search must be limited to items compatible with that slot type (rules from the Console Placement section above).
+
+> **WARP:** Implemented implicitly via the SETS cache structure — each slot type is a separate dict in `cache.equipment`, cross-populated at startup. Direct slot-scoped filtering in the WARP annotation widget's item name field is **not yet implemented** (pending feature).
