@@ -33,11 +33,14 @@ CONF_HIGH   = 0.85
 CONF_MEDIUM = 0.70
 
 SLOT_GROUPS: dict[str, list[str]] = {
+    # SPACE_EQ: space equipment + ship metadata (name/type/tier live on space screenshots)
     'SPACE_EQ': [
         'Fore Weapons', 'Deflector', 'Sec-Def', 'Engines', 'Warp Core', 'Shield',
         'Aft Weapons', 'Experimental', 'Devices', 'Universal Consoles',
         'Engineering Consoles', 'Science Consoles', 'Tactical Consoles', 'Hangars',
+        'Ship Name', 'Ship Type', 'Ship Tier',
     ],
+    # GROUND_EQ: ground equipment only — no ship metadata
     'GROUND_EQ': [
         'Body Armor', 'EV Suit', 'Personal Shield', 'Weapons', 'Kit', 'Kit Modules', 'Ground Devices',
     ],
@@ -50,6 +53,25 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
     'SPECIALIZATIONS': [
+        'Primary Specialization', 'Secondary Specialization',
+    ],
+    # SPACE_MIXED: merged space screenshot — equipment + traits + boffs + specs, no ground gear
+    'SPACE_MIXED': [
+        'Fore Weapons', 'Deflector', 'Sec-Def', 'Engines', 'Warp Core', 'Shield',
+        'Aft Weapons', 'Experimental', 'Devices', 'Universal Consoles',
+        'Engineering Consoles', 'Science Consoles', 'Tactical Consoles', 'Hangars',
+        'Ship Name', 'Ship Type', 'Ship Tier',
+        'Personal Space Traits', 'Starship Traits', 'Space Reputation', 'Active Space Rep',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
+        'Primary Specialization', 'Secondary Specialization',
+    ],
+    # GROUND_MIXED: merged ground screenshot — ground gear + traits + boffs + specs, no space gear
+    'GROUND_MIXED': [
+        'Body Armor', 'EV Suit', 'Personal Shield', 'Weapons', 'Kit', 'Kit Modules', 'Ground Devices',
+        'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
         'Primary Specialization', 'Secondary Specialization',
     ],
 }
@@ -66,9 +88,14 @@ SCREEN_TYPE_ICONS: dict[str, str] = {
 }
 
 SCREEN_TO_SLOT_GROUP: dict[str, str] = {
-    'SPACE_EQ': 'SPACE_EQ', 'GROUND_EQ': 'GROUND_EQ', 'TRAITS': 'TRAITS',
-    'BOFFS': 'BOFFS', 'SPECIALIZATIONS': 'SPECIALIZATIONS', 'SPACE_MIXED': 'ALL',
-    'GROUND_MIXED': 'ALL', 'UNKNOWN': 'SPACE_EQ',
+    'SPACE_EQ':       'SPACE_EQ',
+    'GROUND_EQ':      'GROUND_EQ',
+    'TRAITS':         'TRAITS',
+    'BOFFS':          'BOFFS',
+    'SPECIALIZATIONS':'SPECIALIZATIONS',
+    'SPACE_MIXED':    'SPACE_MIXED',
+    'GROUND_MIXED':   'GROUND_MIXED',
+    'UNKNOWN':        'ALL',   # unknown type → show everything, let user decide
 }
 
 TEXT_SLOTS: frozenset[str] = frozenset(['Ship Name'])
@@ -77,19 +104,15 @@ NON_ICON_SLOTS: frozenset[str] = TEXT_SLOTS | FIXED_VALUE_SLOTS
 SHIP_TIER_VALUES: list[str] = ['T1', 'T2', 'T3', 'T4', 'T5', 'T5-U', 'T5-X', 'T5-X2', 'T6', 'T6-X', 'T6-X2']
 _SHIP_INFO_SLOTS = ['Ship Name', 'Ship Type', 'Ship Tier']
 
+# Build ALL_SLOTS as a flat deduplicated list of every slot across all groups
 ALL_SLOTS: list[str] = []
 for _slots in SLOT_GROUPS.values():
     for _s in _slots:
-        if _s not in ALL_SLOTS: ALL_SLOTS.append(_s)
-for _grp_key in ('SPACE_EQ', 'GROUND_EQ'):
-    for _s in _SHIP_INFO_SLOTS:
-        if _s not in SLOT_GROUPS[_grp_key]: SLOT_GROUPS[_grp_key].append(_s)
-ALL_SLOTS = []
-for _slots in SLOT_GROUPS.values():
-    for _s in _slots:
-        if _s not in ALL_SLOTS: ALL_SLOTS.append(_s)
+        if _s not in ALL_SLOTS:
+            ALL_SLOTS.append(_s)
 for _s in _SHIP_INFO_SLOTS:
-    if _s not in ALL_SLOTS: ALL_SLOTS.append(_s)
+    if _s not in ALL_SLOTS:
+        ALL_SLOTS.append(_s)
 SLOT_GROUPS['ALL'] = ALL_SLOTS
 
 SPECIALIZATION_NAMES: list[str] = ['Command Officer', 'Intelligence Officer', 'Miracle Worker', 'Pilot', 'Temporal Operative', 'Constable', 'Commando', 'Strategist']
@@ -338,6 +361,7 @@ class WarpCoreWindow(QMainWindow):
         self._init_sync_client()
         self._train_worker = None
         self._detect_worker = None
+        self._suppress_next_focus_popup = False  # set True after programmatic setFocus
         self._recog_worker = None
         self._detect_dlg = None
         self._recog_dlg = None
@@ -430,6 +454,8 @@ class WarpCoreWindow(QMainWindow):
         self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
         self._name_edit.returnPressed.connect(self._on_accept)
         self._name_edit.textEdited.connect(self._on_name_edited)
+        self._name_edit.focusInEvent  = self._on_name_focus_in
+        self._name_edit.mousePressEvent = self._on_name_mouse_press
         self._completer_model = QStandardItemModel()
         self._completer = QCompleter(self._completer_model, self._name_edit)
         self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
@@ -567,9 +593,14 @@ class WarpCoreWindow(QMainWindow):
         self._recognition_items = []
         self._current_idx = -1
         self._file_list.clear()
+        # Restore persisted manual screen type labels from TrainingDataManager
+        persisted = self._data_mgr.get_all_screen_types()
         for p in self._screenshots:
-            self._screen_types[p.name] = 'UNKNOWN'
-            self._file_list.addItem(self._make_file_list_item(p, 'UNKNOWN'))
+            saved = persisted.get(p.name, '')
+            self._screen_types[p.name] = saved if saved else 'UNKNOWN'
+            if saved:
+                self._screen_types_manual.add(p.name)
+            self._file_list.addItem(self._make_file_list_item(p, self._screen_types[p.name]))
         self._start_screen_type_detection("open_folder")
 
     def _start_screen_type_detection(self, trigger: str = 'unknown'):
@@ -733,7 +764,7 @@ class WarpCoreWindow(QMainWindow):
 
             # Odświeżamy UI (listę plików i plakietkę typu ekranu)
             self._update_progress()
-            self._update_screen_type_badge(stype)
+            self._update_screen_type_ui(stype)
 
             log.info(f"Manual screen type override: {path.name} -> {stype}")
         except Exception as e:
@@ -752,10 +783,7 @@ class WarpCoreWindow(QMainWindow):
 
     def _on_detect_screen_types(self):
         if not self._screenshots: return
-        if self._screen_types_manual:
-            reply = QMessageBox.question(self, 'Override manual corrections?', f'You have manually set the screen type for {len(self._screen_types_manual)} screenshot(s).\n\nDetect Screen Types will overwrite these.\n\nContinue?', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-            if reply != QMessageBox.StandardButton.Yes: return
-            self._screen_types_manual.clear()
+        # Only detect files not yet manually labelled — never overwrite user choices
         self._start_screen_type_detection('detect_screen_types_button')
 
     def _start_recognition(self, path: Path, stype: str):
@@ -1020,13 +1048,20 @@ class WarpCoreWindow(QMainWindow):
                     if img is not None:
                         x, y, w, h = bbox
                         crop_bgr = img[y:y+h, x:x+w].copy()
+                        log.debug(f'add_bbox: crop {x},{y},{w},{h} from {path.name}')
                         from warp.recognition.icon_matcher import SETSIconMatcher
                         name, conf, thumb = SETSIconMatcher(self._sets).match(crop_bgr)
-                except:
-                    pass
+                        log.debug(f'add_bbox: matcher result name={name!r} conf={conf:.2f}')
+                except Exception as _e:
+                    log.warning(f'add_bbox: matcher error: {_e}')
             slot = self._slot_combo.currentText()
             if slot in NON_ICON_SLOTS:
                 name, conf, thumb, crop_bgr = '', 0.0, None, None
+            # If matcher found a name, infer the correct slot from cache item type
+            if name:
+                inferred = self._infer_slot_from_name(name)
+                if inferred:
+                    slot = inferred
             new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': 'pending', 'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': ''}
             self._recognition_items.append(new_item)
             self._add_review_row(name, slot, conf)
@@ -1037,7 +1072,18 @@ class WarpCoreWindow(QMainWindow):
                 fname = self._screenshots[self._current_idx].name
                 self._recognition_cache[fname] = list(self._recognition_items)
             self._ann_widget.clear_pending()
+            # Update slot combo to match inferred slot (suppressing textEdited on name field)
+            if slot != self._slot_combo.currentText():
+                self._slot_combo.blockSignals(True)
+                self._slot_combo.setCurrentText(slot)
+                self._slot_combo.blockSignals(False)
+                self._populate_name_completer(slot)
+            # Fill recognised name but do NOT open the dropdown automatically.
+            # User can click the field to browse all slot-compatible items.
+            self._name_edit.blockSignals(True)
             self._name_edit.setText(name)
+            self._name_edit.blockSignals(False)
+            self._suppress_next_focus_popup = True
             self._name_edit.setFocus()
         else:
             self._name_edit.setFocus()
@@ -1129,53 +1175,195 @@ class WarpCoreWindow(QMainWindow):
         self._data_mgr.save()
         self._auto_sync()
 
+    # cache.equipment item['type'] → trainer slot name
+    # Mirrors EQUIPMENT_TYPES in src/constants.py + SLOT_TO_CACHE_KEY above.
+    _ITEM_TYPE_TO_SLOT: dict[str, str] = {
+        'Ship Fore Weapon':         'Fore Weapons',
+        'Ship Aft Weapon':          'Aft Weapons',
+        'Ship Weapon':              'Fore Weapons',   # generic weapon → fore by default
+        'Experimental Weapon':      'Experimental',
+        'Ship Deflector Dish':      'Deflector',
+        'Ship Secondary Deflector': 'Sec-Def',
+        'Impulse Engine':           'Engines',
+        'Warp Engine':              'Warp Core',
+        'Singularity Engine':       'Warp Core',
+        'Ship Shields':             'Shield',
+        'Ship Device':              'Devices',
+        'Universal Console':        'Universal Consoles',
+        'Ship Engineering Console': 'Engineering Consoles',
+        'Ship Science Console':     'Science Consoles',
+        'Ship Tactical Console':    'Tactical Consoles',
+        'Hangar Bay':               'Hangars',
+        'Body Armor':               'Body Armor',
+        'EV Suit':                  'EV Suit',
+        'Personal Shield':          'Personal Shield',
+        'Ground Weapon':            'Weapons',
+        'Kit':                      'Kit',
+        'Kit Module':               'Kit Modules',
+        'Ground Device':            'Ground Devices',
+    }
+
+    def _infer_slot_from_name(self, item_name: str) -> str:
+        """
+        Given a recognised item name, returns the most appropriate slot name
+        by looking up the item's type in cache.equipment.
+
+        Checks every cache bucket because cross-population (uni_consoles into
+        tac/eng/sci and vice versa) means an item may appear in multiple buckets.
+        We use _SLOT_TO_CACHE_KEY in reverse to find the *canonical* bucket first,
+        then fall back to the first bucket that contains the item.
+
+        Returns '' if the item is not found in any equipment bucket.
+        """
+        if not self._sets or not item_name:
+            return ''
+
+        # Build reverse map: cache_key → slot name (canonical, non-cross-populated)
+        canonical_cache_keys = {v: k for k, v in self._SLOT_TO_CACHE_KEY.items()}
+
+        try:
+            # First pass: look in canonical (non-cross-populated) buckets only
+            for cache_key, slot_name in canonical_cache_keys.items():
+                bucket = self._sets.cache.equipment.get(cache_key, {})
+                entry = bucket.get(item_name)
+                if entry:
+                    item_type = entry.get('type', '')
+                    # Use item type for most precise slot (handles Universal Console)
+                    if item_type in self._ITEM_TYPE_TO_SLOT:
+                        return self._ITEM_TYPE_TO_SLOT[item_type]
+                    return slot_name
+
+            # Second pass: check traits / starship traits
+            if hasattr(self._sets.cache, 'starship_traits') and item_name in self._sets.cache.starship_traits:
+                return 'Starship Traits'
+            if hasattr(self._sets.cache, 'traits') and item_name in self._sets.cache.traits:
+                return 'Personal Space Traits'
+
+            # Third pass: boff abilities — build reverse map from cache structure
+            # cache.boff_abilities[env][career][rank_idx] = {ability_name: desc}
+            if hasattr(self._sets.cache, 'boff_abilities'):
+                boff_cache = self._sets.cache.boff_abilities
+                for env in ('space', 'ground'):
+                    env_data = boff_cache.get(env, {})
+                    if not isinstance(env_data, dict):
+                        continue
+                    for career, rank_list in env_data.items():
+                        if not isinstance(rank_list, list):
+                            continue
+                        for rank_dict in rank_list:
+                            if isinstance(rank_dict, dict) and item_name in rank_dict:
+                                return f'Boff {career}'
+                # Fallback: static BOFF_ABILITY_PROPERTIES
+                props = self.BOFF_ABILITY_PROPERTIES.get(item_name)
+                if props:
+                    career, _ = props
+                    return f'Boff {career}'
+        except Exception:
+            pass
+
+        return ''
+
+    # Mapping: trainer slot name → cache.equipment key
+    # Must stay in sync with EQUIPMENT_TYPES in src/constants.py and SLOT_GROUPS above.
+    _SLOT_TO_CACHE_KEY: dict[str, str] = {
+        'Fore Weapons':          'fore_weapons',
+        'Aft Weapons':           'aft_weapons',
+        'Experimental':          'experimental',
+        'Deflector':             'deflector',
+        'Sec-Def':               'sec_def',
+        'Engines':               'engines',
+        'Warp Core':             'core',
+        'Shield':                'shield',
+        'Devices':               'devices',
+        'Universal Consoles':    'uni_consoles',
+        'Engineering Consoles':  'eng_consoles',
+        'Science Consoles':      'sci_consoles',
+        'Tactical Consoles':     'tac_consoles',
+        'Hangars':               'hangars',
+        'Body Armor':            'armor',
+        'EV Suit':               'ev_suit',
+        'Personal Shield':       'personal_shield',
+        'Weapons':               'weapons',
+        'Kit':                   'kit',
+        'Kit Modules':           'kit_modules',
+        'Ground Devices':        'ground_devices',
+    }
+
     def _build_search_candidates(self, slot: str = '') -> list[str]:
         candidates: list[str] = []
         if not self._sets:
             return candidates
+
         stype = 'UNKNOWN'
         if self._current_idx >= 0:
             path = self._screenshots[self._current_idx]
             stype = self._screen_types.get(path.name, 'UNKNOWN')
         target_domain = 'Ground' if 'GROUND' in stype else 'Space'
+
         if slot.startswith('Boff'):
             target_career = slot.replace('Boff ', '').strip()
-            for ability, (career, domain) in self.BOFF_ABILITY_PROPERTIES.items():
-                if career == target_career and domain == target_domain:
-                    candidates.append(ability)
+            # Primary source: cache.boff_abilities[environment][career] — keyed by rank dicts
+            # Structure: {environment: {career: [{ability: desc}, ...rank levels]}}
+            try:
+                domain_key = 'ground' if target_domain == 'Ground' else 'space'
+                career_ranks = self._sets.cache.boff_abilities.get(domain_key, {}).get(target_career, [])
+                for rank_dict in career_ranks:
+                    if isinstance(rank_dict, dict):
+                        candidates.extend(rank_dict.keys())
+            except Exception:
+                pass
+            # Fallback: static BOFF_ABILITY_PROPERTIES (covers Tactical/Engineering/Science)
+            if not candidates:
+                for ability, (career, domain) in self.BOFF_ABILITY_PROPERTIES.items():
+                    if career == target_career and domain == target_domain:
+                        candidates.append(ability)
+            # Last resort: all abilities
             if not candidates:
                 try:
                     candidates.extend(self._sets.cache.boff_abilities.get('all', {}).keys())
-                except:
+                except Exception:
                     pass
-        elif 'Trait' in slot or 'Reputation' in slot:
-            if 'Starship' in slot:
-                try:
-                    candidates.extend(self._sets.cache.starship_traits)
-                except:
-                    pass
-            elif 'Reputation' in slot:
-                try:
-                    raw_rep = self._sets.cache.reputation_traits if 'Active' not in slot else self._sets.cache.active_reputation_traits
-                    candidates.extend(raw_rep)
-                except:
-                    pass
-            else:
-                try:
-                    candidates.extend(self._sets.cache.traits)
-                except:
-                    pass
-        else:
-            try:
-                for cat_items in self._sets.cache.equipment.values():
-                    candidates.extend(cat_items)
-                candidates.extend(self._sets.cache.starship_traits)
-                candidates.extend(self._sets.cache.traits)
-                candidates.extend(self._sets.cache.boff_abilities.get('all', {}).keys())
-            except:
-                pass
+        elif slot in ('Primary Specialization', 'Secondary Specialization'):
             candidates.extend(SPECIALIZATION_NAMES)
+        elif 'Starship Trait' in slot:
+            try:
+                candidates.extend(self._sets.cache.starship_traits)
+            except Exception:
+                pass
+        elif 'Active' in slot and 'Rep' in slot:
+            try:
+                candidates.extend(self._sets.cache.active_reputation_traits)
+            except Exception:
+                pass
+        elif 'Reputation' in slot or 'Rep' in slot:
+            try:
+                candidates.extend(self._sets.cache.reputation_traits)
+            except Exception:
+                pass
+        elif 'Trait' in slot:
+            try:
+                candidates.extend(self._sets.cache.traits)
+            except Exception:
+                pass
+        else:
+            cache_key = self._SLOT_TO_CACHE_KEY.get(slot)
+            try:
+                if cache_key:
+                    candidates.extend(self._sets.cache.equipment.get(cache_key, {}).keys())
+                else:
+                    for cat_items in self._sets.cache.equipment.values():
+                        candidates.extend(cat_items.keys())
+            except Exception:
+                pass
+
         return sorted(set(candidates))
+
+    def _populate_name_completer(self, slot: str):
+        """Pre-populate the completer model for the given slot (called on slot change)."""
+        all_names = self._build_search_candidates(slot)
+        self._completer_model.clear()
+        for name in all_names:
+            self._completer_model.appendRow(QStandardItem(name))
 
     def _on_slot_changed(self, slot: str):
         is_tier = (slot == 'Ship Tier')
@@ -1193,6 +1381,16 @@ class WarpCoreWindow(QMainWindow):
             self._name_label.setText('Value:')
         else:
             self._name_label.setText('Item name:')
+        # Clear item name field whenever slot type changes
+        # Block signals + suppress focus popup to avoid dropdown firing during programmatic clear
+        self._suppress_next_focus_popup = True
+        self._name_edit.blockSignals(True)
+        self._name_edit.clear()
+        self._name_edit.blockSignals(False)
+        self._suppress_next_focus_popup = False
+        # Pre-populate completer on slot change so dropdown is ready on first focus
+        if not is_tier and not is_ship_type and slot not in NON_ICON_SLOTS:
+            self._populate_name_completer(slot)
 
     def _populate_ship_type_combo(self):
         if self._ship_type_combo.count() > 0:
@@ -1211,16 +1409,47 @@ class WarpCoreWindow(QMainWindow):
         self._ship_type_combo.setCurrentIndex(-1)
         self._ship_type_combo.lineEdit().clear()
 
+    def _on_name_focus_in(self, event):
+        """Show dropdown on focus — unless suppressed (programmatic setFocus after bbox draw)."""
+        QLineEdit.focusInEvent(self._name_edit, event)
+        if self._suppress_next_focus_popup:
+            self._suppress_next_focus_popup = False
+            return
+        self._show_name_dropdown()
+
+    def _on_name_mouse_press(self, event):
+        """Re-open dropdown on every click, even when field already has focus."""
+        from PySide6.QtWidgets import QLineEdit as _QLE
+        _QLE.mousePressEvent(self._name_edit, event)
+        self._show_name_dropdown()
+
+    def _show_name_dropdown(self):
+        """Open the completer popup if the current slot has candidates."""
+        slot = self._slot_combo.currentText()
+        if slot in NON_ICON_SLOTS:
+            return
+        popup = self._completer.popup()
+        if popup and popup.isVisible():
+            popup.hide()
+            return
+        if self._completer_model.rowCount() == 0:
+            self._populate_name_completer(slot)
+        if self._completer_model.rowCount():
+            self._completer.complete()
+
     def _on_name_edited(self, text: str):
         slot = self._slot_combo.currentText()
         if slot in NON_ICON_SLOTS:
             self._completer_model.clear()
             return
         query = text.strip().lower()
-        if len(query) < 2:
-            self._completer_model.clear()
-            return
         all_names = self._build_search_candidates(slot)
+        if not query:
+            # Empty field — show full slot list (already in model from _populate_name_completer)
+            # Just trigger the popup if model has items
+            if self._completer_model.rowCount():
+                self._completer.complete()
+            return
         matches = [n for n in all_names if query in n.lower()][:60]
         self._completer_model.clear()
         for name in matches:

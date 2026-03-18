@@ -103,17 +103,20 @@ Secondary-only (15-point trees): Constable, Commando, Strategist.
 
 ## Screen Type Restrictions (WARP)
 
-The **Screen Type** detected from a screenshot determines which slot types WARP will process.
+The **Screen Type** detected from a screenshot determines which slot types WARP will process. Each type maps to a fixed slot group in `SLOT_GROUPS` (`trainer_window.py`).
 
-| Screen Type | Slot Restriction |
+| Screen Type | Available slots |
 | :--- | :--- |
-| **Unknown** | No restrictions; all slot types may be processed. |
-| **Space Mixed (merged)** | Space Build slots only: Weapons, Consoles, Space Gear, Traits, Devices, Bridge Officers, Specializations. |
-| **Ground Mixed (merged)** | Ground Build slots only: Armor, Personal Shield, Weapons, Kit, Kit Modules, Ground Devices, Traits, Bridge Officers, Specializations. |
+| **SPACE_EQ** — Space Equipment | Space equipment + Ship Name / Ship Type / Ship Tier |
+| **GROUND_EQ** — Ground Equipment | Ground equipment only (no ship metadata) |
+| **TRAITS** | Space traits + Ground traits |
+| **BOFFS** — Bridge Officers | Boff Tactical / Engineering / Science / Operations / Intelligence / Command / Pilot / Miracle Worker / Temporal |
+| **SPECIALIZATIONS** | Primary Specialization, Secondary Specialization |
+| **SPACE_MIXED** — Space Mixed (merged) | SPACE_EQ + TRAITS + BOFFS + SPECIALIZATIONS |
+| **GROUND_MIXED** — Ground Mixed (merged) | GROUND_EQ + TRAITS + BOFFS + SPECIALIZATIONS |
+| **UNKNOWN** | All slots (no restriction — let user decide) |
 
-> **WARP:** Screen type classification uses a three-stage pipeline in `warp/recognition/screen_classifier.py`: (1) ONNX MobileNetV3-Small, (2) session k-NN on HSV histograms, (3) OCR keyword fallback. Recognised types: `SPACE_EQ`, `GROUND_EQ`, `TRAITS`, `BOFFS`, `SPECIALIZATIONS`, `SPACE_MIXED`, `GROUND_MIXED`.
->
-> **Gap:** `SPACE_MIXED` / `GROUND_MIXED` are recognised and handled in `warp_importer.py`, but slot restriction enforcement for these types is not yet fully implemented in `warp_dialog.py` (pending feature).
+> **WARP:** Screen type classification uses a three-stage pipeline in `warp/recognition/screen_classifier.py`: (1) ONNX MobileNetV3-Small, (2) session k-NN on HSV histograms, (3) OCR keyword fallback. Recognised types: `SPACE_EQ`, `GROUND_EQ`, `TRAITS`, `BOFFS`, `SPECIALIZATIONS`, `SPACE_MIXED`, `GROUND_MIXED`. Slot filtering is applied immediately on type change via `_refresh_slot_combo()` in `trainer_window.py`.
 
 ---
 

@@ -59,14 +59,16 @@ class TrainingDataManager:
     ANNOTATIONS_FILE = "annotations.json"
     CROPS_DIR        = "crops"
     CROP_INDEX_FILE  = "crops/crop_index.json"
+    SCREEN_TYPES_FILE = "screen_types.json"
 
     def __init__(self, data_dir: Path):
         self._dir       = Path(data_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         (self._dir / self.CROPS_DIR).mkdir(exist_ok=True)
 
-        self._annotations: dict[str, list[dict]] = {}   # filename → list of ann dicts
-        self._crop_index:  dict[str, dict]       = {}   # crop_filename → metadata
+        self._annotations:  dict[str, list[dict]] = {}   # filename → list of ann dicts
+        self._crop_index:   dict[str, dict]       = {}   # crop_filename → metadata
+        self._screen_types: dict[str, str]        = {}   # filename → screen type string
         self._dirty = False
 
         self._load()
@@ -174,6 +176,9 @@ class TrainingDataManager:
         idx_path = self._dir / self.CROP_INDEX_FILE
         with open(idx_path, "w", encoding="utf-8") as f:
             json.dump(self._crop_index, f, indent=2)
+        st_path = self._dir / self.SCREEN_TYPES_FILE
+        with open(st_path, "w", encoding="utf-8") as f:
+            json.dump(self._screen_types, f, indent=2)
         self._dirty = False
         logger.info(f"Training data saved to {self._dir}")
 
@@ -191,6 +196,14 @@ class TrainingDataManager:
             try:
                 with open(idx_path) as f:
                     self._crop_index = json.load(f)
+            except Exception:
+                pass
+
+        st_path = self._dir / self.SCREEN_TYPES_FILE
+        if st_path.exists():
+            try:
+                with open(st_path) as f:
+                    self._screen_types = json.load(f)
             except Exception:
                 pass
 
@@ -266,6 +279,61 @@ class TrainingDataManager:
             "total":     total,
             "confirmed": confirmed,
             "slots":     slots,
+        }
+
+    # ---------------------------------------------------------------- screen type persistence
+
+    def set_screen_type(self, image_path: Path, screen_type: str) -> Path:
+        """
+        Records the screen type for a screenshot (persisted to screen_types.json)
+        and copies it into the classifier training folder.
+
+        Persistent label: warp/training_data/screen_types.json  {filename: stype}
+        Training copy:    warp/training_data/screen_types/<stype>/<filename>
+
+        Returns the destination path of the training copy.
+        """
+        self._screen_types[image_path.name] = screen_type
+        self.save()
+        dest_dir = self._dir / 'screen_types' / screen_type
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / image_path.name
+        shutil.copy2(image_path, dest)
+        logger.info(f'Screen type set: {image_path.name} -> {screen_type}')
+        return dest
+
+    def get_screen_type(self, image_path: Path) -> str:
+        """Returns the persisted screen type for a screenshot, or empty string if not set."""
+        return self._screen_types.get(image_path.name, '')
+
+    def get_all_screen_types(self) -> dict[str, str]:
+        """Returns a copy of all persisted {filename: stype} labels."""
+        return dict(self._screen_types)
+
+    def remove_screen_type(self, image_path: Path, screen_type: str) -> bool:
+        """
+        Removes a screenshot from a screen type training folder.
+        Returns True if the file was found and removed, False otherwise.
+        """
+        dest = self._dir / 'screen_types' / screen_type / image_path.name
+        if dest.exists():
+            dest.unlink()
+            logger.info(f'Screen type example removed: {image_path.name} from screen_types/{screen_type}/')
+            return True
+        return False
+
+    def get_screen_type_counts(self) -> dict[str, int]:
+        """
+        Returns the number of training examples per screen type class.
+        Dict keys are class names (folder names), values are image counts.
+        """
+        screen_types_dir = self._dir / 'screen_types'
+        if not screen_types_dir.exists():
+            return {}
+        return {
+            d.name: len(list(d.glob('*.png')) + list(d.glob('*.jpg')) + list(d.glob('*.jpeg')))
+            for d in screen_types_dir.iterdir()
+            if d.is_dir()
         }
 
     # ---------------------------------------------------------------- helpers
