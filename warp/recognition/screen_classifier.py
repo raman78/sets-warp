@@ -35,6 +35,10 @@ from pathlib import Path
 import numpy as np
 
 log = logging.getLogger(__name__)
+try:
+    from src.setsdebug import log as _slog
+except Exception:
+    _slog = log
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 SCREEN_TYPES = [
@@ -179,9 +183,9 @@ class ScreenTypeClassifier:
                 self._label_map = {int(k): v for k, v in raw.items()}
             else:
                 self._label_map = {i: s for i, s in enumerate(SCREEN_TYPES)}
-            log.info(f'ScreenClassifier: ONNX model loaded from {model_path}')
+            _slog.info(f'ScreenClassifier: ONNX model loaded — {len(self._label_map)} classes: {list(self._label_map.values())}')
         except Exception as e:
-            log.warning(f'ScreenClassifier: model load failed: {e}')
+            _slog.warning(f'ScreenClassifier: model load failed: {e}')
             self._ml_disabled = True
 
     def _classify_ml(self, img_bgr: np.ndarray) -> tuple[str, float]:
@@ -191,14 +195,17 @@ class ScreenTypeClassifier:
             small  = _resize_224(img_bgr)
             tensor = _to_chw_float(small)
             inp    = self._session.get_inputs()[0].name
-            out    = self._session.run(None, {inp: tensor})[0]   # (1, n_classes)
-            probs  = _softmax(out[0])
+            raw    = self._session.run(None, {inp: tensor})[0]
+            # Handle both (1, n_classes) and (n_classes,) output shapes
+            logits = raw.flatten()
+            probs  = _softmax(logits)
             idx    = int(np.argmax(probs))
             conf   = float(probs[idx])
             name   = self._label_map.get(idx, SCREEN_TYPES[idx] if idx < len(SCREEN_TYPES) else '')
+            _slog.debug(f'ScreenClassifier: raw shape={raw.shape} probs={[f"{p:.2f}" for p in probs]} → {name} ({conf:.2f})')
             return name, conf
         except Exception as e:
-            log.debug(f'ScreenClassifier ML inference error: {e}')
+            _slog.warning(f'ScreenClassifier ML inference error: {e}')
             return '', 0.0
 
     # ── Stage 2: session k-NN ───────────────────────────────────────────────────

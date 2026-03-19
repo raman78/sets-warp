@@ -264,10 +264,14 @@ class LocalTrainWorker(QThread):
         model.eval().to('cpu')
         dummy = torch.zeros(1, 3, MODEL_IMG_SIZE, MODEL_IMG_SIZE)
         try:
+            # Use traced export (opset 12) to avoid dynamo exporter issues
+            with torch.no_grad():
+                traced = torch.jit.trace(model, dummy)
             torch.onnx.export(
-                model, dummy, str(onnx_path),
+                traced, dummy, str(onnx_path),
                 input_names=['input'], output_names=['output'],
-                opset_version=18,
+                opset_version=12,
+                do_constant_folding=True,
             )
         except Exception as e:
             self.finished.emit(False, f'ONNX export failed: {e}')
@@ -304,26 +308,80 @@ class LocalTrainWorker(QThread):
 
     def _collect_crops(self) -> tuple[list, list]:
         """
-        Gather all confirmed annotation crops from the training data manager.
+        Gather all confirmed annotation crops.
+        Strategy 1: pre-exported PNGs from crop_index (fast).
+        Strategy 2: re-export from original screenshots via annotations.json
+                    (fallback when crop_index is empty or stale).
         Returns (crops_bgr, label_strings).
         """
+        from src.setsdebug import log as _slog
+        from pathlib import Path
         import cv2
         crops, labels = [], []
+
+        # ── Strategy 1: pre-exported crops from crop_index ───────────────────
         confirmed = self._data_mgr.get_confirmed_crops()
+        _slog.info(f'LocalTrainer: {len(confirmed)} crop(s) in crop_index')
         for item in confirmed:
-            img_path = item.get('image_path')
-            bbox     = item.get('bbox')
-            name     = item.get('name', '').strip()
-            if not img_path or not bbox or not name:
+            crop_path = item.get('path')
+            name      = item.get('name', '').strip()
+            if not crop_path or not name:
                 continue
-            img = cv2.imread(str(img_path))
-            if img is None:
+            crop = cv2.imread(str(crop_path))
+            if crop is None:
+                _slog.warning(f'LocalTrainer: missing crop file {crop_path}')
                 continue
-            x, y, w, h = bbox
-            crop = img[y:y+h, x:x+w]
-            if crop.size == 0:
-                continue
-            crop = cv2.resize(crop, (IMG_SIZE, IMG_SIZE))
-            crops.append(crop)
+            crops.append(cv2.resize(crop, (IMG_SIZE, IMG_SIZE)))
             labels.append(name)
+            _slog.info(f'LocalTrainer:   [index] {name!r}')
+
+        if crops:
+            _slog.info(f'LocalTrainer: {len(crops)} crops from index')
+            return crops, labels
+
+        # ── Strategy 2: fallback — read from annotations.json ────────────────
+        _slog.info('LocalTrainer: crop_index empty — fallback to annotations.json')
+        from warp.trainer.training_data import AnnotationState
+        data_dir = self._data_mgr._dir
+        screen_types_dir = data_dir / 'screen_types'
+
+        for image_name, ann_list in self._data_mgr._annotations.items():
+            for d in ann_list:
+                if d.get('state') != AnnotationState.CONFIRMED:
+                    continue
+                name = (d.get('name') or '').strip()
+                bbox = d.get('bbox')
+                if not name or not bbox:
+                    continue
+                # Find screenshot — copies exist in screen_types/<STYPE>/
+                img = None
+                if screen_types_dir.exists():
+                    for stype_dir in screen_types_dir.iterdir():
+                        if not stype_dir.is_dir():
+                            continue
+                        candidate = stype_dir / image_name
+                        if candidate.exists():
+                            img = cv2.imread(str(candidate))
+                            if img is not None:
+                                break
+                if img is None:
+                    _slog.warning(f'LocalTrainer: screenshot not found: {image_name}')
+                    continue
+                x, y, w, h = bbox
+                ih, iw = img.shape[:2]
+                crop = img[max(0,y):min(ih,y+h), max(0,x):min(iw,x+w)]
+                if crop.size == 0:
+                    continue
+                crops.append(cv2.resize(crop, (IMG_SIZE, IMG_SIZE)))
+                labels.append(name)
+                _slog.info(f'LocalTrainer:   [fallback] {name!r} from {image_name}')
+                # Save to crop_index so next run uses strategy 1
+                ann_obj = self._data_mgr._dict_to_ann(d)
+                self._data_mgr._sync_crop_index(candidate, ann_obj)
+
+        if crops:
+            self._data_mgr.save()
+            _slog.info(f'LocalTrainer: {len(crops)} crops from fallback')
+        else:
+            _slog.warning('LocalTrainer: no crops found in either strategy')
         return crops, labels

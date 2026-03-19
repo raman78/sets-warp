@@ -287,21 +287,29 @@ class _RecognitionProgressDialog(QWidget):
         lay.addWidget(bar)
         lay.addLayout(btn_row)
 
+# Module-level log reference for _TrainProgressDialog
+try:
+    from src.setsdebug import log as _train_dlg_log
+except Exception:
+    import logging as _logging
+    _train_dlg_log = _logging.getLogger('warp.train_dialog')
+
 class _TrainProgressDialog(QWidget):
     cancelled = Signal()
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
-        self.setWindowTitle('WARP CORE -- Training Icon Classifier')
+        self.setWindowTitle('WARP CORE — Training')
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self._settings = QSettings()
-        size = self._settings.value(_KEY_TRAIN_DLG_SIZE, QSize(520, 450))
+        size = self._settings.value(_KEY_TRAIN_DLG_SIZE, QSize(620, 500))
         self.resize(size)
+        self._finished = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(8)
-        title = QLabel('Training local icon classifier...')
-        title.setFont(QFont('', 11, QFont.Weight.Bold))
-        title.setStyleSheet('color:#e8d870;')
+        self._title = QLabel('Training in progress...')
+        self._title.setFont(QFont('', 11, QFont.Weight.Bold))
+        self._title.setStyleSheet('color:#e8d870;')
         self._status_lbl = QLabel('Starting...')
         self._status_lbl.setStyleSheet('color:#ccc;font-size:10px;')
         self._status_lbl.setWordWrap(True)
@@ -310,26 +318,56 @@ class _TrainProgressDialog(QWidget):
         self._bar.setValue(0)
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
-        self._log.setStyleSheet('color:#888;font-size:10px;font-family:monospace;background:#111;border:1px solid #333;padding:3px;border-radius:2px;')
-        btn_cancel = QPushButton('Cancel')
-        btn_cancel.setFixedWidth(80)
-        btn_cancel.clicked.connect(self.cancelled.emit)
+        self._log.setStyleSheet(
+            'color:#aaa;font-size:10px;font-family:monospace;'
+            'background:#111;border:1px solid #333;padding:3px;border-radius:2px;')
+        self._btn_cancel = QPushButton('Cancel')
+        self._btn_cancel.setFixedWidth(80)
+        self._btn_cancel.clicked.connect(self.cancelled.emit)
+        self._btn_close = QPushButton('Close')
+        self._btn_close.setFixedWidth(80)
+        self._btn_close.setEnabled(False)
+        self._btn_close.clicked.connect(self.close)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        btn_row.addWidget(btn_cancel)
-        lay.addWidget(title)
+        btn_row.addWidget(self._btn_cancel)
+        btn_row.addWidget(self._btn_close)
+        lay.addWidget(self._title)
         lay.addWidget(self._status_lbl)
         lay.addWidget(self._bar)
         lay.addWidget(self._log, 1)
         lay.addLayout(btn_row)
+
     def update_progress(self, pct: int, message: str):
         self._bar.setValue(pct)
         self._status_lbl.setText(message)
+        self._log.appendPlainText(f'[{pct:3d}%] {message}')
+        self._log.ensureCursorVisible()
+        _train_dlg_log.info(f'Train [{pct:3d}%] {message}')
+
+    def mark_finished(self, success: bool, message: str):
+        """Call when training is done — switches Cancel→Close, updates title."""
+        self._finished = True
+        self._btn_cancel.setEnabled(False)
+        self._btn_close.setEnabled(True)
+        if success:
+            self._title.setText('✅ Training complete')
+            self._title.setStyleSheet('color:#7effc8;')
+        else:
+            self._title.setText('❌ Training failed')
+            self._title.setStyleSheet('color:#ff7e7e;')
+        self._log.appendPlainText('')
+        self._log.appendPlainText('─' * 60)
         self._log.appendPlainText(message)
         self._log.ensureCursorVisible()
-    def hideEvent(self, event):
+        _train_dlg_log.info(f'Train finished — {message}')
+
+    def closeEvent(self, event):
+        if not self._finished:
+            # Still running — treat as cancel
+            self.cancelled.emit()
         self._settings.setValue(_KEY_TRAIN_DLG_SIZE, self.size())
-        super().hideEvent(event)
+        super().closeEvent(event)
 
 class WarpCoreWindow(QMainWindow):
     BOFF_ABILITY_PROPERTIES: dict[str, tuple[str, str]] = {
@@ -1774,15 +1812,16 @@ class WarpCoreWindow(QMainWindow):
                 w = ScreenTypeTrainerWorker(data_root, models_dir)
                 w.run(lambda p, m: self_.progress.emit(int(p*0.45), f'[Screen] {m}'), lambda ok, msg: None, interrupted)
                 from warp.trainer.local_trainer import LocalTrainWorker as _LTW
-                icon_worker = _LTW.__new__(_LTW)
-                icon_worker._data_mgr = data_mgr
-                icon_worker._sets_root = sets_root
+                # Instantiate properly so QThread.__init__ is called
+                icon_worker = _LTW(data_mgr=data_mgr, sets_root=sets_root)
                 class _FakeSignal:
                     def __init__(self2, cb): self2._cb = cb
                     def emit(self2, *a): self2._cb(*a)
                 results = {}
                 icon_worker.progress = _FakeSignal(lambda pct, msg: self_.progress.emit(45 + int(pct * 0.55), f'[Icons] {msg}'))
                 icon_worker.finished = _FakeSignal(lambda ok, msg: results.update({'ok': ok, 'msg': msg}))
+                # Override isInterruptionRequested to propagate from parent thread
+                icon_worker.isInterruptionRequested = self_.isInterruptionRequested
                 icon_worker._train()
                 self_.finished.emit(results.get('ok', False), results.get('msg', 'Done'))
         self._train_worker = _CombinedTrainWorker(parent=self)
@@ -1795,14 +1834,11 @@ class WarpCoreWindow(QMainWindow):
             self._train_worker.requestInterruption()
             self._train_worker.wait(3000)
         if self._train_dlg:
-            self._train_dlg.close()
+            self._train_dlg.mark_finished(False, 'Training cancelled by user.')
             self._train_dlg = None
         self.statusBar().showMessage('Training cancelled.')
 
     def _on_train_finished(self, success: bool, message: str):
-        if self._train_dlg:
-            self._train_dlg.close()
-            self._train_dlg = None
         if success:
             try:
                 from warp.recognition.layout_detector import LayoutDetector
@@ -1820,18 +1856,22 @@ class WarpCoreWindow(QMainWindow):
                 log.info(f"Learned layouts from {learned_count} files")
             except Exception as e:
                 log.warning(f"Layout learning failed: {e}")
-            QMessageBox.information(self, 'Training Complete', message)
             self._recognition_cache.clear()
             try:
                 from warp.recognition.icon_matcher import SETSIconMatcher
                 SETSIconMatcher.reset_ml_session()
             except:
                 pass
+            if self._train_dlg:
+                self._train_dlg.mark_finished(True, message)
+                self._train_dlg = None
             if self._screenshots:
                 from PySide6.QtCore import QTimer
                 QTimer.singleShot(200, lambda: self._start_screen_type_detection("train_finished"))
         else:
-            QMessageBox.warning(self, 'Training Failed', message)
+            if self._train_dlg:
+                self._train_dlg.mark_finished(False, message)
+                self._train_dlg = None
         self._train_worker = None
 
     def _auto_sync(self):

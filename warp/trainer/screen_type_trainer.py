@@ -30,10 +30,6 @@ import json
 from pathlib import Path
 
 log = logging.getLogger(__name__)
-try:
-    from src.setsdebug import log as _slog  # route to SETS log file
-except Exception:
-    _slog = log
 
 SCREEN_TYPES = [
     'SPACE_EQ', 'GROUND_EQ', 'TRAITS',
@@ -89,22 +85,22 @@ class ScreenTypeTrainerWorker:
             finished_cb=None,   # (ok: bool, msg: str) -> None
             interrupt_check=None):  # () -> bool  (return True to stop)
         def prog(pct, msg):
-            _slog.info(f'ScreenTypeTrainer [{pct}%] {msg}')
+            log.info(f'ScreenTypeTrainer [{pct}%] {msg}')
             if progress_cb:
                 progress_cb(pct, msg)
 
         def done(ok, msg):
             if ok:
-                _slog.info(f'ScreenTypeTrainer: {msg}')
+                log.info(f'ScreenTypeTrainer: {msg}')
             else:
-                _slog.warning(f'ScreenTypeTrainer FAILED: {msg}')
+                log.error(f'ScreenTypeTrainer: {msg}')
             if finished_cb:
                 finished_cb(ok, msg)
 
         try:
             self._train(prog, done, interrupt_check or (lambda: False))
         except Exception as e:
-            _slog.warning(f'ScreenTypeTrainer unexpected error: {e}')
+            log.exception('ScreenTypeTrainer unexpected error')
             done(False, str(e))
 
     # ── Internal ────────────────────────────────────────────────────────────────
@@ -338,12 +334,18 @@ class ScreenTypeTrainerWorker:
         onnx_path = self._models_dir / 'screen_classifier.onnx'
         dummy     = torch.zeros(1, 3, INPUT_SIZE, INPUT_SIZE)
         try:
+            # Force legacy TorchScript-based exporter (not dynamo)
+            # PyTorch 2.x defaults to dynamo which produces uniform-output models
+            with torch.no_grad():
+                traced = torch.jit.trace(model.cpu(), dummy)
             torch.onnx.export(
-                model, dummy, str(onnx_path),
+                traced, dummy, str(onnx_path),
                 input_names=['input'],
                 output_names=['output'],
-                opset_version=18,
+                opset_version=12,
+                do_constant_folding=True,
             )
+            _slog.info(f'ScreenTypeTrainer: ONNX exported (opset 12, traced) to {onnx_path}')
         except Exception as e:
             done(False, f'ONNX export failed: {e}')
             return

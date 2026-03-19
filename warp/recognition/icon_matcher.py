@@ -392,6 +392,7 @@ class SETSIconMatcher:
         log.debug(f'WARP: session example added for {name!r} '
                   f'({len(cls._session_examples)} total)')
 
+    @classmethod
     def reset_ml_session(cls):
         """
         Force reload of the ML model on next inference call.
