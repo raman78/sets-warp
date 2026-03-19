@@ -285,18 +285,26 @@ class SETSIconMatcher:
     # ── ML helpers ──────────────────────────────────────────────────────────────
 
     def _classify_ml(self, crop64: np.ndarray) -> tuple[str, float]:
-        """Run ONNX classifier on a 64×64 BGR crop."""
+        """Run local PyTorch classifier on a 64x64 BGR crop.
+        Falls back to ONNX session for HuggingFace-downloaded model.
+        """
         import cv2
-        session = self._get_ml_session()
-        if session is None:
+        model = self._get_ml_session()
+        if model is None:
             return '', 0.0
-
         inp = cv2.resize(crop64, (224, 224)).astype(np.float32) / 255.0
         inp = np.expand_dims(np.transpose(inp, (2, 0, 1)), axis=0)
         try:
-            out   = session.run(None, {'input': inp})[0][0]
-            probs = self._softmax(out)
-            top   = int(np.argmax(probs))
+            if hasattr(model, 'run'):  # onnxruntime session (HuggingFace model)
+                out   = model.run(None, {'input': inp})[0][0]
+                probs = self._softmax(out)
+            else:                      # PyTorch model (locally trained)
+                import torch
+                t = torch.from_numpy(inp)
+                with torch.no_grad():
+                    out = model(t)[0]
+                probs = self._softmax(out.numpy())
+            top = int(np.argmax(probs))
             return self._label_map.get(top, ''), float(probs[top])
         except Exception as e:
             log.debug(f'WARP: ML classify error: {e}')
@@ -308,65 +316,84 @@ class SETSIconMatcher:
         if self._ml_session:
             return self._ml_session
 
-        sets_root   = self._find_sets_root()
-        models_dir  = sets_root / 'warp' / 'models'
-        model_path  = models_dir / HF_MODEL_FILENAME
-        label_path  = models_dir / HF_LABELS_FILE
-        flag_path   = models_dir / HF_UNAVAILABLE_FILE
+        sets_root  = self._find_sets_root()
+        models_dir = sets_root / 'warp' / 'models'
 
-        # If model files are already present, load them directly
-        if model_path.exists() and label_path.exists():
+        # Priority 1: locally trained PyTorch model (.pt)
+        pt_path    = models_dir / 'icon_classifier.pt'
+        label_path = models_dir / 'label_map.json'
+        if pt_path.exists() and label_path.exists():
+            try:
+                import torch
+                from torchvision.models import efficientnet_b0
+                import torch.nn as nn
+                with open(label_path) as f:
+                    raw = json.load(f)
+                self._label_map = {int(k): v for k, v in raw.items()}
+                n_classes = len(self._label_map)
+                model = efficientnet_b0(weights=None)
+                in_features = model.classifier[1].in_features
+                model.classifier[1] = nn.Linear(in_features, n_classes)
+                model.load_state_dict(torch.load(str(pt_path), map_location='cpu',
+                                                  weights_only=True))
+                model.eval()
+                self._ml_session = model
+                log.info(f'WARP: local PyTorch icon classifier loaded ({n_classes} classes)')
+                return self._ml_session
+            except Exception as e:
+                log.warning(f'WARP: local .pt load failed: {e}')
+
+        # Priority 2: ONNX model from HuggingFace Hub
+        model_path = models_dir / HF_MODEL_FILENAME
+        hf_label   = models_dir / HF_LABELS_FILE
+        flag_path  = models_dir / HF_UNAVAILABLE_FILE
+
+        if model_path.exists() and hf_label.exists():
             try:
                 import onnxruntime as ort
                 self._ml_session = ort.InferenceSession(str(model_path))
-                with open(label_path) as f:
+                with open(hf_label) as f:
                     raw = json.load(f)
                     self._label_map = {int(k): v for k, v in raw.items()}
-                log.info('WARP: ML classifier loaded')
+                log.info('WARP: HuggingFace ONNX icon classifier loaded')
                 return self._ml_session
             except Exception as e:
-                log.warning(f'WARP: ML load failed: {e}')
+                log.warning(f'WARP: HF ONNX load failed: {e}')
                 self._ml_disabled = True
                 return None
 
-        # Check sentinel: skip download if we failed recently
+        # Check sentinel
         if flag_path.exists():
             import time
             age_h = (time.time() - flag_path.stat().st_mtime) / 3600
             if age_h < HF_RETRY_HOURS:
                 self._ml_disabled = True
                 return None
-            # Sentinel expired — remove it and try again
             flag_path.unlink(missing_ok=True)
 
-        # Check if repo actually exists before downloading
+        # Attempt HuggingFace download
         if not self._check_repo_exists():
-            # Write sentinel so we don't retry for HF_RETRY_HOURS
-            models_dir.mkdir(parents=True, exist_ok=True)
-            flag_path.touch()
-            log.debug('WARP: ML model repo not available yet -- will retry in '
-                      f'{HF_RETRY_HOURS}h')
-            self._ml_disabled = True
-            return None
-
-        # Repo exists -- attempt download
-        if not self._download_model(model_path, label_path):
             models_dir.mkdir(parents=True, exist_ok=True)
             flag_path.touch()
             self._ml_disabled = True
             return None
 
-        # Load freshly downloaded model
+        if not self._download_model(model_path, hf_label):
+            models_dir.mkdir(parents=True, exist_ok=True)
+            flag_path.touch()
+            self._ml_disabled = True
+            return None
+
         try:
             import onnxruntime as ort
             self._ml_session = ort.InferenceSession(str(model_path))
-            with open(label_path) as f:
+            with open(hf_label) as f:
                 raw = json.load(f)
                 self._label_map = {int(k): v for k, v in raw.items()}
-            log.info('WARP: ML classifier loaded')
+            log.info('WARP: HuggingFace ONNX icon classifier loaded')
             return self._ml_session
         except Exception as e:
-            log.warning(f'WARP: ML load failed: {e}')
+            log.warning(f'WARP: HF ONNX load failed: {e}')
             self._ml_disabled = True
             return None
 

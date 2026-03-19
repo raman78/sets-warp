@@ -324,39 +324,31 @@ class ScreenTypeTrainerWorker:
                     prog(pct, f'Early stop (no improvement for {PATIENCE} epochs)')
                     break
 
-        # ── Export ONNX ────────────────────────────────────────────────────────
-        prog(92, 'Exporting ONNX...')
+        # Save model using PyTorch native format — no ONNX export needed
+        prog(92, 'Saving model...')
         if best_state:
             model.load_state_dict(best_state)
-        model.eval()
+        model.eval().cpu()
         self._models_dir.mkdir(parents=True, exist_ok=True)
 
-        onnx_path = self._models_dir / 'screen_classifier.onnx'
-        dummy     = torch.zeros(1, 3, INPUT_SIZE, INPUT_SIZE)
+        pt_path     = self._models_dir / 'screen_classifier.pt'
+        labels_path = self._models_dir / 'screen_classifier_labels.json'
+        meta_path   = self._models_dir / 'screen_classifier_meta.json'
         try:
-            # Force legacy TorchScript-based exporter (not dynamo)
-            # PyTorch 2.x defaults to dynamo which produces uniform-output models
-            with torch.no_grad():
-                traced = torch.jit.trace(model.cpu(), dummy)
-            torch.onnx.export(
-                traced, dummy, str(onnx_path),
-                input_names=['input'],
-                output_names=['output'],
-                opset_version=12,
-                do_constant_folding=True,
-            )
-            _slog.info(f'ScreenTypeTrainer: ONNX exported (opset 12, traced) to {onnx_path}')
+            torch.save(model.state_dict(), str(pt_path))
+            _slog.info(f'ScreenTypeTrainer: model saved to {pt_path}')
         except Exception as e:
-            done(False, f'ONNX export failed: {e}')
+            done(False, f'Model save failed: {e}')
             return
 
-        # ── Save label map ─────────────────────────────────────────────────────
-        labels_path = self._models_dir / 'screen_classifier_labels.json'
+        # Save label map and metadata
         with open(labels_path, 'w') as f:
             json.dump({str(k): v for k, v in label_map.items()}, f, indent=2)
+        with open(meta_path, 'w') as f:
+            json.dump({'n_classes': n_classes, 'input_size': INPUT_SIZE}, f)
 
         prog(100, f'Done — val accuracy {best_val_acc:.1%}')
         done(True,
-             f'Model saved to {onnx_path.name}  '
+             f'Model saved to {pt_path.name}  '
              f'(val_acc={best_val_acc:.1%}, '
              f'{len(samples)} images, {n_classes} classes)')

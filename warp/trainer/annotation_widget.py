@@ -198,16 +198,7 @@ class AnnotationWidget(QWidget):
         else:
             color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = SELECTED_PEN_WIDTH if selected else DRAW_PEN_WIDTH; style = Qt.PenStyle.SolidLine
         pen = QPen(color, pw, style); painter.setPen(pen); painter.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 25))); rect = self._img_to_screen_rect(bbox); painter.drawRect(rect)
-        # Badge: name/slot + confidence (or 'confirmed' marker)
-        if state == 'confirmed':
-            badge = f'{name or slot}  ✓' if (name or slot) else '✓'
-            if conf > 0.0:
-                badge += f'  {conf:.0%}'
-        else:
-            badge = name or slot
-            if badge and conf > 0.0:
-                badge += f'  {conf:.0%}'
-        if badge: painter.setPen(color); painter.setFont(QFont("", FONT_SIZE_BADGE)); painter.drawText(rect.bottomLeft() + QPoint(2, 12), badge[:36])
+        # Badge text removed — info shown via hover tooltip instead
         if selected:
             pass  # Resize handles disabled — reserved for future implementation
             # h = self._HANDLE; painter.setPen(QPen(QColor(0, 0, 0, 180), 1)); painter.setBrush(QBrush(QColor(255, 255, 255, 220)))

@@ -287,13 +287,6 @@ class _RecognitionProgressDialog(QWidget):
         lay.addWidget(bar)
         lay.addLayout(btn_row)
 
-# Module-level log reference for _TrainProgressDialog
-try:
-    from src.setsdebug import log as _train_dlg_log
-except Exception:
-    import logging as _logging
-    _train_dlg_log = _logging.getLogger('warp.train_dialog')
-
 class _TrainProgressDialog(QWidget):
     cancelled = Signal()
     def __init__(self, parent=None):
@@ -343,7 +336,9 @@ class _TrainProgressDialog(QWidget):
         self._status_lbl.setText(message)
         self._log.appendPlainText(f'[{pct:3d}%] {message}')
         self._log.ensureCursorVisible()
-        _train_dlg_log.info(f'Train [{pct:3d}%] {message}')
+        try:
+            from src.setsdebug import log as _sl; _sl.info(f'Train [{pct:3d}%] {message}')
+        except Exception: pass
 
     def mark_finished(self, success: bool, message: str):
         """Call when training is done — switches Cancel→Close, updates title."""
@@ -360,7 +355,9 @@ class _TrainProgressDialog(QWidget):
         self._log.appendPlainText('─' * 60)
         self._log.appendPlainText(message)
         self._log.ensureCursorVisible()
-        _train_dlg_log.info(f'Train finished — {message}')
+        try:
+            from src.setsdebug import log as _sl; _sl.info(f'Train finished — {message}')
+        except Exception: pass
 
     def closeEvent(self, event):
         if not self._finished:
@@ -1422,7 +1419,7 @@ class WarpCoreWindow(QMainWindow):
                 self._contribute(ri, name)
         else:
             self._ann_widget.confirm_current(slot=slot, name=name)
-        self._name_edit.clear()
+        # Keep name_edit showing the accepted value — don't clear after accept
         self._update_progress()
         self._advance_to_next_unconfirmed(row)
         if self._current_idx >= 0:

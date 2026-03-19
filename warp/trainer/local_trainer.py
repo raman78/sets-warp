@@ -253,33 +253,27 @@ class LocalTrainWorker(QThread):
         if best_state:
             model.load_state_dict(best_state)
 
-        self.progress.emit(89, 'Exporting to ONNX...')
+        self.progress.emit(89, 'Saving model...')
 
-        # ── 7. Export ONNX ───────────────────────────────────────────────────
+        # Save using PyTorch native format — no ONNX needed
         models_dir = self._sets_root / 'warp' / 'models'
         models_dir.mkdir(parents=True, exist_ok=True)
-        onnx_path  = models_dir / 'icon_classifier.onnx'
+        pt_path    = models_dir / 'icon_classifier.pt'
+        meta_path  = models_dir / 'icon_classifier_meta.json'
         label_path = models_dir / 'label_map.json'
 
         model.eval().to('cpu')
-        dummy = torch.zeros(1, 3, MODEL_IMG_SIZE, MODEL_IMG_SIZE)
         try:
-            # Use traced export (opset 12) to avoid dynamo exporter issues
-            with torch.no_grad():
-                traced = torch.jit.trace(model, dummy)
-            torch.onnx.export(
-                traced, dummy, str(onnx_path),
-                input_names=['input'], output_names=['output'],
-                opset_version=12,
-                do_constant_folding=True,
-            )
+            torch.save(model.state_dict(), str(pt_path))
         except Exception as e:
-            self.finished.emit(False, f'ONNX export failed: {e}')
+            self.finished.emit(False, f'Model save failed: {e}')
             return
 
-        # ── 8. Write label map ───────────────────────────────────────────────
+        # Write label map and meta
         with open(label_path, 'w') as f:
             json.dump(idx_to_label, f, ensure_ascii=False, indent=2)
+        with open(meta_path, 'w') as f:
+            json.dump({'n_classes': n_classes, 'input_size': MODEL_IMG_SIZE}, f)
 
         # Remove unavailability sentinel if it exists
         flag = models_dir / 'model_unavailable.flag'
@@ -287,7 +281,7 @@ class LocalTrainWorker(QThread):
 
         self.progress.emit(95, 'Reloading icon matcher with new model...')
 
-        # ── 9. Reload matcher ────────────────────────────────────────────────
+        # Reload matcher
         try:
             from warp.recognition.icon_matcher import SETSIconMatcher
             SETSIconMatcher.reset_ml_session()
@@ -302,8 +296,7 @@ class LocalTrainWorker(QThread):
             f'Model trained successfully.\n'
             f'{len(crops)} crops  |  {n_classes} item types  |  '
             f'val accuracy: {best_val_acc:.1%}\n\n'
-            f'Saved to: {onnx_path}')
-
+            f'Saved to: {pt_path}')
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _collect_crops(self) -> tuple[list, list]:

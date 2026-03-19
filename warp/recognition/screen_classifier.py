@@ -166,24 +166,41 @@ class ScreenTypeClassifier:
 
     # ── Stage 1: ONNX ───────────────────────────────────────────────────────────
 
+    # ── Stage 1: PyTorch model ──────────────────────────────────────────────────
+
     def _try_load_model(self) -> None:
-        model_path  = self._models_dir / MODEL_FILENAME
-        labels_path = self._models_dir / LABELS_FILENAME
-        if not model_path.exists():
-            log.debug('ScreenClassifier: no ONNX model found, using OCR fallback')
+        pt_path     = self._models_dir / 'screen_classifier.pt'
+        labels_path = self._models_dir / 'screen_classifier_labels.json'
+        meta_path   = self._models_dir / 'screen_classifier_meta.json'
+        if not pt_path.exists():
+            _slog.debug('ScreenClassifier: no .pt model found, using OCR fallback')
             return
         try:
-            import onnxruntime as ort
-            self._session = ort.InferenceSession(
-                str(model_path),
-                providers=['CPUExecutionProvider'])
+            import torch
+            from torchvision.models import mobilenet_v3_small
+            import torch.nn as nn
+            # Load metadata
+            n_classes = 7  # default
+            if meta_path.exists():
+                with open(meta_path) as f:
+                    meta = json.load(f)
+                n_classes = meta.get('n_classes', 7)
+            # Load label map
             if labels_path.exists():
                 with open(labels_path) as f:
                     raw = json.load(f)
                 self._label_map = {int(k): v for k, v in raw.items()}
             else:
                 self._label_map = {i: s for i, s in enumerate(SCREEN_TYPES)}
-            _slog.info(f'ScreenClassifier: ONNX model loaded — {len(self._label_map)} classes: {list(self._label_map.values())}')
+            # Rebuild model architecture and load weights
+            model = mobilenet_v3_small(weights=None)
+            in_features = model.classifier[-1].in_features
+            model.classifier[-1] = nn.Linear(in_features, n_classes)
+            model.load_state_dict(torch.load(str(pt_path), map_location='cpu',
+                                              weights_only=True))
+            model.eval()
+            self._session = model  # reuse _session field as model holder
+            _slog.info(f'ScreenClassifier: PyTorch model loaded — {len(self._label_map)} classes: {list(self._label_map.values())}')
         except Exception as e:
             _slog.warning(f'ScreenClassifier: model load failed: {e}')
             self._ml_disabled = True
@@ -192,21 +209,22 @@ class ScreenTypeClassifier:
         if self._session is None or self._ml_disabled:
             return '', 0.0
         try:
+            import torch
             small  = _resize_224(img_bgr)
-            tensor = _to_chw_float(small)
-            inp    = self._session.get_inputs()[0].name
-            raw    = self._session.run(None, {inp: tensor})[0]
-            # Handle both (1, n_classes) and (n_classes,) output shapes
-            logits = raw.flatten()
-            probs  = _softmax(logits)
+            tensor = _to_chw_float(small)  # (1, 3, H, W) numpy
+            t      = torch.from_numpy(tensor)
+            with torch.no_grad():
+                logits = self._session(t)[0]  # (n_classes,)
+            probs  = _softmax(logits.numpy())
             idx    = int(np.argmax(probs))
             conf   = float(probs[idx])
             name   = self._label_map.get(idx, SCREEN_TYPES[idx] if idx < len(SCREEN_TYPES) else '')
-            _slog.debug(f'ScreenClassifier: raw shape={raw.shape} probs={[f"{p:.2f}" for p in probs]} → {name} ({conf:.2f})')
+            _slog.debug(f'ScreenClassifier: probs={[f"{p:.2f}" for p in probs]} → {name} ({conf:.2f})')
             return name, conf
         except Exception as e:
             _slog.warning(f'ScreenClassifier ML inference error: {e}')
             return '', 0.0
+
 
     # ── Stage 2: session k-NN ───────────────────────────────────────────────────
 
