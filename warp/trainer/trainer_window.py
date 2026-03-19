@@ -1255,6 +1255,10 @@ class WarpCoreWindow(QMainWindow):
                             crop_bgr, candidate_names=_candidates)
                         _slog.info(f'add_bbox: matcher → name={name!r} conf={conf:.2f} '
                                    f'(slot={_current_slot!r}, pool={len(_candidates) if _candidates else "all"})')
+                        # Discard low-confidence results — below threshold means 'no match'
+                        if conf < 0.40:
+                            _slog.info(f'add_bbox: conf {conf:.2f} < 0.40 — treating as unmatched')
+                            name, conf, thumb = '', 0.0, None
                 except Exception as _e:
                     from src.setsdebug import log as _slog
                     _slog.warning(f'add_bbox: matcher error: {_e}')
@@ -1273,6 +1277,12 @@ class WarpCoreWindow(QMainWindow):
                 inferred = self._infer_slot_from_name(name, allowed_slots=allowed)
                 if inferred:
                     slot = inferred
+                else:
+                    # Name found by matcher but doesn't belong to any allowed slot
+                    # for this screen type — discard to avoid wrong slot assignment
+                    from src.setsdebug import log as _slog2
+                    _slog2.info(f'add_bbox: discarding {name!r} — not valid for stype={stype}')
+                    name, conf, thumb, crop_bgr = '', 0.0, None, None
             new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': 'pending', 'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': ''}
             self._recognition_items.append(new_item)
             self._add_review_row(name, slot, conf)

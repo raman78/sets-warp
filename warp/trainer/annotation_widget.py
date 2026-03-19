@@ -49,6 +49,9 @@ class AnnotationWidget(QWidget):
         self._scale:    float          = 1.0
         self._offset_x: int            = 0
         self._offset_y: int            = 0
+        # Zoom state (Ctrl+wheel)
+        self._zoom:       float        = 1.0   # 1.0 – 6.0
+        self._fit_scale:  float        = 1.0   # scale to fit image in viewport
 
         # Mode flags — drawing/editing only active when explicitly enabled
         self._draw_mode_forced: bool = False   # set by + Add BBox / Edit BBox
@@ -102,7 +105,10 @@ class AnnotationWidget(QWidget):
         self._drawing       = False
         self._highlighted_row = -1
         self._selected_row = -1
+        self._zoom = 1.0
         self._compute_transform()
+        self.resize(self.sizeHint())
+        self.updateGeometry()
         if self._pixmap:
             self.resize(self._pixmap.width(), self._pixmap.height())
         self.update()
@@ -156,7 +162,10 @@ class AnnotationWidget(QWidget):
     def paintEvent(self, event: QPaintEvent):
         painter = QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._pixmap:
-            painter.drawPixmap(self._offset_x, self._offset_y, self._pixmap.width(), self._pixmap.height(), self._pixmap)
+            s  = self._fit_scale * self._zoom
+            zw = int(self._pixmap.width()  * s)
+            zh = int(self._pixmap.height() * s)
+            painter.drawPixmap(self._offset_x, self._offset_y, zw, zh, self._pixmap)
         else:
             painter.fillRect(self.rect(), QColor("#111")); painter.setPen(QColor("#555")); painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No image loaded\nOpen a folder to start")
             return
@@ -264,6 +273,7 @@ class AnnotationWidget(QWidget):
             if bbox and self._img_to_screen_rect(bbox).contains(pos):
                 hovered = idx
                 break
+
         if hovered != self._hover_row:
             self._hover_row = hovered
             self._cancel_hover_timer()
@@ -368,21 +378,102 @@ class AnnotationWidget(QWidget):
     def _cursor_for_handle(handle: str) -> Qt.CursorShape:
         return {'move': Qt.CursorShape.SizeAllCursor, 'resize_NW': Qt.CursorShape.SizeFDiagCursor, 'resize_SE': Qt.CursorShape.SizeFDiagCursor, 'resize_NE': Qt.CursorShape.SizeBDiagCursor, 'resize_SW': Qt.CursorShape.SizeBDiagCursor, 'resize_N': Qt.CursorShape.SizeVerCursor, 'resize_S': Qt.CursorShape.SizeVerCursor, 'resize_W': Qt.CursorShape.SizeHorCursor, 'resize_E': Qt.CursorShape.SizeHorCursor}.get(handle, Qt.CursorShape.ArrowCursor)
 
-    def resizeEvent(self, event): self._compute_transform(); self.update()
+    def wheelEvent(self, event):
+        from PySide6.QtCore import Qt as _Qt
+        if not (event.modifiers() & _Qt.KeyboardModifier.ControlModifier):
+            super().wheelEvent(event)
+            return
+        if not self._pixmap:
+            return
+        delta    = event.angleDelta().y()
+        factor   = 1.15 if delta > 0 else 1.0 / 1.15
+        old_zoom = self._zoom
+        new_zoom = max(1.0, min(6.0, old_zoom * factor))
+        if abs(new_zoom - old_zoom) < 0.001:
+            return
+
+        # Cursor position in widget coords
+        cx = event.position().x()
+        cy = event.position().y()
+
+        # Find scroll area — walk up parent chain
+        sa = self.parent()
+        while sa and not hasattr(sa, 'horizontalScrollBar'):
+            sa = sa.parent()
+
+        # Current scroll offset (how much the viewport is shifted)
+        sx = sa.horizontalScrollBar().value() if sa else 0
+        sy = sa.verticalScrollBar().value()   if sa else 0
+
+        # Point in image-space under cursor
+        # widget coords → viewport coords: widget_pos - scroll_offset
+        # viewport coords = widget coords when widget is at (0,0) in scroll area
+        s_old = self._fit_scale * old_zoom
+        img_x = (cx + sx - self._offset_x) / s_old
+        img_y = (cy + sy - self._offset_y) / s_old
+
+        # Apply new zoom
+        self._zoom = new_zoom
+        self._compute_transform()
+        self.resize(self.sizeHint())
+        self.updateGeometry()
+        self.update()
+
+        # Adjust scrollbars so img_x/img_y stays under cursor
+        # new widget pos of that point = img * s_new + offset_x
+        s_new    = self._fit_scale * new_zoom
+        new_wx   = img_x * s_new + self._offset_x
+        new_wy   = img_y * s_new + self._offset_y
+        # scroll so that new_wx lands at cx in viewport
+        if sa:
+            sa.horizontalScrollBar().setValue(int(new_wx - cx))
+            sa.verticalScrollBar().setValue(int(new_wy - cy))
+
+        event.accept()
 
     def sizeHint(self):
-        if self._pixmap: return QSize(self._pixmap.width(), self._pixmap.height())
-        return QSize(800, 600)
+        if self._pixmap:
+            s = self._fit_scale * self._zoom
+            return QSize(max(1, int(self._pixmap.width()  * s)),
+                         max(1, int(self._pixmap.height() * s)))
+        return QSize(400, 300)
+
+    def resizeEvent(self, event):
+        self._compute_transform()
+        self.update()
 
     def _compute_transform(self):
         if not self._pixmap: return
-        self._scale = 1.0; self._offset_x = max(0, (self.width() - self._pixmap.width()) // 2); self._offset_y = max(0, (self.height() - self._pixmap.height()) // 2)
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        ww, wh = self.width(), self.height()
+        # Fit scale: scale that fits image into scroll area viewport
+        # When zoom=1 we want image to fill the visible area
+        sx = ww / pw if pw > 0 else 1.0
+        sy = wh / ph if ph > 0 else 1.0
+        self._fit_scale = min(sx, sy, 1.0)
+        # Total scale applied to image
+        s = self._fit_scale * self._zoom
+        # At zoom=1: centre image in widget
+        # At zoom>1: widget is larger than viewport, scroll area handles panning
+        self._offset_x = max(0, (ww - int(pw * s)) // 2) if self._zoom <= 1.0 else 0
+        self._offset_y = max(0, (wh - int(ph * s)) // 2) if self._zoom <= 1.0 else 0
+
+    def _img_to_screen(self, x: float, y: float) -> tuple[int, int]:
+        s = self._fit_scale * self._zoom
+        return int(x * s) + self._offset_x, int(y * s) + self._offset_y
 
     def _img_to_screen_rect(self, bbox: tuple) -> QRect:
-        x, y, w, h = bbox; return QRect(int(x * self._scale) + self._offset_x, int(y * self._scale) + self._offset_y, max(4, int(w * self._scale)), max(4, int(h * self._scale)))
+        x, y, w, h = bbox
+        s = self._fit_scale * self._zoom
+        sx, sy = self._img_to_screen(x, y)
+        return QRect(sx, sy, max(4, int(w * s)), max(4, int(h * s)))
 
     def _screen_to_img_rect(self, rect: QRect) -> tuple:
-        return (int((rect.x() - self._offset_x) / self._scale), int((rect.y() - self._offset_y) / self._scale), int(rect.width() / self._scale), int(rect.height() / self._scale))
+        s = self._fit_scale * self._zoom
+        return (int((rect.x() - self._offset_x) / s),
+                int((rect.y() - self._offset_y) / s),
+                int(rect.width() / s),
+                int(rect.height() / s))
 
     def _hit_test(self, pos: QPoint) -> int:
         """Returns index of bbox under pos.
