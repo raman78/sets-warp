@@ -21,9 +21,16 @@ from typing import Any, Callable
 import numpy as np
 
 log = logging.getLogger(__name__)
+try:
+    from src.setsdebug import log as _slog
+except Exception:
+    _slog = log
 
 SCREENSHOT_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 TEMPLATE_CONF_THRESHOLD = 0.72
+# Minimum confidence to include a recognition result in output
+# Below this threshold the matcher is essentially guessing
+MIN_ACCEPT_CONF = 0.40
 
 
 # ── Canonical slot order ────────────────────────────────────────────────────────
@@ -130,6 +137,24 @@ SLOT_SPECS = {
 # Weapon types that can only go in Experimental slot
 EXPERIMENTAL_TYPES = frozenset({'Experimental Weapon'})
 
+# Maps slot name → set of valid item 'type' values from cache
+# Exact type strings come from scraper.py EQUIPMENT_TYPES keys
+SLOT_VALID_TYPES: dict[str, frozenset] = {
+    'Fore Weapons':          frozenset({'Ship Fore Weapon', 'Ship Weapon', 'Experimental Weapon'}),
+    'Aft Weapons':           frozenset({'Ship Aft Weapon', 'Ship Weapon', 'Experimental Weapon'}),
+    'Deflector':             frozenset({'Ship Deflector Dish', 'Ship Secondary Deflector'}),
+    'Impulse':               frozenset({'Impulse Engine'}),
+    'Engines':               frozenset({'Impulse Engine'}),
+    'Warp Core':             frozenset({'Warp Engine', 'Singularity Engine'}),
+    'Shield':                frozenset({'Ship Shields'}),
+    'Shields':               frozenset({'Ship Shields'}),
+    'Devices':               frozenset({'Ship Device'}),
+    'Engineering Consoles':  frozenset({'Ship Engineering Console', 'Universal Console'}),
+    'Science Consoles':      frozenset({'Ship Science Console', 'Universal Console'}),
+    'Tactical Consoles':     frozenset({'Ship Tactical Console', 'Universal Console'}),
+    'Hangar':                frozenset({'Hangar Bay'}),
+}
+
 # OCR label → canonical slot name
 SLOT_LABEL_ALIASES: dict[str, str] = {
     'Fore Weapons':         'Fore Weapons',
@@ -163,6 +188,48 @@ SLOT_LABEL_ALIASES: dict[str, str] = {
     'Devices':              'Devices',
     'Device':               'Devices',
 }
+
+
+def _profile_from_pixel_counts(pixel_counts: dict[str, int]) -> dict[str, int]:
+    """
+    Given slot counts measured from pixel analysis, find the closest
+    matching keyword profile and use it to fill in slots that pixel
+    analysis cannot measure (Sec-Def, Experimental, Hangars).
+    Returns a merged profile: pixel counts + inferred unmeasurable slots.
+    """
+    # Measurable slots (pixel analysis can count these)
+    MEASURABLE = {'Fore Weapons', 'Aft Weapons', 'Devices',
+                  'Engineering Consoles', 'Science Consoles', 'Tactical Consoles'}
+
+    # Score each keyword profile by sum of absolute differences on measurable slots
+    def _score(kp: dict) -> int:
+        kp_slots = {
+            'Fore Weapons': kp['fore'], 'Aft Weapons': kp['aft'],
+            'Devices': kp['dev'], 'Engineering Consoles': kp['eng'],
+            'Science Consoles': kp['sci'], 'Tactical Consoles': kp['tac'],
+        }
+        return sum(abs(pixel_counts.get(slot, 0) - kp_slots.get(slot, 0))
+                   for slot in MEASURABLE if pixel_counts.get(slot, 0) > 0)
+
+    best_keyword, best_kp, best_score = '', _GENERIC_PROFILE, 999
+    for keyword, kp in _KEYWORD_PROFILES:
+        s = _score(kp)
+        if s < best_score:
+            best_score, best_keyword, best_kp = s, keyword, kp
+
+    # Build merged profile: start from best keyword match, override with pixel counts
+    merged = _type_keyword_profile(best_keyword)
+    for slot, count in pixel_counts.items():
+        if count > 0:
+            merged[slot] = count
+    try:
+        from src.setsdebug import log as _sl
+        _sl.info(f'WarpImporter: pixel→profile best={best_keyword!r} score={best_score}pts '
+                 f'sec={merged.get("Sec-Def",0)} exp={merged.get("Experimental",0)} '
+                 f'hang={merged.get("Hangars",0)}')
+    except Exception:
+        pass
+    return merged
 
 
 # ── ShipDB — primary source of truth for slot counts ──────────────────────────
@@ -405,7 +472,8 @@ class WarpImporter:
         result.items = list(best.values())
         return result
 
-    def _process_image(self, img: np.ndarray, source: str) -> ImportResult:
+    def _process_image(self, img: np.ndarray, source: str, profile_override: dict | None = None) -> ImportResult:
+        _slog.info(f'WarpImporter._process_image: source={source} build_type={self._build_type}')
         # Step 1 — extract ship info via OCR only when build_type is unknown.
         # When called from the trainer (build_type always set), skip OCR entirely.
         if self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
@@ -423,17 +491,68 @@ class WarpImporter:
 
         # Step 2 — get exact slot profile from ship_list.json
         profile = self._get_shipdb().get_profile(ship_name, ship_type)
+        _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}: {dict((k,v) for k,v in profile.items() if v)}')
+        # Apply profile override from confirmed annotations
+        # Priority 1: explicitly passed override (from RecognitionWorker)
+        # Priority 2: load from training_data/annotations.json on disk
+        if not profile_override:
+            profile_override = self._load_confirmed_profile(source)
+        # If ship_name was empty (trainer mode), try from annotations on disk
+        ship_tier = text_info.get('ship_tier', '')
+        if not ship_name:
+            _ann_ship = self._load_ship_info_from_annotations(source)
+            if _ann_ship.get('ship_name'):
+                ship_name = _ann_ship['ship_name']
+                ship_type = _ann_ship.get('ship_type', '')
+                ship_tier = _ann_ship.get('ship_tier', '')
+                _slog.info(f'WarpImporter: ship info from annotations: '
+                           f'{ship_name!r} / {ship_type!r} / {ship_tier!r}')
+        if profile_override:
+            for slot, count in profile_override.items():
+                if count > profile.get(slot, 0):
+                    profile[slot] = count
+                    _slog.info(f'WarpImporter: profile override {slot}={count} (from confirmed annotations)')
+
 
         result = ImportResult(
             build_type   = build_type,
             ship_name    = ship_name,
             ship_type    = ship_type,
-            ship_tier    = text_info.get('ship_tier', ''),
+            ship_tier    = ship_tier,
             ship_profile = profile,
         )
 
-        # Step 3 — layout detection constrained by profile
-        layout  = self._get_layout().detect(img, build_type, profile)
+        # Step 3a — if confirmed annotations exist for this exact file,
+        # use them as ground-truth layout (exact bboxes, no pixel guessing)
+        confirmed_layout = self._load_confirmed_layout(source)
+        if confirmed_layout:
+            _slog.info(f'WarpImporter: using confirmed layout from annotations '
+                       f'({sum(len(v) for v in confirmed_layout.values())} bboxes)')
+            layout = confirmed_layout
+        else:
+            # Step 3b — layout detection from pixel analysis
+            layout = self._get_layout().detect(img, build_type, profile)
+
+        # If ShipDB gave generic fallback (ship_name empty), refine profile
+        # using actual icon counts from layout + keyword profile matching
+        # Only refine slots NOT already set by confirmed annotations
+        if not ship_name and layout:
+            pixel_counts = {slot: len(boxes) for slot, boxes in layout.items() if boxes}
+            if pixel_counts:
+                refined = _profile_from_pixel_counts(pixel_counts)
+                changed = False
+                for slot, count in refined.items():
+                    # Never override confirmed annotation counts
+                    if slot in profile_override:
+                        continue
+                    if count > profile.get(slot, 0):
+                        profile[slot] = count
+                        changed = True
+                if changed:
+                    layout = self._get_layout().detect(img, build_type, profile)
+                    _slog.info(f'WarpImporter: refined profile from pixel counts: '
+                               f'{dict((k,v) for k,v in profile.items() if v)}')
+
         matcher = self._get_matcher()
 
         # Step 4 — match icons per slot (in canonical order)
@@ -444,15 +563,28 @@ class WarpImporter:
                 continue
 
             bboxes = layout.get(slot_name, [])[:max_count]
+            if not bboxes:
+                _slog.info(f'  [{slot_name}] no bboxes from layout (max_count={max_count})')
             for idx, bbox in enumerate(bboxes):
                 crop = self._crop(img, bbox)
                 if crop is None or crop.size == 0:
+                    _slog.info(f'  [{slot_name}][{idx}] bbox={bbox} — empty crop, skipped')
                     continue
                 name, conf, thumb = matcher.match(crop)
+                _slog.info(f'  [{slot_name}][{idx}] bbox={bbox} crop={crop.shape[1]}x{crop.shape[0]} → {name!r} conf={conf:.2f}')
                 if not name:
+                    continue
+                # Reject low-confidence results — below threshold is a guess
+                if conf < MIN_ACCEPT_CONF:
+                    _slog.info(f'  [{slot_name}][{idx}] SKIP — conf {conf:.2f} < {MIN_ACCEPT_CONF}')
+                    continue
+                # Validate item type matches slot category
+                if not self._item_valid_for_slot(name, slot_name):
+                    _slog.info(f'  [{slot_name}][{idx}] SKIP — {name!r} wrong type for slot')
                     continue
                 # Experimental slot: only Experimental Weapon items allowed
                 if slot_def['exp'] and not self._is_experimental(name):
+                    _slog.info(f'  [{slot_name}][{idx}] SKIP — not experimental weapon: {name!r}')
                     continue
                 result.items.append(RecognisedItem(
                     slot        = slot_name,
@@ -470,6 +602,145 @@ class WarpImporter:
                         sync.contribute(crop, name, confirmed=False)
 
         return result
+
+    def _load_ship_info_from_annotations(self, source: str) -> dict:
+        """Read Ship Name, Ship Type, Ship Tier from confirmed annotations on disk."""
+        try:
+            here = Path(__file__).resolve().parent
+            for _ in range(6):
+                ann_path = here / 'warp' / 'training_data' / 'annotations.json'
+                if ann_path.exists(): break
+                here = here.parent
+            else:
+                return {}
+            import json
+            data = json.loads(ann_path.read_text(encoding='utf-8'))
+            fname = Path(source).name
+            result = {}
+            for a in data.get(fname, []):
+                if a.get('state') != 'confirmed': continue
+                slot = a.get('slot', '')
+                name = a.get('name', '').strip()
+                if not name: continue
+                if slot == 'Ship Name':  result['ship_name'] = name
+                elif slot == 'Ship Type': result['ship_type'] = name
+                elif slot == 'Ship Tier': result['ship_tier'] = name
+            return result
+        except Exception as e:
+            _slog.debug(f'WarpImporter: _load_ship_info_from_annotations error: {e}')
+            return {}
+
+    def _load_confirmed_layout(self, source: str) -> dict[str, list] | None:
+        """
+        If confirmed annotations exist for this exact source file,
+        return them as a layout dict {slot_name: [bbox, ...]}.
+        This gives pixel-perfect bboxes instead of estimated positions.
+        Returns None if no confirmed annotations found.
+        """
+        _NON_ICON = frozenset({'Ship Name', 'Ship Type', 'Ship Tier',
+                               'Primary Specialization', 'Secondary Specialization'})
+        try:
+            here = Path(__file__).resolve().parent
+            for _ in range(6):
+                ann_path = here / 'warp' / 'training_data' / 'annotations.json'
+                if ann_path.exists(): break
+                here = here.parent
+            else:
+                return None
+            import json
+            data = json.loads(ann_path.read_text(encoding='utf-8'))
+            fname = Path(source).name
+            ann_list = data.get(fname, [])
+            layout: dict[str, list] = {}
+            for a in ann_list:
+                if a.get('state') != 'confirmed': continue
+                slot = a.get('slot', '')
+                bbox = a.get('bbox')
+                if not slot or not bbox or slot in _NON_ICON: continue
+                if slot not in layout:
+                    layout[slot] = []
+                # Convert [x,y,w,h] list to tuple
+                layout[slot].append(tuple(bbox))
+            if layout:
+                _slog.info(f'WarpImporter: confirmed layout from disk: '
+                           f'{dict((k,len(v)) for k,v in layout.items())}')
+            return layout if layout else None
+        except Exception as e:
+            _slog.debug(f'WarpImporter: _load_confirmed_layout error: {e}')
+            return None
+
+    def _load_confirmed_profile(self, source: str) -> dict[str, int]:
+        """Load confirmed annotation counts per slot from training_data on disk.
+        Returns {slot_name: count} for the given source image file."""
+        try:
+            here = Path(__file__).resolve().parent
+            for _ in range(6):
+                ann_path = here / 'warp' / 'training_data' / 'annotations.json'
+                if ann_path.exists():
+                    break
+                here = here.parent
+            else:
+                return {}
+            import json
+            data = json.loads(ann_path.read_text(encoding='utf-8'))
+            fname = Path(source).name
+            ann_list = data.get(fname, [])
+            _NON_PROFILE = frozenset({'Ship Name', 'Ship Type', 'Ship Tier',
+                                      'Primary Specialization', 'Secondary Specialization'})
+            counts: dict[str, int] = {}
+            ship_name_ann = ''
+            ship_type_ann = ''
+            for a in ann_list:
+                if a.get('state') != 'confirmed': continue
+                slot = a.get('slot', '')
+                name = a.get('name', '')
+                if slot == 'Ship Name' and name:
+                    ship_name_ann = name
+                elif slot == 'Ship Type' and name:
+                    ship_type_ann = name
+                elif slot and slot not in _NON_PROFILE:
+                    counts[slot] = counts.get(slot, 0) + 1
+            if counts:
+                _slog.info(f'WarpImporter: confirmed profile from disk for {fname}: {counts}')
+            # If ship name/type found in annotations, try ShipDB for exact profile
+            if ship_name_ann or ship_type_ann:
+                _slog.info(f'WarpImporter: ship from annotations: {ship_name_ann!r} / {ship_type_ann!r}')
+                try:
+                    db_profile = self._get_shipdb().get_profile(ship_name_ann, ship_type_ann)
+                    _slog.info(f'WarpImporter: ShipDB profile from annotations: {dict((k,v) for k,v in db_profile.items() if v)}')
+                    # Merge: ShipDB for exact counts, confirmed annotations as minimum
+                    for slot, count in counts.items():
+                        if count > db_profile.get(slot, 0):
+                            db_profile[slot] = count
+                    return db_profile
+                except Exception as _dbe:
+                    _slog.debug(f'WarpImporter: ShipDB lookup failed: {_dbe}')
+            return counts
+        except Exception as e:
+            _slog.debug(f'WarpImporter: _load_confirmed_profile error: {e}')
+            return {}
+
+    def _item_valid_for_slot(self, item_name: str, slot_name: str) -> bool:
+        """Check that item type from cache matches what the slot expects.
+        Returns True if no type constraint exists for this slot (permissive)."""
+        valid_types = SLOT_VALID_TYPES.get(slot_name)
+        if not valid_types:
+            return True  # no constraint defined — allow
+        try:
+            for cat_items in self._app.cache.equipment.values():
+                entry = cat_items.get(item_name)
+                if entry is None:
+                    continue
+                item_type = entry.get('type', '') if isinstance(entry, dict) else ''
+                if item_type in valid_types:
+                    return True
+                # Item found in cache but wrong type
+                _slog.info(f'  _item_valid_for_slot: {item_name!r} type={item_type!r} not valid for {slot_name!r}')
+                return False
+        except Exception:
+            pass
+        # Item not found in cache — allow (may be a new item we don't know)
+        return True
 
     def _is_experimental(self, item_name: str) -> bool:
         try:

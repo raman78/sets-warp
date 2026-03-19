@@ -311,13 +311,57 @@ class WarpDialog(QDialog):
             return
 
         # Set ship info if recognised
-        if r.ship_name:
+        # Set ship name, ship selection and tier from recognised result
+        if r.ship_name or r.ship_type or r.ship_tier:
             try:
-                if not self._sets.build['space']['ship_name']:
-                    self._sets.build['space']['ship_name'] = r.ship_name
-                    self._sets.widgets.ship['name'].setText(r.ship_name)
-            except Exception:
-                pass
+                build   = self._sets.build['space']
+                widgets = self._sets.widgets
+                # Set free-text ship name (U.S.S. Barbarossa)
+                if r.ship_name and not build.get('ship_name'):
+                    build['ship_name'] = r.ship_name
+                    widgets.ship['name'].setText(r.ship_name)
+                # Try to select ship class from cache using ship_type string
+                # cache.ships is keyed by wiki Page name
+                if r.ship_type and build.get('ship', '<Pick Ship>') == '<Pick Ship>':
+                    from difflib import get_close_matches
+                    ships = getattr(self._sets.cache, 'ships', {})
+                    candidates = list(ships.keys())
+                    # Try exact then fuzzy match
+                    match = None
+                    if r.ship_type in ships:
+                        match = r.ship_type
+                    else:
+                        hits = get_close_matches(r.ship_type, candidates, n=1, cutoff=0.72)
+                        if hits:
+                            match = hits[0]
+                    if match:
+                        log.info(f'WARP: auto-selecting ship {match!r} from {r.ship_type!r}')
+                        from src.callbacks import select_ship as _sel
+                        # Simulate ship selection without opening picker
+                        from src.callbacks import _save_session_slots, align_space_frame
+                        from src.iofunc import exec_in_thread
+                        ship_data = ships[match]
+                        widgets.ship['button'].setText(match)
+                        build['space'] = build.get('space', {})
+                        build['ship']  = match
+                        tier = ship_data.get('tier', 6)
+                        widgets.ship['tier'].clear()
+                        if tier == 6:
+                            widgets.ship['tier'].addItems(('T6', 'T6-X', 'T6-X2'))
+                        elif tier == 5:
+                            widgets.ship['tier'].addItems(('T5', 'T5-U', 'T5-X', 'T5-X2'))
+                        else:
+                            widgets.ship['tier'].addItem(f'T{tier}')
+                        # Set tier from recognised result
+                        if r.ship_tier:
+                            idx = widgets.ship['tier'].findText(r.ship_tier)
+                            if idx >= 0:
+                                widgets.ship['tier'].setCurrentIndex(idx)
+                        build['tier'] = r.ship_tier or f'T{tier}'
+                    else:
+                        log.info(f'WARP: ship {r.ship_type!r} not found in cache')
+            except Exception as _e:
+                log.debug(f'WARP: ship info widget update failed: {_e}')
 
         for ri in r.items:
             if not ri.name:

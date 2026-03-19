@@ -20,6 +20,10 @@ from pathlib import Path
 import numpy as np
 
 log = logging.getLogger(__name__)
+try:
+    from src.setsdebug import log as _slog
+except Exception:
+    _slog = log
 
 OCR_CONF_THRESHOLD = 0.40
 LABEL_FUZZY_CUTOFF = 0.68
@@ -27,23 +31,24 @@ LABEL_FUZZY_CUTOFF = 0.68
 CALIBRATION_FILE   = Path('warp') / 'training_data' / 'anchors.json'
 
 # Slot order for space builds
+# Slot names must match warp_importer.py SPACE_SLOT_ORDER exactly
 SPACE_SLOT_ORDER_STANDARD = [
-    'Fore Weapons', 'Deflector', 'Impulse', 'Warp Core', 'Shields',
+    'Fore Weapons', 'Deflector', 'Engines', 'Warp Core', 'Shield',
     'Aft Weapons', 'Devices', 'Universal Consoles', 'Engineering Consoles',
     'Science Consoles', 'Tactical Consoles',
 ]
-SPACE_SLOT_ORDER_CARRIER = SPACE_SLOT_ORDER_STANDARD + ['Hangar']
+SPACE_SLOT_ORDER_CARRIER = SPACE_SLOT_ORDER_STANDARD + ['Hangars']
 
 SLOT_DEFAULT_COUNTS = {
-    'Fore Weapons': 5, 'Deflector': 1, 'Impulse': 1, 'Warp Core': 1, 'Shields': 1,
+    'Fore Weapons': 5, 'Deflector': 1, 'Engines': 1, 'Warp Core': 1, 'Shield': 1,
     'Aft Weapons': 4, 'Devices': 4, 'Universal Consoles': 2, 'Engineering Consoles': 4,
     'Science Consoles': 2, 'Tactical Consoles': 4, 'Hangar': 1,
 }
 
 SLOT_LABEL_ALIASES = {
     'fore weapons': 'Fore Weapons', 'fore': 'Fore Weapons', 'deflector': 'Deflector',
-    'impulse': 'Impulse', 'engines': 'Impulse', 'warp core': 'Warp Core',
-    'warp': 'Warp Core', 'shields': 'Shields', 'shield': 'Shields',
+    'impulse': 'Engines', 'engines': 'Engines', 'warp core': 'Warp Core',
+    'warp': 'Warp Core', 'shields': 'Shield', 'shield': 'Shield',
     'aft weapons': 'Aft Weapons', 'aft': 'Aft Weapons', 'devices': 'Devices',
     'universal consoles': 'Universal Consoles', 'universal': 'Universal Consoles',
     'engineering consoles': 'Engineering Consoles', 'engineering': 'Engineering Consoles',
@@ -73,25 +78,42 @@ class LayoutDetector:
         profile = ship_profile or {}
         slot_order = (SPACE_SLOT_ORDER_CARRIER if profile.get('Hangar', 0) > 0 else SPACE_SLOT_ORDER_STANDARD)
 
-        # Strategy 1: Pixel analysis
-        result = self._detect_via_pixel_analysis(img, slot_order, profile)
-        if result and len(result) >= len(slot_order) * 0.7:
-            return result
-
-        # Strategy 2: Learned Layouts (New Intelligent Logic)
+        # Strategy 1: Learned Layouts — tried FIRST because they contain
+        # user-confirmed slot counts, more reliable than ShipDB generic fallback
         learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
         if learned:
-            log.info(f"LayoutDetector: Found matching learned layout for {build_type}")
+            _slog.info(f'LayoutDetector: Strategy 1 (learned) → {len(learned)} slot groups, {sum(len(v) for v in learned.values())} bboxes')
+            for slot, boxes in learned.items():
+                for b in boxes:
+                    _slog.info(f'  [{slot}] bbox={b}')
             return learned
+
+        # Strategy 2: Pixel analysis (fallback — uses ShipDB profile counts)
+        result = self._detect_via_pixel_analysis(img, slot_order, profile)
+        if result and len(result) >= len(slot_order) * 0.7:
+            _slog.info(f'LayoutDetector: Strategy 2 (pixel) → {len(result)} slot groups, {sum(len(v) for v in result.values())} bboxes')
+            for slot, boxes in result.items():
+                for b in boxes:
+                    _slog.info(f'  [{slot}] bbox={b}')
+            return result
 
         # Strategy 3: OCR labels
         ocr_result = self._detect_via_ocr(img, slot_order, profile)
         if ocr_result and len(ocr_result) >= 2:
-            return self._fill_gaps(ocr_result, slot_order, img, profile)
+            filled = self._fill_gaps(ocr_result, slot_order, img, profile)
+            _slog.info(f'LayoutDetector: Strategy 3 (OCR) → {len(filled)} slot groups, {sum(len(v) for v in filled.values())} bboxes')
+            for slot, boxes in filled.items():
+                for b in boxes:
+                    _slog.info(f'  [{slot}] bbox={b}')
+            return filled
 
         # Strategy 4: Hardcoded anchor fallback
-        return self._detect_via_anchors(img, slot_order, profile)
-
+        fallback = self._detect_via_anchors(img, slot_order, profile)
+        _slog.info(f'LayoutDetector: Strategy 4 (anchors) → {len(fallback)} slot groups, {sum(len(v) for v in fallback.values())} bboxes')
+        for slot, boxes in fallback.items():
+            for b in boxes:
+                _slog.info(f'  [{slot}] bbox={b}')
+        return fallback
     # ── Learning Logic ────────────────────────────────────────────────────────
 
     def learn_layout(self, screen_type: str, img_size: tuple[int, int], annotations: list[dict]):
@@ -275,6 +297,35 @@ class LayoutDetector:
         if len(found) >= 2: res['Secondary Specialization'] = [found[1]]
         return res
 
+    def _count_icons_in_row(self, img, y_top, y_bot, panel_right, cell_w) -> int:
+        """Count icons in a row by scanning horizontally for icon-shaped bright patches.
+        Scans centre strip of the row. Stops at first dark cell (gap between slot groups)."""
+        import numpy as np
+        row_h = y_bot - y_top
+        # Use inner 50% of row height to avoid separator lines
+        y1 = max(0, y_top + row_h // 4)
+        y2 = min(img.shape[0], y_bot - row_h // 4)
+        count = 0
+        max_icons = 8  # STO max slots per row
+        consecutive_dark = 0
+        for j in range(max_icons):
+            x2 = panel_right - j * cell_w
+            x1 = max(0, x2 - int(cell_w * 0.85))  # inner 85% of cell
+            if x1 >= x2 or x1 < 0:
+                break
+            strip = img[y1:y2, x1:x2]
+            if strip.size == 0:
+                break
+            avg = float(np.mean(strip))
+            if avg > 45:  # icon present — STO icons are distinctly brighter than background
+                count += 1
+                consecutive_dark = 0
+            else:
+                consecutive_dark += 1
+                if consecutive_dark >= 2:
+                    break  # two dark cells = end of slot group
+        return max(1, count)
+
     def _detect_via_pixel_analysis(self, img, slot_order, profile):
         h, w = img.shape[:2]
         panel_right = self._find_panel_right_edge(img)
@@ -289,8 +340,18 @@ class LayoutDetector:
         for i, (y_top, y_bot) in enumerate(row_bounds):
             if i >= len(slot_order): break
             slot_name = slot_order[i]
-            n_icons = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
+            # Count icons by pixel brightness — more reliable than profile for unknown ships
+            pixel_count = self._count_icons_in_row(img, y_top, y_bot, panel_right, cell_w)
+            profile_count = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
+            if profile_count <= 1:
+                # Single mandatory slot (Deflector, Engines, Warp Core, Shield)
+                # Pixel count unreliable here — use profile exactly
+                n_icons = profile_count
+            else:
+                # Multi-slot row: trust pixel count, cap at profile+1 to avoid noise
+                n_icons = min(max(pixel_count, 1), profile_count + 1)
             if n_icons == 0: continue
+            _slog.info(f'LayoutDetector: row {i} [{slot_name}] pixel_count={pixel_count} profile={profile_count} → using {n_icons}')
             iy, bboxes = (y_top + y_bot) // 2 - icon_h // 2, []
             for j in range(n_icons): bboxes.append((max(0, panel_right - (j + 1) * cell_w + 2), iy, icon_w, icon_h))
             bboxes.reverse()
@@ -350,7 +411,7 @@ class LayoutDetector:
         return SLOT_LABEL_ALIASES.get(matches[0]) if matches else None
 
     SPACE_ANCHORS_REL: dict[str, tuple[float, int]] = {
-        'Fore Weapons': (0.036, 5), 'Deflector': (0.107, 1), 'Impulse': (0.178, 1), 'Warp Core': (0.249, 1), 'Shields': (0.325, 1),
+        'Fore Weapons': (0.036, 5), 'Deflector': (0.107, 1), 'Engines': (0.178, 1), 'Warp Core': (0.249, 1), 'Shield': (0.325, 1),
         'Aft Weapons': (0.401, 4), 'Devices': (0.475, 4), 'Universal Consoles': (0.547, 2), 'Engineering Consoles': (0.620, 4),
         'Science Consoles': (0.695, 2), 'Tactical Consoles': (0.768, 4), 'Hangar': (0.840, 1),
     }

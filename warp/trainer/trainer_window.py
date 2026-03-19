@@ -190,7 +190,21 @@ class RecognitionWorker(QThread):
                 self.finished.emit([])
                 return
             _slog.info(f'RecognitionWorker: image loaded {img.shape[1]}x{img.shape[0]} px')
-            result = importer._process_image(img, str(self._path))
+            # Build profile_override from confirmed annotations for this file
+            profile_override = {}
+            try:
+                data_mgr = getattr(self._sets_app, '_warp_core_window', None)
+                data_mgr = getattr(data_mgr, '_data_mgr', None)
+                if data_mgr:
+                    anns = data_mgr.get_annotations(self._path)
+                    for a in anns:
+                        if a.state.value == 'confirmed' and a.slot:
+                            profile_override[a.slot] = profile_override.get(a.slot, 0) + 1
+                    if profile_override:
+                        _slog.info(f'RecognitionWorker: profile_override from confirmed: {profile_override}')
+            except Exception as _pe:
+                _slog.debug(f'RecognitionWorker: profile_override failed: {_pe}')
+            result = importer._process_image(img, str(self._path), profile_override=profile_override or None)
             _slog.info(f'RecognitionWorker: pipeline done — {len(result.items)} items found')
             if result.errors:
                 for e in result.errors:
@@ -1408,6 +1422,31 @@ class WarpCoreWindow(QMainWindow):
         row = self._review_list.currentRow()
         if 0 <= row < len(self._recognition_items):
             ri = self._recognition_items[row]
+            # Check for overlapping bbox with different slot (likely user error)
+            if ri.get('bbox') and self._current_idx >= 0:
+                path = self._screenshots[self._current_idx]
+                existing = self._data_mgr.get_annotations(path)
+                new_bbox = ri['bbox']
+                for ann in existing:
+                    if ann.state.value != 'confirmed': continue
+                    if ann.slot == slot: continue  # same slot = ok
+                    if ann.ann_id == ri.get('ann_id', ''): continue
+                    # Check overlap
+                    ox, oy, ow, oh = ann.bbox
+                    nx, ny, nw, nh = new_bbox
+                    ix = max(0, min(ox+ow, nx+nw) - max(ox, nx))
+                    iy = max(0, min(oy+oh, ny+nh) - max(oy, ny))
+                    overlap = ix * iy
+                    area = min(ow*oh, nw*nh)
+                    if area > 0 and overlap / area > 0.7:
+                        from PySide6.QtWidgets import QMessageBox
+                        ans = QMessageBox.warning(self, 'Possible duplicate',
+                            f'This bbox overlaps {ann.slot!r} → {ann.name!r}\n'
+                            f'Are you sure you want to confirm as {slot!r}?',
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+                        if ans != QMessageBox.StandardButton.Yes:
+                            return
+                        break
             ri['name'] = name
             ri['slot'] = slot
             ri['state'] = 'confirmed'
