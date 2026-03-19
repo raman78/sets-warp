@@ -1478,14 +1478,16 @@ class WarpCoreWindow(QMainWindow):
             self._name_label.setText('Value:')
         else:
             self._name_label.setText('Item name:')
-        # Clear item name field whenever slot type changes
-        # Block signals + suppress focus popup to avoid dropdown firing during programmatic clear
+        # Clear item name field and reset completer state whenever slot changes
         self._suppress_next_focus_popup = True
         self._name_edit.blockSignals(True)
         self._name_edit.clear()
         self._name_edit.blockSignals(False)
         self._suppress_next_focus_popup = False
-        # Pre-populate completer on slot change so dropdown is ready on first focus
+        # CRITICAL: reset QCompleter's internal completionPrefix so it doesn't
+        # filter the new slot's list using the old slot's search text
+        self._completer.setCompletionPrefix('')
+        # Pre-populate completer with new slot's candidates
         if not is_tier and not is_ship_type and slot not in NON_ICON_SLOTS:
             self._populate_name_completer(slot)
 
