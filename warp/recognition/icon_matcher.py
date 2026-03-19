@@ -80,10 +80,18 @@ class SETSIconMatcher:
     # ── Public ─────────────────────────────────────────────────────────────────
 
     def match(
-        self, crop_bgr: np.ndarray
+        self,
+        crop_bgr: np.ndarray,
+        candidate_names: set[str] | None = None,
     ) -> tuple[str, float, object]:   # object = QImage | None
         """
         Match a slot crop against the SETS icon library.
+
+        candidate_names: optional set of allowed item names.
+          When provided, only entries whose name is in this set are considered.
+          Use to restrict matching to items valid for the current screen type
+          (e.g. only traits on a TRAITS screenshot, only equipment on SPACE_EQ).
+          Pass None to search the full index (default, original behaviour).
 
         Priority:
           0. Community knowledge override  (phash → confirmed item_name)
@@ -125,6 +133,8 @@ class SETSIconMatcher:
         # Checked first — highest priority, no threshold guard
         expected_shape = tuple(HIST_BINS)
         for entry in self._session_examples:
+            if candidate_names is not None and entry['name'] not in candidate_names:
+                continue
             if entry['hist_hsv'].shape != expected_shape:
                 continue   # stale entry from old histogram size — skip safely
             res      = cv2.matchTemplate(crop64, entry['tmpl64'],
@@ -139,6 +149,8 @@ class SETSIconMatcher:
                 best_entry = entry
 
         for entry in self._index:
+            if candidate_names is not None and entry['name'] not in candidate_names:
+                continue
             # ── Stage 1: template match ───────────────────────────────────────
             res     = cv2.matchTemplate(crop64, entry['tmpl64'],
                                         cv2.TM_CCOEFF_NORMED)
