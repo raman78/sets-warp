@@ -39,6 +39,7 @@ class AnnotationWidget(QWidget):
 
     annotation_added = Signal(tuple)    # (x, y, w, h) in image coords
     item_selected    = Signal(dict)     # annotation dict
+    item_deselected  = Signal()          # user clicked empty area or toggled off
 
     def __init__(self, data_manager: TrainingDataManager, parent=None):
         super().__init__(parent)
@@ -183,7 +184,11 @@ class AnnotationWidget(QWidget):
 
     def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, selected: bool, highlighted: bool):
         if not bbox: return
-        if highlighted and not selected:
+        if (highlighted or selected) and state == 'confirmed':
+            # Highlighted or selected confirmed — bright green dashed, thicker
+            color = QColor(120, 255, 150, 230); pw = SELECTED_PEN_WIDTH + 1; style = Qt.PenStyle.DashLine
+        elif highlighted and not selected:
+            # Highlighted pending/other — red dashed, thicker
             color = QColor(255, 50, 50, 220); pw = SELECTED_PEN_WIDTH + 1; style = Qt.PenStyle.DashLine
         else:
             color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = SELECTED_PEN_WIDTH if selected else DRAW_PEN_WIDTH; style = Qt.PenStyle.SolidLine
@@ -200,19 +205,43 @@ class AnnotationWidget(QWidget):
         if event.button() != Qt.MouseButton.LeftButton: return
         pos = event.pos()
         if self._draw_mode_forced:
+            # Draw/Edit mode: handle resize/move, otherwise start drawing
             if self._selected_idx >= 0:
                 handle = self._handle_hit_test(pos, self._selected_idx)
                 if handle:
-                    self._drag_mode = handle; self._drag_start = pos; self._drag_orig = self._annotations[self._selected_idx].bbox; self.setCursor(self._cursor_for_handle(handle)); self.update(); return
-            self._drawing = True; self._draw_start = pos; self._draw_current = pos; self._selected_idx = -1; self.update(); return
-        if self._selected_idx >= 0:
-            handle = self._handle_hit_test(pos, self._selected_idx)
-            if handle: self._drag_mode = handle; self._drag_start = pos; self._drag_orig = self._annotations[self._selected_idx].bbox; self.setCursor(self._cursor_for_handle(handle)); self.update(); return
+                    self._drag_mode = handle; self._drag_start = pos
+                    self._drag_orig = self._annotations[self._selected_idx].bbox
+                    self.setCursor(self._cursor_for_handle(handle)); self.update(); return
+            self._drawing = True; self._draw_start = pos; self._draw_current = pos
+            self._selected_idx = -1; self.update(); return
+
+        # Normal review mode — no drag, no resize, no cursor changes
+        # Reset any leftover drag/cursor state
+        self._drag_mode = None
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
         clicked = self._hit_test(pos)
         if clicked >= 0:
-            self._selected_idx = clicked; self._pending_bbox = None; ann = self._annotations[clicked]
-            self.item_selected.emit({'slot': ann.slot, 'name': ann.name, 'bbox': ann.bbox})
-        else: self._selected_idx = -1
+            # Toggle: clicking the already-highlighted item deselects it
+            if clicked == self._highlighted_row:
+                self._highlighted_row = -1
+                self._selected_idx = -1
+                self.item_deselected.emit()
+                self.update()
+                return
+            self._selected_idx = clicked
+            self._pending_bbox = None
+            # Emit from review_items if available (review mode), else from annotations
+            if self._review_items and clicked < len(self._review_items):
+                ri = self._review_items[clicked]
+                self.item_selected.emit({'slot': ri.get('slot',''), 'name': ri.get('name',''), 'bbox': ri.get('bbox')})
+            elif clicked < len(self._annotations):
+                ann = self._annotations[clicked]
+                self.item_selected.emit({'slot': ann.slot, 'name': ann.name, 'bbox': ann.bbox})
+        else:
+            self._highlighted_row = -1
+            self._selected_idx = -1
+            self.item_deselected.emit()
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -233,9 +262,12 @@ class AnnotationWidget(QWidget):
             if nw > 8 and nh > 8:
                 ann = self._annotations[self._selected_idx]; self._data_mgr.update_annotation(self._img_path, ann, bbox=(nx, ny, nw, nh)); self._annotations = self._data_mgr.get_annotations(self._img_path)
             self.update(); return
-        if self._selected_idx >= 0:
+        # Handle cursors only in draw/edit mode
+        if self._draw_mode_forced and self._selected_idx >= 0:
             handle = self._handle_hit_test(pos, self._selected_idx)
-            if handle: self.setCursor(self._cursor_for_handle(handle)); return
+            if handle:
+                self.setCursor(self._cursor_for_handle(handle))
+                return
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -287,6 +319,18 @@ class AnnotationWidget(QWidget):
         return (int((rect.x() - self._offset_x) / self._scale), int((rect.y() - self._offset_y) / self._scale), int(rect.width() / self._scale), int(rect.height() / self._scale))
 
     def _hit_test(self, pos: QPoint) -> int:
-        for idx, ann in enumerate(self._annotations):
-            if self._img_to_screen_rect(ann.bbox).contains(pos): return idx
+        """Returns index of bbox under pos.
+        In review mode searches _review_items (drawn on canvas).
+        In annotation mode searches _annotations.
+        Searches in reverse order so topmost (last drawn) wins.
+        """
+        if self._review_items:
+            for idx in range(len(self._review_items) - 1, -1, -1):
+                bbox = self._review_items[idx].get('bbox')
+                if bbox and self._img_to_screen_rect(bbox).contains(pos):
+                    return idx
+            return -1
+        for idx in range(len(self._annotations) - 1, -1, -1):
+            if self._img_to_screen_rect(self._annotations[idx].bbox).contains(pos):
+                return idx
         return -1

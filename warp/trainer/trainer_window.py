@@ -423,6 +423,7 @@ class WarpCoreWindow(QMainWindow):
         self._ann_widget = AnnotationWidget(self._data_mgr)
         self._ann_widget.annotation_added.connect(self._on_bbox_drawn)
         self._ann_widget.item_selected.connect(self._on_item_selected)
+        self._ann_widget.item_deselected.connect(self._on_canvas_deselected)
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidget(self._ann_widget)
         self._scroll_area.setWidgetResizable(False)
@@ -915,7 +916,12 @@ class WarpCoreWindow(QMainWindow):
                 idx = self._slot_combo.findText(slot)
             if idx >= 0:
                 self._slot_combo.setCurrentIndex(idx)
+            # Populate completer for this slot without triggering clear on name_edit
+            self._populate_name_completer(slot)
+            # Set name field directly (slot already set above, skip _on_slot_changed clear)
+            self._name_edit.blockSignals(True)
             self._name_edit.setText(ri['name'])
+            self._name_edit.blockSignals(False)
             if ri.get('bbox'):
                 self._ann_widget.set_highlighted_row(row)
 
@@ -1048,18 +1054,32 @@ class WarpCoreWindow(QMainWindow):
                     if img is not None:
                         x, y, w, h = bbox
                         crop_bgr = img[y:y+h, x:x+w].copy()
-                        log.debug(f'add_bbox: crop {x},{y},{w},{h} from {path.name}')
+                        from src.setsdebug import log as _slog
+                        _slog.info(f'add_bbox: crop {x},{y},{w},{h} px from {path.name}')
                         from warp.recognition.icon_matcher import SETSIconMatcher
-                        name, conf, thumb = SETSIconMatcher(self._sets).match(crop_bgr)
-                        log.debug(f'add_bbox: matcher result name={name!r} conf={conf:.2f}')
+                        # Build candidate set from current slot's allowed items
+                        _current_slot = self._slot_combo.currentText()
+                        _candidates = set(self._build_search_candidates(_current_slot)) or None
+                        name, conf, thumb = SETSIconMatcher(self._sets).match(
+                            crop_bgr, candidate_names=_candidates)
+                        _slog.info(f'add_bbox: matcher → name={name!r} conf={conf:.2f} '
+                                   f'(slot={_current_slot!r}, pool={len(_candidates) if _candidates else "all"})')
                 except Exception as _e:
-                    log.warning(f'add_bbox: matcher error: {_e}')
+                    from src.setsdebug import log as _slog
+                    _slog.warning(f'add_bbox: matcher error: {_e}')
             slot = self._slot_combo.currentText()
             if slot in NON_ICON_SLOTS:
                 name, conf, thumb, crop_bgr = '', 0.0, None, None
             # If matcher found a name, infer the correct slot from cache item type
+            # Restrict to slots allowed by the current screen type
             if name:
-                inferred = self._infer_slot_from_name(name)
+                stype = 'UNKNOWN'
+                if self._current_idx >= 0:
+                    stype = self._screen_types.get(
+                        self._screenshots[self._current_idx].name, 'UNKNOWN')
+                group_key = SCREEN_TO_SLOT_GROUP.get(stype, 'ALL')
+                allowed = SLOT_GROUPS.get(group_key)  # None means no restriction
+                inferred = self._infer_slot_from_name(name, allowed_slots=allowed)
                 if inferred:
                     slot = inferred
             new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': 'pending', 'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': ''}
@@ -1118,16 +1138,49 @@ class WarpCoreWindow(QMainWindow):
         except:
             pass
 
+    def _on_canvas_deselected(self):
+        """Canvas click on already-selected bbox or empty area → deselect everything."""
+        self._review_list.blockSignals(True)
+        self._review_list.setCurrentRow(-1)
+        self._review_list.blockSignals(False)
+        self._set_review_buttons_enabled(False)
+        self._ann_widget.clear_highlight()
+
     def _on_item_selected(self, ann: dict):
+        """Canvas bbox clicked → sync review list selection + fill slot/name fields."""
         slot = ann.get('slot', '')
-        self._slot_combo.setCurrentText(slot)
-        self._on_slot_changed(slot)
         name = ann.get('name', '')
+
+        # Sync review list selection to match canvas click
+        bbox = ann.get('bbox')
+        if bbox is not None:
+            for row, ri in enumerate(self._recognition_items):
+                if ri.get('bbox') == bbox:
+                    self._review_list.blockSignals(True)
+                    self._review_list.setCurrentRow(row)
+                    self._review_list.blockSignals(False)
+                    self._ann_widget.set_highlighted_row(row)
+                    self._set_review_buttons_enabled(True)
+                    break
+
+        # Set slot without triggering _on_slot_changed's clear() on name_edit
+        self._slot_combo.blockSignals(True)
+        self._slot_combo.setCurrentText(slot)
+        self._slot_combo.blockSignals(False)
+        self._populate_name_completer(slot)
+
+        # Set name fields
         if slot == 'Ship Tier':
+            self._tier_combo.setVisible(True)
+            self._name_edit.setVisible(False)
+            self._name_label.setText('Tier:')
             idx = self._tier_combo.findText(name)
             if idx >= 0:
                 self._tier_combo.setCurrentIndex(idx)
         elif slot == 'Ship Type':
+            self._ship_type_combo.setVisible(True)
+            self._name_edit.setVisible(False)
+            self._name_label.setText('Ship Type:')
             self._populate_ship_type_combo()
             idx = self._ship_type_combo.findText(name)
             if idx >= 0:
@@ -1135,7 +1188,13 @@ class WarpCoreWindow(QMainWindow):
             else:
                 self._ship_type_combo.lineEdit().setText(name)
         else:
+            self._tier_combo.setVisible(False)
+            self._ship_type_combo.setVisible(False)
+            self._name_edit.setVisible(True)
+            self._name_label.setText('Item name:')
+            self._name_edit.blockSignals(True)
             self._name_edit.setText(name)
+            self._name_edit.blockSignals(False)
 
     def _on_accept(self):
         slot = self._slot_combo.currentText()
@@ -1203,19 +1262,24 @@ class WarpCoreWindow(QMainWindow):
         'Ground Device':            'Ground Devices',
     }
 
-    def _infer_slot_from_name(self, item_name: str) -> str:
+    def _infer_slot_from_name(self, item_name: str, allowed_slots: list[str] | None = None) -> str:
         """
         Given a recognised item name, returns the most appropriate slot name
-        by looking up the item's type in cache.equipment.
+        by looking up the item's type in cache.
 
-        Checks every cache bucket because cross-population (uni_consoles into
-        tac/eng/sci and vice versa) means an item may appear in multiple buckets.
-        We use _SLOT_TO_CACHE_KEY in reverse to find the *canonical* bucket first,
-        then fall back to the first bucket that contains the item.
+        allowed_slots: if provided, only slots in this list are considered.
+        This enforces screen type restrictions — e.g. on a TRAITS screenshot
+        only trait slots are valid, never Hangars or equipment slots.
 
-        Returns '' if the item is not found in any equipment bucket.
+        Returns '' if the item is not found or inferred slot is not allowed.
         """
         if not self._sets or not item_name:
+            return ''
+
+        def _allowed(slot: str) -> str:
+            """Return slot if allowed, else empty string."""
+            if allowed_slots is None or slot in allowed_slots:
+                return slot
             return ''
 
         # Build reverse map: cache_key → slot name (canonical, non-cross-populated)
@@ -1230,14 +1294,31 @@ class WarpCoreWindow(QMainWindow):
                     item_type = entry.get('type', '')
                     # Use item type for most precise slot (handles Universal Console)
                     if item_type in self._ITEM_TYPE_TO_SLOT:
-                        return self._ITEM_TYPE_TO_SLOT[item_type]
-                    return slot_name
+                        return _allowed(self._ITEM_TYPE_TO_SLOT[item_type])
+                    return _allowed(slot_name)
 
-            # Second pass: check traits / starship traits
+            # Second pass: traits — check all buckets with correct cache structure
+            # cache.traits[environment][trait_type][name]
+            # environment: 'space' | 'ground'
+            # trait_type:  'traits' | 'rep_traits' | 'active_rep_traits'
             if hasattr(self._sets.cache, 'starship_traits') and item_name in self._sets.cache.starship_traits:
-                return 'Starship Traits'
-            if hasattr(self._sets.cache, 'traits') and item_name in self._sets.cache.traits:
-                return 'Personal Space Traits'
+                return _allowed('Starship Traits')
+            if hasattr(self._sets.cache, 'traits'):
+                t = self._sets.cache.traits
+                trait_slot_map = [
+                    ('space',  'rep_traits',        'Space Reputation'),
+                    ('space',  'active_rep_traits', 'Active Space Rep'),
+                    ('ground', 'rep_traits',        'Ground Reputation'),
+                    ('ground', 'active_rep_traits', 'Active Ground Rep'),
+                    ('space',  'traits',            'Personal Space Traits'),
+                    ('ground', 'traits',            'Personal Ground Traits'),
+                ]
+                for env, ttype, slot_name in trait_slot_map:
+                    try:
+                        if item_name in t[env][ttype]:
+                            return _allowed(slot_name)
+                    except (KeyError, TypeError):
+                        pass
 
             # Third pass: boff abilities — build reverse map from cache structure
             # cache.boff_abilities[env][career][rank_idx] = {ability_name: desc}
@@ -1252,12 +1333,12 @@ class WarpCoreWindow(QMainWindow):
                             continue
                         for rank_dict in rank_list:
                             if isinstance(rank_dict, dict) and item_name in rank_dict:
-                                return f'Boff {career}'
+                                return _allowed(f'Boff {career}')
                 # Fallback: static BOFF_ABILITY_PROPERTIES
                 props = self.BOFF_ABILITY_PROPERTIES.get(item_name)
                 if props:
                     career, _ = props
-                    return f'Boff {career}'
+                    return _allowed(f'Boff {career}')
         except Exception:
             pass
 
@@ -1326,23 +1407,39 @@ class WarpCoreWindow(QMainWindow):
         elif slot in ('Primary Specialization', 'Secondary Specialization'):
             candidates.extend(SPECIALIZATION_NAMES)
         elif 'Starship Trait' in slot:
+            # cache.starship_traits = {name: {...}} flat dict
             try:
-                candidates.extend(self._sets.cache.starship_traits)
+                candidates.extend(self._sets.cache.starship_traits.keys())
             except Exception:
                 pass
-        elif 'Active' in slot and 'Rep' in slot:
+        elif slot == 'Active Space Rep':
             try:
-                candidates.extend(self._sets.cache.active_reputation_traits)
+                candidates.extend(self._sets.cache.traits['space']['active_rep_traits'].keys())
             except Exception:
                 pass
-        elif 'Reputation' in slot or 'Rep' in slot:
+        elif slot == 'Space Reputation':
             try:
-                candidates.extend(self._sets.cache.reputation_traits)
+                candidates.extend(self._sets.cache.traits['space']['rep_traits'].keys())
             except Exception:
                 pass
-        elif 'Trait' in slot:
+        elif slot == 'Active Ground Rep':
             try:
-                candidates.extend(self._sets.cache.traits)
+                candidates.extend(self._sets.cache.traits['ground']['active_rep_traits'].keys())
+            except Exception:
+                pass
+        elif slot == 'Ground Reputation':
+            try:
+                candidates.extend(self._sets.cache.traits['ground']['rep_traits'].keys())
+            except Exception:
+                pass
+        elif slot == 'Personal Space Traits':
+            try:
+                candidates.extend(self._sets.cache.traits['space']['traits'].keys())
+            except Exception:
+                pass
+        elif slot == 'Personal Ground Traits':
+            try:
+                candidates.extend(self._sets.cache.traits['ground']['traits'].keys())
             except Exception:
                 pass
         else:
@@ -1410,21 +1507,32 @@ class WarpCoreWindow(QMainWindow):
         self._ship_type_combo.lineEdit().clear()
 
     def _on_name_focus_in(self, event):
-        """Show dropdown on focus — unless suppressed (programmatic setFocus after bbox draw)."""
+        """On first focus (field was not focused before): open dropdown unless suppressed.
+        Qt fires focusInEvent THEN mousePressEvent on the same click.
+        We open here only when focus came from keyboard (tab) or programmatic setFocus.
+        Mouse click is handled entirely by _on_name_mouse_press to avoid double-firing.
+        """
         QLineEdit.focusInEvent(self._name_edit, event)
+        if self._suppress_next_focus_popup:
+            self._suppress_next_focus_popup = False
+            return
+        from PySide6.QtCore import Qt as _Qt
+        if event.reason() == _Qt.FocusReason.MouseFocusReason:
+            # Will be handled by _on_name_mouse_press — skip here to avoid double-open
+            return
+        self._show_name_dropdown()
+
+    def _on_name_mouse_press(self, event):
+        """Open/close dropdown on every mouse click in the field."""
+        from PySide6.QtWidgets import QLineEdit as _QLE
+        _QLE.mousePressEvent(self._name_edit, event)
         if self._suppress_next_focus_popup:
             self._suppress_next_focus_popup = False
             return
         self._show_name_dropdown()
 
-    def _on_name_mouse_press(self, event):
-        """Re-open dropdown on every click, even when field already has focus."""
-        from PySide6.QtWidgets import QLineEdit as _QLE
-        _QLE.mousePressEvent(self._name_edit, event)
-        self._show_name_dropdown()
-
     def _show_name_dropdown(self):
-        """Open the completer popup if the current slot has candidates."""
+        """Toggle completer popup for the current slot."""
         slot = self._slot_combo.currentText()
         if slot in NON_ICON_SLOTS:
             return
