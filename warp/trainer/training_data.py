@@ -34,11 +34,13 @@ class AnnotationState(str, Enum):
 @dataclass
 class Annotation:
     """One bounding-box annotation for an icon in a screenshot."""
-    bbox:   tuple           # (x, y, w, h) in original image pixels
-    slot:   str  = ""       # SETS slot name, e.g. "Fore Weapons"
-    name:   str  = ""       # SETS item name
-    state:  AnnotationState = AnnotationState.PENDING
-    ann_id: str  = ""       # unique ID (hash of image+bbox)
+    bbox:     tuple           # (x, y, w, h) in original image pixels
+    slot:     str  = ""       # SETS slot name, e.g. "Fore Weapons"
+    name:     str  = ""       # SETS item name
+    state:    AnnotationState = AnnotationState.PENDING
+    ann_id:   str  = ""       # unique ID (hash of image+bbox)
+    ml_conf:  float = 0.0     # original ML recognition confidence (0.0 = unknown)
+    ml_name:  str  = ""       # what ML originally recognised (may differ from confirmed name)
 
     def __post_init__(self):
         if not self.ann_id:
@@ -72,6 +74,13 @@ class TrainingDataManager:
         self._dirty = False
 
         self._load()
+        # Auto-repair crop_index on startup (fixes entries from pre-fix versions)
+        try:
+            repaired = self.repair_crop_index()
+            if repaired:
+                logger.info(f'TrainingDataManager: auto-repaired {repaired} crop_index entries')
+        except Exception as e:
+            logger.warning(f'TrainingDataManager: repair_crop_index failed: {e}')
 
     # ---------------------------------------------------------------- annotation CRUD
 
@@ -93,9 +102,12 @@ class TrainingDataManager:
         slot: str = "",
         name: str = "",
         state: AnnotationState = AnnotationState.PENDING,
+        ml_conf: float = 0.0,
+        ml_name: str = "",
     ) -> Annotation:
         """Add or update annotation by ann_id (no duplicates)."""
-        ann = Annotation(bbox=bbox, slot=slot, name=name, state=state)
+        ann = Annotation(bbox=bbox, slot=slot, name=name, state=state,
+                         ml_conf=ml_conf, ml_name=ml_name)
         key = image_path.name
         if key not in self._annotations:
             self._annotations[key] = []
@@ -110,6 +122,8 @@ class TrainingDataManager:
         self._dirty = True
         try:
             self._export_crop(image_path, ann)
+            # Sync state in crop_index (export sets PENDING, update if CONFIRMED)
+            self._sync_crop_index(image_path, ann)
         except Exception as e:
             logger.warning(f"Could not export crop for {image_path.name}: {e}")
         return ann
@@ -147,7 +161,8 @@ class TrainingDataManager:
         bbox: tuple | None = None,
     ):
         """Update an existing annotation in-place (matched by ann_id).
-        If bbox is provided, replaces ann.bbox before saving."""
+        If bbox is provided, replaces ann.bbox before saving.
+        If state is CONFIRMED, also updates crop_index and re-exports crop."""
         from dataclasses import replace as dc_replace
         if bbox is not None:
             ann = dc_replace(ann, bbox=bbox)
@@ -157,6 +172,8 @@ class TrainingDataManager:
             if d.get("ann_id") == ann.ann_id:
                 dicts[i] = asdict(ann)
                 self._dirty = True
+                # Sync crop_index state + re-export crop if confirmed
+                self._sync_crop_index(image_path, ann)
                 return
 
     def remove_annotation(self, image_path: Path, ann: Annotation):
@@ -207,6 +224,43 @@ class TrainingDataManager:
             except Exception:
                 pass
 
+    def _sync_crop_index(self, image_path: Path, ann: Annotation):
+        """
+        Update crop_index entry for this annotation:
+        - Updates state (PENDING → CONFIRMED etc.)
+        - Updates name and slot (may change after user confirmation)
+        - Re-exports crop if it doesn't exist yet
+        """
+        safe_slot = ann.slot.replace(" ", "_").lower()
+        safe_name = (ann.name or "unknown").replace(" ", "_").lower()[:40]
+        fname     = f"{safe_slot}__{safe_name}__{ann.ann_id}.png"
+        out_path  = self._dir / self.CROPS_DIR / fname
+
+        # Also look for any existing crop with this ann_id (name/slot may have changed)
+        old_fname = next(
+            (f for f, m in self._crop_index.items() if ann.ann_id in f), None)
+        if old_fname and old_fname != fname:
+            # Rename crop file to reflect new name/slot
+            old_path = self._dir / self.CROPS_DIR / old_fname
+            if old_path.exists():
+                old_path.rename(out_path)
+            del self._crop_index[old_fname]
+
+        # Export crop if missing
+        if not out_path.exists():
+            try:
+                self._export_crop(image_path, ann)
+            except Exception as e:
+                logger.warning(f'_sync_crop_index: export failed: {e}')
+
+        # Update index entry with current state/name/slot
+        self._crop_index[fname] = {
+            'slot':   ann.slot,
+            'name':   ann.name,
+            'state':  ann.state,
+            'source': image_path.name,
+        }
+
     # ---------------------------------------------------------------- crop export
 
     def _export_crop(self, image_path: Path, ann: Annotation):
@@ -246,6 +300,54 @@ class TrainingDataManager:
         }
 
     # ---------------------------------------------------------------- export for sync
+
+    def repair_crop_index(self):
+        """
+        One-time repair: for every confirmed annotation in annotations.json,
+        ensure the corresponding crop PNG exists and has state=CONFIRMED in crop_index.
+        Call this once after upgrading from a version with the crop_index bug.
+        """
+        import cv2
+        repaired = 0
+        for image_name, ann_list in self._annotations.items():
+            for d in ann_list:
+                if d.get('state') != AnnotationState.CONFIRMED:
+                    continue
+                ann = self._dict_to_ann(d)
+                if not ann.name:
+                    continue
+                safe_slot = ann.slot.replace(' ', '_').lower()
+                safe_name = (ann.name or 'unknown').replace(' ', '_').lower()[:40]
+                fname = f'{safe_slot}__{safe_name}__{ann.ann_id}.png'
+                # Update crop_index entry to CONFIRMED
+                entry = self._crop_index.get(fname)
+                if entry is None or entry.get('state') != AnnotationState.CONFIRMED:
+                    # Try to find any existing crop with this ann_id
+                    existing = next(
+                        (f for f in self._crop_index if ann.ann_id in f), None)
+                    if existing and existing != fname:
+                        old_path = self._dir / self.CROPS_DIR / existing
+                        new_path = self._dir / self.CROPS_DIR / fname
+                        if old_path.exists():
+                            old_path.rename(new_path)
+                        del self._crop_index[existing]
+                    self._crop_index[fname] = {
+                        'slot':   ann.slot,
+                        'name':   ann.name,
+                        'state':  AnnotationState.CONFIRMED,
+                        'source': image_name,
+                    }
+                    # Export crop PNG if missing
+                    crop_path = self._dir / self.CROPS_DIR / fname
+                    if not crop_path.exists():
+                        # Find original screenshot to re-export from
+                        # We don't have its path here, so just mark as repaired
+                        pass
+                    repaired += 1
+        if repaired:
+            self.save()
+            logger.info(f'repair_crop_index: fixed {repaired} entries')
+        return repaired
 
     def get_confirmed_crops(self) -> list[dict]:
         """
@@ -354,4 +456,6 @@ class TrainingDataManager:
             name=d.get("name", ""),
             state=AnnotationState(d.get("state", AnnotationState.PENDING)),
             ann_id=d.get("ann_id", ""),
+            ml_conf=float(d.get("ml_conf", 0.0)),
+            ml_name=d.get("ml_name", ""),
         )

@@ -10,9 +10,10 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from PySide6.QtWidgets import QHBoxLayout, QPushButton
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QFont, QIcon, QPixmap
 
 log = logging.getLogger(__name__)
 
@@ -41,9 +42,19 @@ def inject_warp_buttons(sets_app, menu_layout) -> None:
     btn_warp.clicked.connect(lambda: _open_warp_dialog(sets_app))
 
     # ── WARP CORE trainer button ──────────────────────────────────────────
-    btn_core = QPushButton("🧠 WARP CORE")
-    btn_core.setToolTip("Open the WARP CORE ML Trainer")
-    btn_core.setFixedHeight(28)
+    btn_core = QPushButton(" WARP CORE")
+    btn_core.setToolTip(
+        "Open the WARP CORE ML Trainer\n"
+        "Mycelial Harmonic Matter-Antimatter Core")
+    btn_core.setFixedHeight(32)
+    btn_core.setIconSize(QSize(24, 28))
+    # Load warp core icon from local/ folder (relative to SETS root)
+    _icon_path = Path(__file__).resolve().parent.parent / 'local' / 'warp_core_icon.png'
+    if _icon_path.exists():
+        _pix = QPixmap(str(_icon_path)).scaled(
+            24, 28, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        btn_core.setIcon(QIcon(_pix))
     _apply_warp_style(btn_core, color='#c8e87e', bg='#2a3a1a', border='#6a9c3a')
     btn_core.clicked.connect(lambda: _open_warp_core(sets_app))
 

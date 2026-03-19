@@ -165,17 +165,17 @@ class AnnotationWidget(QWidget):
         # 1. Background (unselected) items
         for idx, ri in enumerate(self._review_items):
             if idx == self._selected_row or idx == self._highlighted_row: continue
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, False)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), ri.get('conf',0.0), False, False)
 
         # 2. Highlighted item (Red Dashed)
         if self._highlighted_row != -1 and self._highlighted_row < len(self._review_items) and self._highlighted_row != self._selected_row:
             ri = self._review_items[self._highlighted_row]
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, True)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), ri.get('conf',0.0), False, True)
 
         # 3. Selected item (Full Edit with handles)
         if self._selected_row != -1 and self._selected_row < len(self._review_items):
             ri = self._review_items[self._selected_row]
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), True, False)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), ri.get('conf',0.0), True, False)
 
         # In-progress drawing (while dragging)
         if self._drawing and self._draw_start and self._draw_current:
@@ -187,7 +187,7 @@ class AnnotationWidget(QWidget):
         'new':       QColor(255, 220,   0, 200),
     }
 
-    def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, selected: bool, highlighted: bool):
+    def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, conf: float, selected: bool, highlighted: bool):
         if not bbox: return
         if (highlighted or selected) and state == 'confirmed':
             # Highlighted or selected confirmed — bright green dashed, thicker
@@ -198,8 +198,16 @@ class AnnotationWidget(QWidget):
         else:
             color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = SELECTED_PEN_WIDTH if selected else DRAW_PEN_WIDTH; style = Qt.PenStyle.SolidLine
         pen = QPen(color, pw, style); painter.setPen(pen); painter.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 25))); rect = self._img_to_screen_rect(bbox); painter.drawRect(rect)
-        badge = name or slot
-        if badge: painter.setPen(color); painter.setFont(QFont("", FONT_SIZE_BADGE)); painter.drawText(rect.bottomLeft() + QPoint(2, 12), badge[:28])
+        # Badge: name/slot + confidence (or 'confirmed' marker)
+        if state == 'confirmed':
+            badge = f'{name or slot}  ✓' if (name or slot) else '✓'
+            if conf > 0.0:
+                badge += f'  {conf:.0%}'
+        else:
+            badge = name or slot
+            if badge and conf > 0.0:
+                badge += f'  {conf:.0%}'
+        if badge: painter.setPen(color); painter.setFont(QFont("", FONT_SIZE_BADGE)); painter.drawText(rect.bottomLeft() + QPoint(2, 12), badge[:36])
         if selected:
             pass  # Resize handles disabled — reserved for future implementation
             # h = self._HANDLE; painter.setPen(QPen(QColor(0, 0, 0, 180), 1)); painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
@@ -323,19 +331,31 @@ class AnnotationWidget(QWidget):
     def _show_hover_tooltip(self, row: int):
         if row < 0 or row >= len(self._review_items):
             return
-        ri = self._review_items[row]
-        name  = ri.get('name') or '— unmatched —'
-        slot  = ri.get('slot', '?')
-        conf  = ri.get('conf', 0.0)
-        state = ri.get('state', 'pending')
+        ri        = self._review_items[row]
+        name      = ri.get('name') or '— unmatched —'
+        slot      = ri.get('slot', '?')
+        conf      = ri.get('conf', 0.0)
+        state     = ri.get('state', 'pending')
+        orig_name = ri.get('orig_name', '')
+
         if state == 'confirmed':
-            text = f'<b>{slot}</b><br>{name}<br><i>confirmed</i>'
+            lines = [f'<b>{slot}</b>', name, '<i>confirmed by user</i>']
+            # Show what ML originally recognised
+            if conf > 0.0:  # real confidence saved from this or previous session
+                color = ('#7effc8' if conf >= 0.85 else
+                         '#e8c060' if conf >= 0.70 else '#ff9966')
+                ml_text = orig_name if orig_name and orig_name != name else name
+                lines.append(
+                    f'ML: <span style="color:{color}">{ml_text} ({conf:.1%})</span>')
+            else:  # conf=0.0 means unknown (old annotation without saved confidence)
+                lines.append('<span style="color:#888">ML: unknown (previous session)</span>')
+            text = '<br>'.join(lines)
         else:
-            pct = f'{conf:.1%}'
+            pct   = f'{conf:.1%}'
             color = ('#7effc8' if conf >= 0.85 else
                      '#e8c060' if conf >= 0.70 else '#ff9966')
-            text = (f'<b>{slot}</b><br>{name}'
-                    f'<br>Confidence: <span style="color:{color}">{pct}</span>')
+            text  = (f'<b>{slot}</b><br>{name}'
+                     f'<br>Confidence: <span style="color:{color}">{pct}</span>')
         from PySide6.QtWidgets import QToolTip
         from PySide6.QtGui import QCursor
         QToolTip.showText(QCursor.pos(), text, self)

@@ -418,7 +418,7 @@ class WarpCoreWindow(QMainWindow):
         sp.setStretchFactor(0, 0)
         sp.setStretchFactor(1, 1)
         sp.setStretchFactor(2, 0)
-        sp.setSizes([220, 780, 300])
+        sp.setSizes([220, 700, 400])
 
     def _make_left_panel(self) -> QWidget:
         left = QWidget()
@@ -447,6 +447,7 @@ class WarpCoreWindow(QMainWindow):
 
     def _make_center_panel(self) -> QWidget:
         center = QWidget()
+        center.setMinimumWidth(400)
         cl = QVBoxLayout(center)
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
@@ -527,7 +528,7 @@ class WarpCoreWindow(QMainWindow):
 
     def _make_right_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setMinimumWidth(280)
+        panel.setMinimumWidth(400)
         pl = QVBoxLayout(panel)
         pl.setContentsMargins(6, 8, 6, 8)
         pl.setSpacing(6)
@@ -952,7 +953,13 @@ class WarpCoreWindow(QMainWindow):
             path = self._screenshots[self._current_idx]
             for ann in self._data_mgr.get_annotations(path):
                 if ann.state == AnnotationState.CONFIRMED:
-                    confirmed_by_id[ann.ann_id] = {'name': ann.name, 'slot': ann.slot, 'bbox': ann.bbox, 'state': 'confirmed', 'conf': 1.0, 'thumb': None, 'crop_bgr': None, 'orig_name': ann.name, 'ship_name': '', 'ann_id': ann.ann_id}
+                    confirmed_by_id[ann.ann_id] = {
+                    'name': ann.name, 'slot': ann.slot, 'bbox': ann.bbox,
+                    'state': 'confirmed',
+                    'conf': ann.ml_conf,          # real ML confidence, 0.0 if unknown
+                    'orig_name': ann.ml_name or ann.name,  # what ML originally saw
+                    'thumb': None, 'crop_bgr': None, 'ship_name': '', 'ann_id': ann.ann_id,
+                }
         from warp.trainer.training_data import Annotation as _Ann
         merged: list[dict] = []
         seen_ids: set[str] = set()
@@ -992,7 +999,14 @@ class WarpCoreWindow(QMainWindow):
             label = f'{slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
         item = QListWidgetItem(label)
         if confirmed:
-            tooltip = f'Slot: {slot}\nItem: {name or "—"}\nStatus: confirmed by user'
+            if conf > 0.0:  # real confidence saved
+                tooltip = (f'Slot: {slot}\nItem: {name or "—"}\n'
+                           f'Status: confirmed by user\n'
+                           f'ML recognition: {conf:.1%}')
+            else:           # conf=0.0 — old annotation without saved confidence
+                tooltip = (f'Slot: {slot}\nItem: {name or "—"}\n'
+                           f'Status: confirmed by user\n'
+                           f'ML recognition: unknown (previous session)')
         elif name:
             tooltip = f'Slot: {slot}\nItem: {name}\nConfidence: {conf:.1%}'
         else:
@@ -1354,7 +1368,12 @@ class WarpCoreWindow(QMainWindow):
             ri['state'] = 'confirmed'
             if ri.get('bbox') and self._current_idx >= 0:
                 path = self._screenshots[self._current_idx]
-                self._data_mgr.add_annotation(image_path=path, bbox=ri['bbox'], slot=slot, name=name, state=AnnotationState.CONFIRMED)
+                self._data_mgr.add_annotation(
+                    image_path=path, bbox=ri['bbox'], slot=slot, name=name,
+                    state=AnnotationState.CONFIRMED,
+                    ml_conf=ri.get('conf', 0.0),
+                    ml_name=ri.get('orig_name', ''),
+                )
             litem = self._review_list.item(row)
             if litem:
                 litem.setText(f'{slot}  ->  {name or "—"}  [confirmed]')

@@ -30,6 +30,10 @@ import json
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+try:
+    from src.setsdebug import log as _slog  # route to SETS log file
+except Exception:
+    _slog = log
 
 SCREEN_TYPES = [
     'SPACE_EQ', 'GROUND_EQ', 'TRAITS',
@@ -85,22 +89,22 @@ class ScreenTypeTrainerWorker:
             finished_cb=None,   # (ok: bool, msg: str) -> None
             interrupt_check=None):  # () -> bool  (return True to stop)
         def prog(pct, msg):
-            log.info(f'ScreenTypeTrainer [{pct}%] {msg}')
+            _slog.info(f'ScreenTypeTrainer [{pct}%] {msg}')
             if progress_cb:
                 progress_cb(pct, msg)
 
         def done(ok, msg):
             if ok:
-                log.info(f'ScreenTypeTrainer: {msg}')
+                _slog.info(f'ScreenTypeTrainer: {msg}')
             else:
-                log.error(f'ScreenTypeTrainer: {msg}')
+                _slog.warning(f'ScreenTypeTrainer FAILED: {msg}')
             if finished_cb:
                 finished_cb(ok, msg)
 
         try:
             self._train(prog, done, interrupt_check or (lambda: False))
         except Exception as e:
-            log.exception('ScreenTypeTrainer unexpected error')
+            _slog.warning(f'ScreenTypeTrainer unexpected error: {e}')
             done(False, str(e))
 
     # ── Internal ────────────────────────────────────────────────────────────────

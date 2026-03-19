@@ -70,13 +70,17 @@ class LocalTrainWorker(QThread):
     # ── main pipeline ─────────────────────────────────────────────────────────
 
     def _train(self):
+        from src.setsdebug import log as _slog
+        from pathlib import Path
         self.progress.emit(2, 'Loading confirmed annotations...')
+        _slog.info('LocalTrainer: starting icon classifier training')
 
         # ── 1. Collect crops ─────────────────────────────────────────────────
         crops, labels = self._collect_crops()
         n_classes = len(set(labels))
 
         if len(crops) < MIN_SAMPLES:
+            _slog.info('LocalTrainer: no confirmed crops found — skipping icon training')
             self.finished.emit(
                 True,
                 f'No confirmed icon annotations yet — icon classifier skipped.\n'
