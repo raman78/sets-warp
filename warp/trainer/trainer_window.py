@@ -125,6 +125,7 @@ class ScreenTypeDetectorWorker(QThread):
         self._paths = paths
         self._models_dir = models_dir
     def run(self):
+        from src.setsdebug import log as _slog
         results: dict[str, str] = {}
         total = len(self._paths)
         classifier = None
@@ -132,23 +133,37 @@ class ScreenTypeDetectorWorker(QThread):
             try:
                 from warp.recognition.screen_classifier import ScreenTypeClassifier
                 classifier = ScreenTypeClassifier(self._models_dir)
+                _slog.info(f'ScreenTypeDetector: classifier loaded from {self._models_dir}')
             except Exception as e:
-                log.debug(f'ScreenTypeDetector: classifier init failed: {e}')
+                _slog.warning(f'ScreenTypeDetector: classifier unavailable — {e}')
+                _slog.info('ScreenTypeDetector: will use UNKNOWN for all (no model trained yet)')
+        else:
+            _slog.warning('ScreenTypeDetector: no models_dir — all results will be UNKNOWN')
         import cv2
+        _slog.info(f'ScreenTypeDetector: starting — {total} screenshot(s)')
         for idx, path in enumerate(self._paths):
             if self.isInterruptionRequested():
+                _slog.info('ScreenTypeDetector: interrupted')
                 break
             stype = 'UNKNOWN'
             try:
                 img = cv2.imread(str(path))
-                if img is not None and classifier is not None:
+                if img is None:
+                    _slog.warning(f'ScreenTypeDetector: cannot read {path.name}')
+                elif classifier is None:
+                    _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → UNKNOWN (no classifier)')
+                else:
                     ml_stype, ml_conf = classifier.classify(img)
                     if ml_stype and ml_conf >= 0.70:
                         stype = ml_stype
+                        _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → {stype} (conf={ml_conf:.2f})')
+                    else:
+                        _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → UNKNOWN (best={ml_stype!r} conf={ml_conf:.2f} < 0.70)')
             except Exception as e:
-                log.debug(f'Screen type detection error for {path.name}: {e}')
+                _slog.warning(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → error: {e}')
             results[path.name] = stype
             self.progress.emit(idx + 1, total, path.name, stype)
+        _slog.info(f'ScreenTypeDetector: done — {len(results)} processed')
         self.finished.emit(results)
 
 class RecognitionWorker(QThread):
@@ -160,18 +175,28 @@ class RecognitionWorker(QThread):
         self._stype = stype
         self._sets_app = sets_app
     def run(self):
-        importer_type = {'SPACE_EQ': 'SPACE', 'GROUND_EQ': 'GROUND', 'TRAITS': 'SPACE_TRAITS', 'BOFFS': 'BOFFS', 'SPECIALIZATIONS': 'SPEC', 'SPACE_MIXED': 'SPACE', 'GROUND_MIXED': 'GROUND'}.get(self._stype, 'SPACE_EQ')
+        from src.setsdebug import log as _slog
+        importer_type = {'SPACE_EQ': 'SPACE', 'GROUND_EQ': 'GROUND', 'TRAITS': 'SPACE_TRAITS',
+                         'BOFFS': 'BOFFS', 'SPECIALIZATIONS': 'SPEC',
+                         'SPACE_MIXED': 'SPACE', 'GROUND_MIXED': 'GROUND'}.get(self._stype, 'SPACE_EQ')
+        _slog.info(f'RecognitionWorker: start {self._path.name} stype={self._stype} → importer={importer_type}')
         try:
             import cv2
             from warp.warp_importer import WarpImporter
             importer = WarpImporter(sets_app=self._sets_app, build_type=importer_type)
             img = cv2.imread(str(self._path))
             if img is None:
+                _slog.warning(f'RecognitionWorker: cannot read image {self._path}')
                 self.finished.emit([])
                 return
+            _slog.info(f'RecognitionWorker: image loaded {img.shape[1]}x{img.shape[0]} px')
             result = importer._process_image(img, str(self._path))
+            _slog.info(f'RecognitionWorker: pipeline done — {len(result.items)} items found')
+            if result.errors:
+                for e in result.errors:
+                    _slog.warning(f'RecognitionWorker: pipeline error: {e}')
         except Exception as e:
-            log.exception('RecognitionWorker error')
+            _slog.warning(f'RecognitionWorker: exception — {e}')
             self.error.emit(str(e))
             return
         items = []
@@ -188,7 +213,11 @@ class RecognitionWorker(QThread):
                     crop_bgr = img2[y:y+h, x:x+w].copy()
                 except:
                     pass
-            items.append({'name': ri.name, 'slot': ri.slot, 'conf': ri.confidence, 'bbox': ri.bbox, 'state': 'pending', 'thumb': ri.thumbnail, 'crop_bgr': crop_bgr, 'orig_name': ri.name, 'ship_name': result.ship_name})
+            _slog.info(f'RecognitionWorker:   slot={ri.slot!r:25} name={ri.name!r:40} conf={ri.confidence:.2f} bbox={ri.bbox}')
+            items.append({'name': ri.name, 'slot': ri.slot, 'conf': ri.confidence, 'bbox': ri.bbox,
+                          'state': 'pending', 'thumb': ri.thumbnail, 'crop_bgr': crop_bgr,
+                          'orig_name': ri.name, 'ship_name': result.ship_name})
+        _slog.info(f'RecognitionWorker: emitting {len(items)} items')
         self.finished.emit(items)
 
 class _DetectProgressDialog(QWidget):
@@ -401,6 +430,7 @@ class WarpCoreWindow(QMainWindow):
         ll.addWidget(lbl)
         self._file_list = QListWidget()
         self._file_list.currentRowChanged.connect(self._load_screenshot)
+        self._file_list.itemChanged.connect(self._on_file_item_changed)
         self._file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._file_list.customContextMenuRequested.connect(self._show_file_list_context_menu)
         ll.addWidget(self._file_list, 1)
@@ -498,7 +528,6 @@ class WarpCoreWindow(QMainWindow):
     def _make_right_panel(self) -> QWidget:
         panel = QWidget()
         panel.setMinimumWidth(280)
-        panel.setMaximumWidth(380)
         pl = QVBoxLayout(panel)
         pl.setContentsMargins(6, 8, 6, 8)
         pl.setSpacing(6)
@@ -534,6 +563,7 @@ class WarpCoreWindow(QMainWindow):
         self._btn_edit_bbox.setStyleSheet('QPushButton{background:#1a3a5c;color:#7ec8e3;border:1px solid #3a6aac;border-radius:3px;padding:4px 8px;}QPushButton:hover{background:#2a5a8c;}QPushButton:checked{background:#0a2a4c;border:2px solid #7ec8e3;}')
         self._btn_edit_bbox.setCheckable(True)
         self._btn_edit_bbox.clicked.connect(self._on_edit_bbox_toggle)
+        self._btn_edit_bbox.setVisible(False)  # Resize/move disabled — reserved for future
         pl.addWidget(self._btn_edit_bbox)
         mgmt = QHBoxLayout()
         self._btn_add_bbox = QPushButton('+ Add BBox')
@@ -628,7 +658,10 @@ class WarpCoreWindow(QMainWindow):
                 if item:
                     icon  = SCREEN_TYPE_ICONS.get(stype, '?')
                     label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
+                    self._file_list.blockSignals(True)
                     item.setText(f'{icon} {label}\n  {filename}')
+                    item.setCheckState(Qt.CheckState.Unchecked)  # auto-detected = unconfirmed
+                    self._file_list.blockSignals(False)
                     if self._data_mgr.has_annotations(p):
                         item.setForeground(QColor('#7effc8'))
                     else:
@@ -649,7 +682,12 @@ class WarpCoreWindow(QMainWindow):
             if item:
                 icon  = SCREEN_TYPE_ICONS.get(stype, '?')
                 label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
+                confirmed = p.name in self._screen_types_manual
+                self._file_list.blockSignals(True)
                 item.setText(f'{icon} {label}\n  {p.name}')
+                item.setCheckState(
+                    Qt.CheckState.Checked if confirmed else Qt.CheckState.Unchecked)
+                self._file_list.blockSignals(False)
                 if self._data_mgr.has_annotations(p):
                     item.setForeground(QColor('#7effc8'))
                 else:
@@ -680,16 +718,56 @@ class WarpCoreWindow(QMainWindow):
         icon = SCREEN_TYPE_ICONS.get(stype, '?')
         label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
         item = QListWidgetItem(f'{icon} {label}\n  {p.name}')
+        confirmed = p.name in self._screen_types_manual
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(
+            Qt.CheckState.Checked if confirmed else Qt.CheckState.Unchecked)
         if self._data_mgr.has_annotations(p):
             item.setForeground(QColor('#7effc8'))
         else:
             item.setForeground(Qt.GlobalColor.white)
         return item
 
+    def _update_file_item_check(self, row: int):
+        """Sync checkbox state of file list item at row with _screen_types_manual."""
+        item = self._file_list.item(row)
+        if item is None or row >= len(self._screenshots):
+            return
+        fname = self._screenshots[row].name
+        confirmed = fname in self._screen_types_manual
+        self._file_list.blockSignals(True)
+        item.setCheckState(
+            Qt.CheckState.Checked if confirmed else Qt.CheckState.Unchecked)
+        self._file_list.blockSignals(False)
+
+    def _on_file_item_changed(self, item: QListWidgetItem):
+        """Checkbox toggled by user on file list item."""
+        row = self._file_list.row(item)
+        if row < 0 or row >= len(self._screenshots):
+            return
+        path = self._screenshots[row]
+        is_checked = item.checkState() == Qt.CheckState.Checked
+        stype = self._screen_types.get(path.name, 'UNKNOWN')
+        if is_checked:
+            # User confirms the current ML-detected type
+            self._screen_types_manual.add(path.name)
+            self._save_screen_type_example(path, stype)
+        else:
+            # User un-confirms — remove from manual set
+            # (type label stays, but will be re-detectable by ML next time)
+            self._screen_types_manual.discard(path.name)
+            self._data_mgr.remove_screen_type(path, stype)
+            # save() already called inside remove_screen_type
+
     def _load_screenshot(self, row: int):
         if row < 0 or row >= len(self._screenshots): return
         self._current_idx = row; path = self._screenshots[row]; stype = self._screen_types.get(path.name, 'UNKNOWN')
         self._ann_widget.load_image(path); self._exit_manual_bbox_mode(); self._update_screen_type_ui(stype)
+        # Clear Item Name and reset completer when switching to a new screenshot
+        self._completer.setCompletionPrefix('')
+        self._name_edit.blockSignals(True)
+        self._name_edit.clear()
+        self._name_edit.blockSignals(False)
         cached = self._recognition_cache.get(path.name)
         if cached is not None: self._populate_review_panel(cached, stype)
         else:
@@ -749,7 +827,10 @@ class WarpCoreWindow(QMainWindow):
         if item:
             icon = SCREEN_TYPE_ICONS.get(stype, '?')
             label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
+            self._file_list.blockSignals(True)
             item.setText(f'{icon} {label}\n  {path.name}')
+            item.setCheckState(Qt.CheckState.Checked)
+            self._file_list.blockSignals(False)
         self._update_screen_type_ui(stype)
         self._save_screen_type_example(path, stype)
 
@@ -772,22 +853,49 @@ class WarpCoreWindow(QMainWindow):
             log.error(f"Failed to save screen type example: {e}")
             QMessageBox.critical(self, "Error", f"Could not save screen type: {e}")
 
+    def _seed_matcher_from_confirmed(self, path: Path):
+        """
+        Load all confirmed crops for this image into SETSIconMatcher session examples.
+        This lets Auto-Detect benefit from user confirmations as high-priority hints.
+        """
+        try:
+            import cv2
+            from warp.recognition.icon_matcher import SETSIconMatcher
+            img = cv2.imread(str(path))
+            if img is None:
+                return
+            for ann in self._data_mgr.get_annotations(path):
+                if ann.state != AnnotationState.CONFIRMED or not ann.name:
+                    continue
+                x, y, w, h = ann.bbox
+                crop = img[y:y+h, x:x+w]
+                if crop.size > 0:
+                    SETSIconMatcher.add_session_example(crop, ann.name)
+                    log.debug(f'seed_matcher: {ann.name!r} from {path.name}')
+        except Exception as e:
+            log.warning(f'seed_matcher_from_confirmed failed: {e}')
+
     def _on_auto_detect(self):
         if self._current_idx < 0: return
         path = self._screenshots[self._current_idx]
-        if self._data_mgr.has_annotations(path):
-            reply = QMessageBox.question(self, 'Overwrite confirmed annotations?', f'"{path.name}" already has confirmed annotations.\n\nAuto-Detect Slots will overwrite them.\n\nContinue?', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-            if reply != QMessageBox.StandardButton.Yes: return
         stype = self._screen_types.get(path.name, 'UNKNOWN')
+
+        # Seed the icon matcher with all confirmed crops from this image
+        # so Auto-Detect benefits from what the user has already confirmed
+        self._seed_matcher_from_confirmed(path)
+
+        # Remove only non-confirmed items from cache; keep confirmed intact
+        existing = self._recognition_cache.get(path.name, [])
+        confirmed_items = [ri for ri in existing if ri.get('state') == 'confirmed']
         self._recognition_cache.pop(path.name, None)
-        self._start_recognition(path, stype)
+        self._start_recognition(path, stype, preserve_confirmed=confirmed_items)
 
     def _on_detect_screen_types(self):
         if not self._screenshots: return
         # Only detect files not yet manually labelled — never overwrite user choices
         self._start_screen_type_detection('detect_screen_types_button')
 
-    def _start_recognition(self, path: Path, stype: str):
+    def _start_recognition(self, path: Path, stype: str, preserve_confirmed: list | None = None):
         if self._recog_worker and self._recog_worker.isRunning():
             self._recog_worker.requestInterruption()
             self._recog_worker.wait(2000)
@@ -801,17 +909,27 @@ class WarpCoreWindow(QMainWindow):
         self._recog_dlg = _RecognitionProgressDialog(path.name, stype, parent=self)
         self._recog_dlg.show()
         self._recog_worker = RecognitionWorker(path, stype, self._sets, parent=self)
-        self._recog_worker.finished.connect(lambda items: self._on_recognition_done(path.name, stype, items))
+        self._recog_worker.finished.connect(
+            lambda items: self._on_recognition_done(path.name, stype, items,
+                                                    preserve_confirmed=preserve_confirmed))
         self._recog_worker.error.connect(self._on_recognition_error)
         self._recog_worker.start()
 
-    def _on_recognition_done(self, filename: str, stype: str, items: list):
+    def _on_recognition_done(self, filename: str, stype: str, items: list,
+                             preserve_confirmed: list | None = None):
         if self._recog_dlg:
             self._recog_dlg.close()
             self._recog_dlg = None
-        self._recognition_cache[filename] = items
+        # Merge: keep confirmed items, add new detections that don't overlap
+        if preserve_confirmed:
+            confirmed_bboxes = {ri['bbox'] for ri in preserve_confirmed if ri.get('bbox')}
+            new_items = [ri for ri in items if ri.get('bbox') not in confirmed_bboxes]
+            merged = preserve_confirmed + new_items
+        else:
+            merged = items
+        self._recognition_cache[filename] = merged
         if self._current_idx >= 0 and self._screenshots[self._current_idx].name == filename:
-            self._populate_review_panel(items, stype)
+            self._populate_review_panel(merged, stype)
 
     def _on_recognition_error(self, msg: str):
         if self._recog_dlg:
@@ -874,6 +992,13 @@ class WarpCoreWindow(QMainWindow):
             label = f'{slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
         item = QListWidgetItem(label)
         if confirmed:
+            tooltip = f'Slot: {slot}\nItem: {name or "—"}\nStatus: confirmed by user'
+        elif name:
+            tooltip = f'Slot: {slot}\nItem: {name}\nConfidence: {conf:.1%}'
+        else:
+            tooltip = f'Slot: {slot}\nNo item recognised'
+        item.setToolTip(tooltip)
+        if confirmed:
             item.setForeground(QColor('#7effc8'))
         elif not name:
             item.setForeground(QColor('#ff7e7e'))
@@ -901,10 +1026,10 @@ class WarpCoreWindow(QMainWindow):
             ri = self._recognition_items[row]
             is_confirmed = ri.get('state') == 'confirmed'
             self._btn_remove_item.setEnabled(True)
-            self._btn_edit_bbox.setEnabled(True)
-            if is_confirmed:
-                self._btn_edit_bbox.setChecked(False)
-                self._ann_widget.set_draw_mode(False)
+            # self._btn_edit_bbox.setEnabled(True)  # disabled
+            # if is_confirmed:
+            #     self._btn_edit_bbox.setChecked(False)
+            #     self._ann_widget.set_draw_mode(False)
             slot = ri['slot']
             idx = self._slot_combo.findText(slot)
             if idx < 0:
@@ -956,11 +1081,7 @@ class WarpCoreWindow(QMainWindow):
             log.warning(f'WARP CORE: contribute failed: {e}')
 
     def _on_edit_bbox_toggle(self, checked: bool):
-        if checked:
-            self._btn_add_bbox.setChecked(False)
-            self._enter_manual_bbox_mode()
-        else:
-            self._exit_manual_bbox_mode()
+        pass  # Edit BBox disabled — reserved for future implementation
 
     def _on_add_bbox_toggle(self, checked: bool):
         if checked:
@@ -979,6 +1100,26 @@ class WarpCoreWindow(QMainWindow):
         row = self._review_list.currentRow()
         if row < 0 or row >= len(self._recognition_items):
             return
+        ri = self._recognition_items[row]
+        if ri.get('state') == 'confirmed':
+            name = ri.get('name') or ri.get('slot') or 'this item'
+            reply = QMessageBox.question(
+                self, 'Remove confirmed annotation',
+                f'Remove confirmed bbox for "{name}"?\n\n'
+                f'This will delete the saved annotation for this slot.',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            # Also remove from TrainingDataManager
+            if self._current_idx >= 0 and ri.get('bbox'):
+                path = self._screenshots[self._current_idx]
+                for ann in self._data_mgr.get_annotations(path):
+                    if ann.bbox == ri['bbox']:
+                        self._data_mgr.remove_annotation(path, ann)
+                        self._data_mgr.save()
+                        break
         self._review_list.takeItem(row)
         self._recognition_items.pop(row)
         self._exit_manual_bbox_mode()
@@ -997,8 +1138,9 @@ class WarpCoreWindow(QMainWindow):
         self._update_progress()
 
     def _enter_manual_bbox_mode(self):
-        self._manual_bbox_mode = True
-        self._btn_edit_bbox.setChecked(True)
+        pass  # Resize/move disabled — reserved for future implementation
+        # self._manual_bbox_mode = True
+        # self._btn_edit_bbox.setChecked(True)
         row = self._review_list.currentRow()
         if 0 <= row < len(self._recognition_items):
             ri = self._recognition_items[row]
@@ -1027,7 +1169,7 @@ class WarpCoreWindow(QMainWindow):
                 return
 
     def _set_review_buttons_enabled(self, enabled: bool):
-        for btn in (self._btn_edit_bbox, self._btn_remove_item):
+        for btn in (self._btn_remove_item,):  # btn_edit_bbox disabled
             btn.setEnabled(enabled)
 
     def _update_add_bbox_btn(self):
@@ -1109,7 +1251,7 @@ class WarpCoreWindow(QMainWindow):
             self._name_edit.setFocus()
             self._name_edit.clear()
 
-    def _rematch_current_item(self, row: int, bbox: tuple):
+    def _rematch_current_item(self, row: int, bbox: tuple):  # noqa — kept for future use
         if row < 0 or self._current_idx < 0:
             return
         if 0 <= row < len(self._recognition_items):
@@ -1687,19 +1829,33 @@ class WarpCoreWindow(QMainWindow):
     def _update_progress(self):
         total = len(self._screenshots)
         annotated = sum(1 for p in self._screenshots if self._data_mgr.has_annotations(p))
-        self._prog_lbl.setText(f'{annotated} / {total} annotated')
+        confirmed_types = self._data_mgr.get_screen_type_counts()
+        confirmed_total = sum(confirmed_types.values())
+        # Build compact per-type summary for status bar
+        if confirmed_types:
+            type_summary = '  |  Screen types: ' + '  '.join(
+                f'{SCREEN_TYPE_ICONS.get(k,"?")}{v}' for k, v in sorted(confirmed_types.items()))
+        else:
+            type_summary = '  |  No confirmed screen types yet'
+        self._prog_lbl.setText(
+            f'{annotated}/{total} annotated  ·  {confirmed_total} confirmed screen types{type_summary}')
         self._prog_bar.setValue(int(100 * annotated / max(1, total)))
+        self._file_list.blockSignals(True)
         for row, p in enumerate(self._screenshots):
             item = self._file_list.item(row)
             if item:
                 stype = self._screen_types.get(p.name, 'UNKNOWN')
                 icon = SCREEN_TYPE_ICONS.get(stype, '?')
                 label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
+                confirmed = p.name in self._screen_types_manual
                 item.setText(f'{icon} {label}\n  {p.name}')
+                item.setCheckState(
+                    Qt.CheckState.Checked if confirmed else Qt.CheckState.Unchecked)
                 if self._data_mgr.has_annotations(p):
                     item.setForeground(QColor('#7effc8'))
                 else:
                     item.setForeground(Qt.GlobalColor.white)
+        self._file_list.blockSignals(False)
 
     def _find_sets_root(self) -> Path:
         p = Path(__file__).resolve()

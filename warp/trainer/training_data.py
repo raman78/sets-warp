@@ -312,15 +312,23 @@ class TrainingDataManager:
 
     def remove_screen_type(self, image_path: Path, screen_type: str) -> bool:
         """
-        Removes a screenshot from a screen type training folder.
-        Returns True if the file was found and removed, False otherwise.
+        Removes a screenshot from a screen type training folder
+        AND removes it from the persistent screen_types.json label.
+        Returns True if anything was removed.
         """
+        removed = False
+        # Remove from persistent label dict
+        if image_path.name in self._screen_types:
+            del self._screen_types[image_path.name]
+            self.save()
+            removed = True
+        # Remove training copy from disk
         dest = self._dir / 'screen_types' / screen_type / image_path.name
         if dest.exists():
             dest.unlink()
-            logger.info(f'Screen type example removed: {image_path.name} from screen_types/{screen_type}/')
-            return True
-        return False
+            logger.info(f'Screen type removed: {image_path.name} (label + training copy)')
+            removed = True
+        return removed
 
     def get_screen_type_counts(self) -> dict[str, int]:
         """

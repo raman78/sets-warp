@@ -67,20 +67,25 @@ class AnnotationWidget(QWidget):
         # Pending new bbox (drawn but not yet confirmed)
         self._pending_bbox: tuple | None = None
 
+        # Hover tooltip state
+        self._hover_row:   int          = -1    # row under mouse
+        self._hover_timer: object       = None  # QTimer
+
         # Review items from trainer_window (replaces _annotations for drawing)
         # Each dict: {bbox, state, name, slot}
         self._review_items: list[dict] = []
         self._selected_row: int = -1      # row for full edit mode (with handles)
         self._highlighted_row: int = -1   # row for simple highlight (red dotted box)
 
-        # Drag/resize state
-        self._drag_mode:  str | None = None   # 'move' | 'resize_NW' | etc.
-        self._drag_start: QPoint | None = None
-        self._drag_orig:  tuple | None = None  # original bbox at drag start
+        # Drag/resize state — DISABLED, reserved for future implementation
+        # self._drag_mode:  str | None = None
+        # self._drag_start: QPoint | None = None
+        # self._drag_orig:  tuple | None = None
         # Handle size in screen pixels
-        self._HANDLE = 9
+        # self._HANDLE = 9  # handle size — disabled with resize/move
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setMouseTracking(True)   # receive mouseMoveEvent without button press
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(400, 300)
         self.setStyleSheet("background: #111;")
@@ -196,28 +201,30 @@ class AnnotationWidget(QWidget):
         badge = name or slot
         if badge: painter.setPen(color); painter.setFont(QFont("", FONT_SIZE_BADGE)); painter.drawText(rect.bottomLeft() + QPoint(2, 12), badge[:28])
         if selected:
-            h = self._HANDLE; painter.setPen(QPen(QColor(0, 0, 0, 180), 1)); painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
-            for hx, hy in self._handle_positions(rect): painter.drawRect(hx - h//2, hy - h//2, h, h)
+            pass  # Resize handles disabled — reserved for future implementation
+            # h = self._HANDLE; painter.setPen(QPen(QColor(0, 0, 0, 180), 1)); painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
+            # for hx, hy in self._handle_positions(rect): painter.drawRect(hx - h//2, hy - h//2, h, h)
 
     # ---------------------------------------------------------------- mouse events
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton: return
+        self._cancel_hover_timer()
         pos = event.pos()
         if self._draw_mode_forced:
-            # Draw/Edit mode: handle resize/move, otherwise start drawing
-            if self._selected_idx >= 0:
-                handle = self._handle_hit_test(pos, self._selected_idx)
-                if handle:
-                    self._drag_mode = handle; self._drag_start = pos
-                    self._drag_orig = self._annotations[self._selected_idx].bbox
-                    self.setCursor(self._cursor_for_handle(handle)); self.update(); return
+            # Draw mode: start drawing new bbox
+            # Resize/move disabled — reserved for future implementation
+            # if self._selected_idx >= 0:
+            #     handle = self._handle_hit_test(pos, self._selected_idx)
+            #     if handle:
+            #         self._drag_mode = handle; self._drag_start = pos
+            #         self._drag_orig = self._annotations[self._selected_idx].bbox
+            #         self.setCursor(self._cursor_for_handle(handle)); self.update(); return
             self._drawing = True; self._draw_start = pos; self._draw_current = pos
             self._selected_idx = -1; self.update(); return
 
         # Normal review mode — no drag, no resize, no cursor changes
-        # Reset any leftover drag/cursor state
-        self._drag_mode = None
+        # self._drag_mode = None  # drag disabled
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
         clicked = self._hit_test(pos)
@@ -247,28 +254,25 @@ class AnnotationWidget(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent):
         pos = event.pos()
         if self._drawing: self._draw_current = pos; self.update(); return
-        if self._drag_mode and self._drag_start and self._drag_orig:
-            dx = int((pos.x() - self._drag_start.x()) / self._scale); dy = int((pos.y() - self._drag_start.y()) / self._scale); ox, oy, ow, oh = self._drag_orig; m = self._drag_mode
-            if m == 'move': nx, ny, nw, nh = ox + dx, oy + dy, ow, oh
-            elif m == 'resize_NW': nx, ny, nw, nh = ox+dx, oy+dy, ow-dx, oh-dy
-            elif m == 'resize_NE': nx, ny, nw, nh = ox,    oy+dy, ow+dx, oh-dy
-            elif m == 'resize_SW': nx, ny, nw, nh = ox+dx, oy,    ow-dx, oh+dy
-            elif m == 'resize_SE': nx, ny, nw, nh = ox,    oy,    ow+dx, oh+dy
-            elif m == 'resize_N':  nx, ny, nw, nh = ox,    oy+dy, ow,    oh-dy
-            elif m == 'resize_S':  nx, ny, nw, nh = ox,    oy,    ow,    oh+dy
-            elif m == 'resize_W':  nx, ny, nw, nh = ox+dx, oy,    ow-dx, oh
-            elif m == 'resize_E':  nx, ny, nw, nh = ox,    oy,    ow+dx, oh
-            else: nx, ny, nw, nh = ox, oy, ow, oh
-            if nw > 8 and nh > 8:
-                ann = self._annotations[self._selected_idx]; self._data_mgr.update_annotation(self._img_path, ann, bbox=(nx, ny, nw, nh)); self._annotations = self._data_mgr.get_annotations(self._img_path)
-            self.update(); return
-        # Handle cursors only in draw/edit mode
-        if self._draw_mode_forced and self._selected_idx >= 0:
-            handle = self._handle_hit_test(pos, self._selected_idx)
-            if handle:
-                self.setCursor(self._cursor_for_handle(handle))
-                return
+        # Drag/resize block — DISABLED, reserved for future implementation
+        # if self._drag_mode and self._drag_start and self._drag_orig: ...
         self.setCursor(Qt.CursorShape.ArrowCursor)
+
+        # Hover tooltip — find which review item is under mouse
+        hovered = -1
+        for idx, ri in enumerate(self._review_items):
+            bbox = ri.get('bbox')
+            if bbox and self._img_to_screen_rect(bbox).contains(pos):
+                hovered = idx
+                break
+        if hovered != self._hover_row:
+            self._hover_row = hovered
+            self._cancel_hover_timer()
+            if hovered >= 0:
+                self._start_hover_timer(pos, hovered)
+            else:
+                from PySide6.QtWidgets import QToolTip
+                QToolTip.hideText()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton: return
@@ -278,14 +282,65 @@ class AnnotationWidget(QWidget):
                 screen_rect = QRect(self._draw_start, self._draw_current).normalized()
                 if screen_rect.width() > 8 and screen_rect.height() > 8: self._pending_bbox = self._screen_to_img_rect(screen_rect); self.annotation_added.emit(self._pending_bbox)
             self._draw_start = None; self._draw_current = None
-        if self._drag_mode: self._drag_mode = None; self._drag_start = None; self._drag_orig = None; self.setCursor(Qt.CursorShape.ArrowCursor)
+        # if self._drag_mode: ...  # drag cleanup disabled
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Delete and self._selected_idx >= 0:
-            ann = self._annotations[self._selected_idx]; self._data_mgr.remove_annotation(self._img_path, ann); self._annotations = self._data_mgr.get_annotations(self._img_path); self._selected_idx = -1; self.update()
+            ann = self._annotations[self._selected_idx]
+            if ann.state == AnnotationState.CONFIRMED:
+                from PySide6.QtWidgets import QMessageBox
+                name = ann.name or ann.slot or 'this item'
+                reply = QMessageBox.question(
+                    self, 'Remove confirmed annotation',
+                    f'Remove confirmed bbox for "{name}"?',
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+            self._data_mgr.remove_annotation(self._img_path, ann)
+            self._data_mgr.save()
+            self._annotations = self._data_mgr.get_annotations(self._img_path)
+            self._selected_idx = -1
+            self.update()
 
-    def _handle_positions(self, rect: QRect) -> list[tuple[int, int]]:
+    # ---------------------------------------------------------------- resize/move — DISABLED
+    # Reserved for future implementation. Uncomment to restore.
+
+    def _cancel_hover_timer(self):
+        if self._hover_timer is not None:
+            self._hover_timer.stop()
+            self._hover_timer = None
+
+    def _start_hover_timer(self, pos, row: int):
+        from PySide6.QtCore import QTimer
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.timeout.connect(lambda: self._show_hover_tooltip(row))
+        self._hover_timer.start(1000)  # 1 second
+
+    def _show_hover_tooltip(self, row: int):
+        if row < 0 or row >= len(self._review_items):
+            return
+        ri = self._review_items[row]
+        name  = ri.get('name') or '— unmatched —'
+        slot  = ri.get('slot', '?')
+        conf  = ri.get('conf', 0.0)
+        state = ri.get('state', 'pending')
+        if state == 'confirmed':
+            text = f'<b>{slot}</b><br>{name}<br><i>confirmed</i>'
+        else:
+            pct = f'{conf:.1%}'
+            color = ('#7effc8' if conf >= 0.85 else
+                     '#e8c060' if conf >= 0.70 else '#ff9966')
+            text = (f'<b>{slot}</b><br>{name}'
+                    f'<br>Confidence: <span style="color:{color}">{pct}</span>')
+        from PySide6.QtWidgets import QToolTip
+        from PySide6.QtGui import QCursor
+        QToolTip.showText(QCursor.pos(), text, self)
+
+    def _handle_positions(self, rect: QRect) -> list[tuple[int, int]]:  # noqa — kept for future use
         l, t, r, b = rect.left(), rect.top(), rect.right(), rect.bottom(); mx, my = (l + r) // 2, (t + b) // 2
         return [(l, t), (mx, t), (r, t), (l, my), (r, my), (l, b), (mx, b), (r, b), (mx, my)]
 

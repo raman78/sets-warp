@@ -67,7 +67,7 @@
 
 - **Body Armor** — 0 or 1 slot (optional).
 - **EV Suit** — 0 or 1 slot (optional).
-- **Personal Shield Generator** — 1 slot. Mandatory.
+- **Personal Shield** — 1 slot. Mandatory. Ground-only (cache: `personal_shield`). Distinct from space Ship Shields (cache: `shield`).
 - **Weapons** — 1 to 2 slots (primary + secondary). Mandatory.
 - **Kit Frame** — 1 slot. Mandatory. Determines available Module slots.
 - **Kit Modules** — 1 to 6 slots. Maximum 6. Career-specific (Engineering, Science, Tactical) unless labelled Universal.
