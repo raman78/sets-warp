@@ -50,7 +50,7 @@
 - T6-X2 upgrade (on top of X): +1 Device slot, +1 Starship Trait slot.
 - Valid tier values: **T1, T2, T3, T4, T5, T5-U, T6, T6-X, T6-X2**.
 
-> **WARP:** Exact slot counts per ship are sourced from `ship_list.json` (783 ships) via `ShipDB` in `warp_importer.py`. Lookup order: exact name match → fuzzy match (cutoff 0.72) → type-keyword fallback profile. Ship tier is extracted from the screenshot via OCR in `TextExtractor`.
+> **WARP:** Exact slot counts per ship are sourced from `ship_list.json` (783 ships) via `ShipDB` in `warp_importer.py`. Lookup is by **ship type** (not name — name is cosmetic only). Lookup order: (1) exact type match → (2) word-subset match (handles OCR omitting subtype words, e.g. `"Fleet Temporal Science Vessel"` → `"Fleet Nautilus Temporal Science Vessel"`; when multiple candidates, ranked by boff seating similarity then fewest extra words) → (3) fuzzy match (cutoff 0.68) → (4) keyword-based fallback profile. Ship tier and type are extracted from the screenshot via OCR in `TextExtractor` using a wide top-band scan anchored on the Tier token.
 
 ---
 
@@ -124,4 +124,4 @@ The **Screen Type** detected from a screenshot determines which slot types WARP 
 
 When a user interacts with a specific slot during review, the item name search must be limited to items compatible with that slot type (rules from the Console Placement section above).
 
-> **WARP:** Implemented implicitly via the SETS cache structure — each slot type is a separate dict in `cache.equipment`, cross-populated at startup. Direct slot-scoped filtering in the WARP annotation widget's item name field is **not yet implemented** (pending feature).
+> **WARP:** Implemented implicitly via the SETS cache structure — each slot type is a separate dict in `cache.equipment`, cross-populated at startup. `_make_equipment_item()` in `warp_dialog.py` enforces this implicitly — if an item is not present in the target slot's cache bucket, it is rejected. Direct slot-scoped filtering in the WARP CORE annotation widget's item name autocomplete field is **not yet implemented** (pending feature).

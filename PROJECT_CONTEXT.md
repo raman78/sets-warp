@@ -107,20 +107,20 @@ Cache age: cargo data is re-downloaded after 7 days.
 
 | File | Responsibility |
 |---|---|
-| `text_extractor.py` | OCR — extracts ship name, type, tier, and screen type from a screenshot. Detects: SPACE, GROUND, SPACE_TRAITS, GROUND_TRAITS, BOFFS, SPEC. |
-| `screen_classifier.py` | Classifies screenshot type. Pipeline: (1) ONNX MobileNetV3-Small → (2) session k-NN on HSV histograms → (3) OCR keyword fallback. |
-| `layout_detector.py` | Detects icon bounding boxes per slot. Pipeline: (1) pixel analysis (dark separators) → (2) learned layouts → (3) OCR label positions → (4) default calibration anchors. |
-| `icon_matcher.py` | Matches a cropped icon against the SETS image cache. Pipeline: (1) multi-scale template matching (cv2 TM_CCOEFF_NORMED) → (2) HSV color histogram → (3) optional ONNX EfficientNet-B0 from HF Hub. |
+| `text_extractor.py` | OCR — extracts ship name, type, tier, and screen type from a screenshot. Two-stage scan: (1) fast partial scan (top-right + bottom) for traits/boffs/spec headers; (2) full-image scan fallback for MIXED layouts. Ship info uses wide top-band (20% height) scan anchored on Tier token (`T6-X2` etc.). Slot labels used as screen type signals: space equipment labels (`Fore Weapons`, `Warp Core`, etc.), ground labels (`Kit Modules`, `Body Armor`, etc.). |
+| `screen_classifier.py` | Classifies screenshot type using a two-stage pipeline: (1) PyTorch MobileNetV3-Small (`.pt` native format, fine-tuned locally); (2) session k-NN on HSV histograms as fallback. OCR keyword fallback from `text_extractor.py` is used when both ML stages are uncertain. |
+| `layout_detector.py` | Detects icon bounding boxes per slot. Pipeline: (1) confirmed annotations used directly as ground-truth bboxes when available; (2) pixel analysis — counts bright icon cells scanning right-to-left, single-slot rows (Deflector, Engines, Shield, Warp Core) always use profile count exactly; (3) learned layouts (saved anchors with slot_counts); (4) default calibration anchors. |
+| `icon_matcher.py` | Matches a cropped icon against the SETS image cache. Pipeline: (1) multi-scale template matching (cv2 TM_CCOEFF_NORMED) with session examples; (2) HSV color histogram k-NN; (3) local PyTorch EfficientNet-B0 (`.pt`, fine-tuned on confirmed crops); (4) HuggingFace ONNX fallback. |
 
 #### `warp/trainer/`
 
 | File | Responsibility |
 |---|---|
-| `trainer_window.py` | WARP CORE — main trainer UI window (QMainWindow). Review, annotate, and correct WARP recognition results. |
+| `trainer_window.py` | WARP CORE — main trainer UI window (QMainWindow). Review, annotate, and correct WARP recognition results. Features: auto-accept checkbox (threshold-based, persisted via QSettings), keyboard shortcuts (Alt+A add bbox, Alt+R remove, Enter accept, Del remove), two-pass icon matching (slot-restricted pass 1, unrestricted fallback pass 2 when conf < 0.40), duplicate bbox overlap warning on confirm. |
 | `annotation_widget.py` | Widget for annotating individual icon crops (confirm / reject / relabel). |
-| `training_data.py` | `TrainingDataManager` — manages confirmed annotation crops on disk. |
-| `local_trainer.py` | `LocalTrainWorker` (QThread) — fine-tunes EfficientNet-B0 (torchvision) on confirmed annotations, exports to ONNX (`warp/models/icon_classifier.onnx`). |
-| `screen_type_trainer.py` | `ScreenTypeTrainerWorker` — fine-tunes MobileNetV3-Small on user-corrected screenshots, exports to ONNX (`warp/models/screen_classifier.onnx`). |
+| `training_data.py` | `TrainingDataManager` — manages confirmed annotation crops on disk. Includes `repair_crop_index()` for data consistency, `_sync_crop_index()` for rename/re-export on update. |
+| `local_trainer.py` | `LocalTrainWorker` (QThread) — fine-tunes EfficientNet-B0 on confirmed annotations. Saves native PyTorch `.pt` format (replaced ONNX dynamo exporter which produced uniform-output models). |
+| `screen_type_trainer.py` | `ScreenTypeTrainerWorker` — fine-tunes MobileNetV3-Small. Saves native PyTorch `.pt` format. |
 | `sync.py` | Syncs training data to/from HuggingFace Hub (`SyncWorker`, `HFTokenDialog`). |
 
 #### `warp/knowledge/`
@@ -141,15 +141,24 @@ Cache age: cargo data is re-downloaded after 7 days.
 
 ### Import Pipeline (`warp/warp_importer.py`)
 
-Full pipeline per screenshot folder:
+Full pipeline per screenshot:
 
-1. `TextExtractor` reads ship name, type, and tier from screenshot.
-2. `ShipDB` looks up exact slot counts from `ship_list.json` (783 ships, fields: `fore`, `aft`, `experimental`, `hangars`, `secdeflector`, `uniconsole`, `consolestac`, `consoleseng`, `consolessci`, `devices`).
-3. Fallback: category-based slot profile if ship not found in DB.
-4. `LayoutDetector` finds bounding boxes per slot using ship profile to constrain counts.
-5. `SETSIconMatcher` matches each cropped icon against the SETS image cache.
-6. Results are written to `sets_app.build` via `slot_equipment_item` / `slot_trait_item`.
-7. `sets_app.autosave()` is called.
+1. `TextExtractor` reads ship name, type, and tier from screenshot (OCR runs in WARP dialog mode; skipped in WARP CORE trainer mode via `from_trainer=True` flag).
+2. `ShipDB` looks up exact slot counts from `ship_list.json` (783 ships). **Lookup order:**
+   a. Exact `type` field match
+   b. Word-subset match — OCR words ⊆ DB type words (handles omitted subtype words like `"Fleet Temporal Science Vessel"` → `"Fleet Nautilus Temporal Science Vessel"`); when multiple candidates, ranked by boff seating similarity (Jaccard) then fewest extra words
+   c. Standard fuzzy match (cutoff 0.68)
+   d. Keyword-based fallback profile
+3. Confirmed annotations loaded from `annotations.json` — used to:
+   - Override slot counts (confirmed counts are authoritative)
+   - Supply exact ground-truth bboxes (bypasses pixel analysis)
+   - Provide ship name / type / tier when OCR is unavailable
+   - Extract boff seating for ship disambiguation
+4. Pixel-count profile refinement (only for slots not covered by confirmed annotations): `_profile_from_pixel_counts()` matches pixel counts against `_KEYWORD_PROFILES` to infer unmeasurable slots (Sec-Def, Experimental, Hangars).
+5. `LayoutDetector` finds bounding boxes per slot using constrained profile.
+6. `SETSIconMatcher` matches each cropped icon. Items filtered by `SLOT_VALID_TYPES` (type-to-slot compatibility) and `MIN_ACCEPT_CONF = 0.40`.
+7. Results written to `sets_app.build` via `slot_equipment_item` / `slot_trait_item`.
+8. `sets_app.autosave()` called.
 
 ### Dialog Flow (`warp/warp_dialog.py`)
 
@@ -157,8 +166,15 @@ Multi-step QDialog:
 1. Select build type (SPACE / GROUND / SPACE_SKILLS / GROUND_SKILLS)
 2. Select folder of screenshots
 3. Background worker (`_ImportWorker` QThread) runs the pipeline with progress bar
-4. Review results — confirm, reject, or relabel each recognised item
-5. Apply to current SETS build
+4. Results applied automatically to current SETS build
+5. Ship selection: fuzzy-matched ship type → `cache.ships` lookup → `select_ship` logic (button text, image load via `exec_in_thread` from `src.widgets`, tier combo, `align_space_frame`, `_save_session_slots` / `_restore_session_slots`)
+
+### ShipDB Boff Seating (`warp/warp_importer.py` — `ShipDB`)
+
+Two helper methods support ship disambiguation via boff seating:
+
+- `extract_boff_seating_from_annotations(anns)` — groups confirmed `Boff *` annotations by y-proximity (≤10px = same row/seat), counts abilities per type, maps to ShipDB profession strings. Rank inferred from ability count (4=Commander, 3=Lt Commander, 2=Lieutenant, 1=Ensign; -1=unknown for mixed rows).
+- `score_ship_boff_match(ship_entry, detected_seats)` — Jaccard similarity between detected profession set and ship's `boffs` field profession set. Returns 0.0–1.0 (0.5 = no data / neutral).
 
 ### Community Knowledge Sync (`warp/knowledge/sync_client.py`)
 
@@ -178,8 +194,8 @@ Multi-step QDialog:
 | PySide6 ≥6.7, <6.10 | GUI framework (all windows, widgets, dialogs) |
 | OpenCV (`opencv-python-headless`) | Template matching, image cropping, histogram comparison |
 | EasyOCR | OCR for ship name / screen type extraction from screenshots |
-| ONNX Runtime | Inference for screen classifier (MobileNetV3) and icon classifier (EfficientNet-B0) |
-| PyTorch + torchvision | Local training of icon classifier and screen classifier (fine-tuning on user-confirmed data); exported to ONNX after training |
+| ONNX Runtime | Inference fallback for icon classifier (HuggingFace ONNX model) |
+| PyTorch + torchvision | Local training and inference for icon classifier (EfficientNet-B0) and screen classifier (MobileNetV3-Small); native `.pt` format (replaced ONNX dynamo exporter) |
 | HuggingFace Hub | Download of pre-trained ONNX models; upload/sync of training data |
 | requests | HTTP client for wiki/GitHub downloads |
 | cloudscraper, curl_cffi | Listed in dependencies but **not currently used** — intended for future Cloudflare bypass |
@@ -193,3 +209,6 @@ Multi-step QDialog:
 1. **Cloudflare blocking stowiki** — `download_cargo_table` falls back to GitHub cache, but the cache may lag behind the live wiki. `cloudscraper` and `curl_cffi` are installed but not wired up.
 2. **`cloudscraper` / `curl_cffi` dead imports** — present in `pyproject.toml` but never imported. Either implement the bypass or remove the dependencies.
 3. **`requests_html`, `lxml_html_clean`, `cssselect`** — also in `pyproject.toml` but not visibly used in the main codebase (may be used indirectly or are leftovers).
+4. **Fore/aft weapon cross-validation gap** — WARP does not pre-filter fore-only weapons (e.g. Dual Heavy Cannons) from Aft slots. SETS handles this at the widget level; WARP relies on icon matcher confidence and type validation only.
+5. **Boff rank unknown in MIXED screens** — boff ability rows in MIXED screenshots cannot be reliably split into individual seats (abilities from multiple seats share similar y-coordinates). Rank is inferred from ability count per visual row, which may be incorrect for mixed-type rows. A dedicated BOFFS screen provides accurate rank data via OCR.
+6. **Direct slot-scoped filtering in WARP CORE name field** — not yet implemented. The item name autocomplete in the annotation widget shows all items for the slot group, not filtered by the exact slot type rules (e.g. Engineering Console shown when Science Console slot is selected). Pending feature.

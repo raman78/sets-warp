@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QWidget, QSizePolicy, QScrollArea
 from PySide6.QtCore    import Qt, QRect, QPoint, QRectF, Signal, QSize
 from PySide6.QtGui     import (
     QPainter, QPixmap, QColor, QPen, QBrush, QFont,
-    QMouseEvent, QPaintEvent, QKeyEvent
+    QMouseEvent, QPaintEvent, QKeyEvent, QCursor
 )
 
 from warp.trainer.training_data import TrainingDataManager, Annotation, AnnotationState
@@ -23,9 +23,13 @@ STATE_COLORS = {
     AnnotationState.SKIPPED:   QColor(160, 160, 160, 120),   # grey
 }
 
-DRAW_PEN_WIDTH   = 2
+DRAW_PEN_WIDTH     = 2
 SELECTED_PEN_WIDTH = 3
-FONT_SIZE_BADGE  = 9
+FONT_SIZE_BADGE    = 9
+
+# Colour of the bbox being drawn (Add BBox / Alt+LMB).
+# Change this one value to update both the drawn rectangle and the cursor colour.
+DRAW_BBOX_COLOR = QColor(255, 200, 0)   # yellow — matches Add BBox button style
 
 
 class AnnotationWidget(QWidget):
@@ -39,7 +43,7 @@ class AnnotationWidget(QWidget):
 
     annotation_added = Signal(tuple)    # (x, y, w, h) in image coords
     item_selected    = Signal(dict)     # annotation dict
-    item_deselected  = Signal()          # user clicked empty area or toggled off
+    item_deselected  = Signal()         # user clicked empty area
 
     def __init__(self, data_manager: TrainingDataManager, parent=None):
         super().__init__(parent)
@@ -49,12 +53,10 @@ class AnnotationWidget(QWidget):
         self._scale:    float          = 1.0
         self._offset_x: int            = 0
         self._offset_y: int            = 0
-        # Zoom state (Ctrl+wheel)
-        self._zoom:       float        = 1.0   # 1.0 – 6.0
-        self._fit_scale:  float        = 1.0   # scale to fit image in viewport
 
         # Mode flags — drawing/editing only active when explicitly enabled
         self._draw_mode_forced: bool = False   # set by + Add BBox / Edit BBox
+        self._alt_draw: bool = False             # True when drawing via Alt+LMB
 
         # Drawing state
         self._drawing       = False
@@ -70,25 +72,20 @@ class AnnotationWidget(QWidget):
         # Pending new bbox (drawn but not yet confirmed)
         self._pending_bbox: tuple | None = None
 
-        # Hover tooltip state
-        self._hover_row:   int          = -1    # row under mouse
-        self._hover_timer: object       = None  # QTimer
-
         # Review items from trainer_window (replaces _annotations for drawing)
         # Each dict: {bbox, state, name, slot}
         self._review_items: list[dict] = []
         self._selected_row: int = -1      # row for full edit mode (with handles)
         self._highlighted_row: int = -1   # row for simple highlight (red dotted box)
 
-        # Drag/resize state — DISABLED, reserved for future implementation
-        # self._drag_mode:  str | None = None
-        # self._drag_start: QPoint | None = None
-        # self._drag_orig:  tuple | None = None
+        # Drag/resize state
+        self._drag_mode:  str | None = None   # 'move' | 'resize_NW' | etc.
+        self._drag_start: QPoint | None = None
+        self._drag_orig:  tuple | None = None  # original bbox at drag start
         # Handle size in screen pixels
-        # self._HANDLE = 9  # handle size — disabled with resize/move
+        self._HANDLE = 9
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setMouseTracking(True)   # receive mouseMoveEvent without button press
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(400, 300)
         self.setStyleSheet("background: #111;")
@@ -105,10 +102,7 @@ class AnnotationWidget(QWidget):
         self._drawing       = False
         self._highlighted_row = -1
         self._selected_row = -1
-        self._zoom = 1.0
         self._compute_transform()
-        self.resize(self.sizeHint())
-        self.updateGeometry()
         if self._pixmap:
             self.resize(self._pixmap.width(), self._pixmap.height())
         self.update()
@@ -162,10 +156,7 @@ class AnnotationWidget(QWidget):
     def paintEvent(self, event: QPaintEvent):
         painter = QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._pixmap:
-            s  = self._fit_scale * self._zoom
-            zw = int(self._pixmap.width()  * s)
-            zh = int(self._pixmap.height() * s)
-            painter.drawPixmap(self._offset_x, self._offset_y, zw, zh, self._pixmap)
+            painter.drawPixmap(self._offset_x, self._offset_y, self._pixmap.width(), self._pixmap.height(), self._pixmap)
         else:
             painter.fillRect(self.rect(), QColor("#111")); painter.setPen(QColor("#555")); painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No image loaded\nOpen a folder to start")
             return
@@ -174,21 +165,25 @@ class AnnotationWidget(QWidget):
         # 1. Background (unselected) items
         for idx, ri in enumerate(self._review_items):
             if idx == self._selected_row or idx == self._highlighted_row: continue
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), ri.get('conf',0.0), False, False)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, False)
 
         # 2. Highlighted item (Red Dashed)
         if self._highlighted_row != -1 and self._highlighted_row < len(self._review_items) and self._highlighted_row != self._selected_row:
             ri = self._review_items[self._highlighted_row]
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), ri.get('conf',0.0), False, True)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, True)
 
         # 3. Selected item (Full Edit with handles)
         if self._selected_row != -1 and self._selected_row < len(self._review_items):
             ri = self._review_items[self._selected_row]
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), ri.get('conf',0.0), True, False)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), True, False)
 
         # In-progress drawing (while dragging)
         if self._drawing and self._draw_start and self._draw_current:
-            pen = QPen(QColor(255, 255, 0), DRAW_PEN_WIDTH, Qt.PenStyle.DashLine); painter.setPen(pen); painter.setBrush(QBrush(QColor(255, 255, 0, 30))); rect = QRect(self._draw_start, self._draw_current).normalized(); painter.drawRect(rect)
+            pen = QPen(DRAW_BBOX_COLOR, DRAW_PEN_WIDTH, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(QBrush(QColor(DRAW_BBOX_COLOR.red(), DRAW_BBOX_COLOR.green(), DRAW_BBOX_COLOR.blue(), 30)))
+            rect = QRect(self._draw_start, self._draw_current).normalized()
+            painter.drawRect(rect)
 
     _STATE_COLOR = {
         'pending':   QColor(200, 200, 200, 180),
@@ -196,65 +191,56 @@ class AnnotationWidget(QWidget):
         'new':       QColor(255, 220,   0, 200),
     }
 
-    def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, conf: float, selected: bool, highlighted: bool):
+    def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, selected: bool, highlighted: bool):
         if not bbox: return
-        if (highlighted or selected) and state == 'confirmed':
-            # Highlighted or selected confirmed — bright green dashed, thicker
-            color = QColor(120, 255, 150, 230); pw = SELECTED_PEN_WIDTH + 1; style = Qt.PenStyle.DashLine
-        elif highlighted and not selected:
-            # Highlighted pending/other — red dashed, thicker
+        if highlighted and not selected:
             color = QColor(255, 50, 50, 220); pw = SELECTED_PEN_WIDTH + 1; style = Qt.PenStyle.DashLine
         else:
             color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = SELECTED_PEN_WIDTH if selected else DRAW_PEN_WIDTH; style = Qt.PenStyle.SolidLine
         pen = QPen(color, pw, style); painter.setPen(pen); painter.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 25))); rect = self._img_to_screen_rect(bbox); painter.drawRect(rect)
-        # Badge text removed — info shown via hover tooltip instead
+        badge = name or slot
+        if badge: painter.setPen(color); painter.setFont(QFont("", FONT_SIZE_BADGE)); painter.drawText(rect.bottomLeft() + QPoint(2, 12), badge[:28])
         if selected:
-            pass  # Resize handles disabled — reserved for future implementation
-            # h = self._HANDLE; painter.setPen(QPen(QColor(0, 0, 0, 180), 1)); painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
-            # for hx, hy in self._handle_positions(rect): painter.drawRect(hx - h//2, hy - h//2, h, h)
+            h = self._HANDLE; painter.setPen(QPen(QColor(0, 0, 0, 180), 1)); painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
+            for hx, hy in self._handle_positions(rect): painter.drawRect(hx - h//2, hy - h//2, h, h)
 
     # ---------------------------------------------------------------- mouse events
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton: return
-        self._cancel_hover_timer()
         pos = event.pos()
+        # Alt+LMB drag — start drawing a new bbox without toggling Add BBox button
+        alt_held = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
+        if alt_held:
+            self._drawing = True
+            self._draw_start = pos
+            self._draw_current = pos
+            self._selected_idx = -1
+            self._alt_draw = True  # flag: emitted via alt, not button
+            self.setCursor(self._make_draw_cursor())
+            self.update()
+            return
+        self._alt_draw = False
         if self._draw_mode_forced:
-            # Draw mode: start drawing new bbox
-            # Resize/move disabled — reserved for future implementation
-            # if self._selected_idx >= 0:
-            #     handle = self._handle_hit_test(pos, self._selected_idx)
-            #     if handle:
-            #         self._drag_mode = handle; self._drag_start = pos
-            #         self._drag_orig = self._annotations[self._selected_idx].bbox
-            #         self.setCursor(self._cursor_for_handle(handle)); self.update(); return
-            self._drawing = True; self._draw_start = pos; self._draw_current = pos
-            self._selected_idx = -1; self.update(); return
-
-        # Normal review mode — no drag, no resize, no cursor changes
-        # self._drag_mode = None  # drag disabled
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-
+            if self._selected_idx >= 0:
+                handle = self._handle_hit_test(pos, self._selected_idx)
+                if handle:
+                    self._drag_mode = handle; self._drag_start = pos; self._drag_orig = self._annotations[self._selected_idx].bbox; self.setCursor(self._cursor_for_handle(handle)); self.update(); return
+            self._drawing = True
+            self._draw_start = pos
+            self._draw_current = pos
+            self._selected_idx = -1
+            self.setCursor(self._make_draw_cursor())
+            self.update()
+            return
+        if self._selected_idx >= 0:
+            handle = self._handle_hit_test(pos, self._selected_idx)
+            if handle: self._drag_mode = handle; self._drag_start = pos; self._drag_orig = self._annotations[self._selected_idx].bbox; self.setCursor(self._cursor_for_handle(handle)); self.update(); return
         clicked = self._hit_test(pos)
         if clicked >= 0:
-            # Toggle: clicking the already-highlighted item deselects it
-            if clicked == self._highlighted_row:
-                self._highlighted_row = -1
-                self._selected_idx = -1
-                self.item_deselected.emit()
-                self.update()
-                return
-            self._selected_idx = clicked
-            self._pending_bbox = None
-            # Emit from review_items if available (review mode), else from annotations
-            if self._review_items and clicked < len(self._review_items):
-                ri = self._review_items[clicked]
-                self.item_selected.emit({'slot': ri.get('slot',''), 'name': ri.get('name',''), 'bbox': ri.get('bbox')})
-            elif clicked < len(self._annotations):
-                ann = self._annotations[clicked]
-                self.item_selected.emit({'slot': ann.slot, 'name': ann.name, 'bbox': ann.bbox})
+            self._selected_idx = clicked; self._pending_bbox = None; ann = self._annotations[clicked]
+            self.item_selected.emit({'slot': ann.slot, 'name': ann.name, 'bbox': ann.bbox})
         else:
-            self._highlighted_row = -1
             self._selected_idx = -1
             self.item_deselected.emit()
         self.update()
@@ -262,26 +248,25 @@ class AnnotationWidget(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent):
         pos = event.pos()
         if self._drawing: self._draw_current = pos; self.update(); return
-        # Drag/resize block — DISABLED, reserved for future implementation
-        # if self._drag_mode and self._drag_start and self._drag_orig: ...
+        if self._drag_mode and self._drag_start and self._drag_orig:
+            dx = int((pos.x() - self._drag_start.x()) / self._scale); dy = int((pos.y() - self._drag_start.y()) / self._scale); ox, oy, ow, oh = self._drag_orig; m = self._drag_mode
+            if m == 'move': nx, ny, nw, nh = ox + dx, oy + dy, ow, oh
+            elif m == 'resize_NW': nx, ny, nw, nh = ox+dx, oy+dy, ow-dx, oh-dy
+            elif m == 'resize_NE': nx, ny, nw, nh = ox,    oy+dy, ow+dx, oh-dy
+            elif m == 'resize_SW': nx, ny, nw, nh = ox+dx, oy,    ow-dx, oh+dy
+            elif m == 'resize_SE': nx, ny, nw, nh = ox,    oy,    ow+dx, oh+dy
+            elif m == 'resize_N':  nx, ny, nw, nh = ox,    oy+dy, ow,    oh-dy
+            elif m == 'resize_S':  nx, ny, nw, nh = ox,    oy,    ow,    oh+dy
+            elif m == 'resize_W':  nx, ny, nw, nh = ox+dx, oy,    ow-dx, oh
+            elif m == 'resize_E':  nx, ny, nw, nh = ox,    oy,    ow+dx, oh
+            else: nx, ny, nw, nh = ox, oy, ow, oh
+            if nw > 8 and nh > 8:
+                ann = self._annotations[self._selected_idx]; self._data_mgr.update_annotation(self._img_path, ann, bbox=(nx, ny, nw, nh)); self._annotations = self._data_mgr.get_annotations(self._img_path)
+            self.update(); return
+        if self._selected_idx >= 0:
+            handle = self._handle_hit_test(pos, self._selected_idx)
+            if handle: self.setCursor(self._cursor_for_handle(handle)); return
         self.setCursor(Qt.CursorShape.ArrowCursor)
-
-        # Hover tooltip — find which review item is under mouse
-        hovered = -1
-        for idx, ri in enumerate(self._review_items):
-            bbox = ri.get('bbox')
-            if bbox and self._img_to_screen_rect(bbox).contains(pos):
-                hovered = idx
-                break
-
-        if hovered != self._hover_row:
-            self._hover_row = hovered
-            self._cancel_hover_timer()
-            if hovered >= 0:
-                self._start_hover_timer(pos, hovered)
-            else:
-                from PySide6.QtWidgets import QToolTip
-                QToolTip.hideText()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton: return
@@ -289,79 +274,24 @@ class AnnotationWidget(QWidget):
             self._drawing = False
             if self._draw_start and self._draw_current:
                 screen_rect = QRect(self._draw_start, self._draw_current).normalized()
-                if screen_rect.width() > 8 and screen_rect.height() > 8: self._pending_bbox = self._screen_to_img_rect(screen_rect); self.annotation_added.emit(self._pending_bbox)
-            self._draw_start = None; self._draw_current = None
-        # if self._drag_mode: ...  # drag cleanup disabled
+                if screen_rect.width() > 8 and screen_rect.height() > 8:
+                    self._pending_bbox = self._screen_to_img_rect(screen_rect)
+                    self.annotation_added.emit(self._pending_bbox)
+            self._draw_start = None
+            self._draw_current = None
+            if getattr(self, '_alt_draw', False):
+                self._alt_draw = False
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+        if self._drag_mode:
+            self._drag_mode = None; self._drag_start = None
+            self._drag_orig = None; self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Delete and self._selected_idx >= 0:
-            ann = self._annotations[self._selected_idx]
-            if ann.state == AnnotationState.CONFIRMED:
-                from PySide6.QtWidgets import QMessageBox
-                name = ann.name or ann.slot or 'this item'
-                reply = QMessageBox.question(
-                    self, 'Remove confirmed annotation',
-                    f'Remove confirmed bbox for "{name}"?',
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if reply != QMessageBox.StandardButton.Yes:
-                    return
-            self._data_mgr.remove_annotation(self._img_path, ann)
-            self._data_mgr.save()
-            self._annotations = self._data_mgr.get_annotations(self._img_path)
-            self._selected_idx = -1
-            self.update()
+            ann = self._annotations[self._selected_idx]; self._data_mgr.remove_annotation(self._img_path, ann); self._annotations = self._data_mgr.get_annotations(self._img_path); self._selected_idx = -1; self.update()
 
-    # ---------------------------------------------------------------- resize/move — DISABLED
-    # Reserved for future implementation. Uncomment to restore.
-
-    def _cancel_hover_timer(self):
-        if self._hover_timer is not None:
-            self._hover_timer.stop()
-            self._hover_timer = None
-
-    def _start_hover_timer(self, pos, row: int):
-        from PySide6.QtCore import QTimer
-        self._hover_timer = QTimer(self)
-        self._hover_timer.setSingleShot(True)
-        self._hover_timer.timeout.connect(lambda: self._show_hover_tooltip(row))
-        self._hover_timer.start(1000)  # 1 second
-
-    def _show_hover_tooltip(self, row: int):
-        if row < 0 or row >= len(self._review_items):
-            return
-        ri        = self._review_items[row]
-        name      = ri.get('name') or '— unmatched —'
-        slot      = ri.get('slot', '?')
-        conf      = ri.get('conf', 0.0)
-        state     = ri.get('state', 'pending')
-        orig_name = ri.get('orig_name', '')
-
-        if state == 'confirmed':
-            lines = [f'<b>{slot}</b>', name, '<i>confirmed by user</i>']
-            # Show what ML originally recognised
-            if conf > 0.0:  # real confidence saved from this or previous session
-                color = ('#7effc8' if conf >= 0.85 else
-                         '#e8c060' if conf >= 0.70 else '#ff9966')
-                ml_text = orig_name if orig_name and orig_name != name else name
-                lines.append(
-                    f'ML: <span style="color:{color}">{ml_text} ({conf:.1%})</span>')
-            else:  # conf=0.0 means unknown (old annotation without saved confidence)
-                lines.append('<span style="color:#888">ML: unknown (previous session)</span>')
-            text = '<br>'.join(lines)
-        else:
-            pct   = f'{conf:.1%}'
-            color = ('#7effc8' if conf >= 0.85 else
-                     '#e8c060' if conf >= 0.70 else '#ff9966')
-            text  = (f'<b>{slot}</b><br>{name}'
-                     f'<br>Confidence: <span style="color:{color}">{pct}</span>')
-        from PySide6.QtWidgets import QToolTip
-        from PySide6.QtGui import QCursor
-        QToolTip.showText(QCursor.pos(), text, self)
-
-    def _handle_positions(self, rect: QRect) -> list[tuple[int, int]]:  # noqa — kept for future use
+    def _handle_positions(self, rect: QRect) -> list[tuple[int, int]]:
         l, t, r, b = rect.left(), rect.top(), rect.right(), rect.bottom(); mx, my = (l + r) // 2, (t + b) // 2
         return [(l, t), (mx, t), (r, t), (l, my), (r, my), (l, b), (mx, b), (r, b), (mx, my)]
 
@@ -375,119 +305,40 @@ class AnnotationWidget(QWidget):
         return None
 
     @staticmethod
+    def _make_draw_cursor() -> QCursor:
+        """Create a crosshair cursor coloured with DRAW_BBOX_COLOR."""
+        size = 12
+        px = QPixmap(size, size)
+        px.fill(Qt.GlobalColor.transparent)
+        p = QPainter(px)
+        p.setPen(QPen(DRAW_BBOX_COLOR, 1))
+        cx = size // 2
+        p.drawLine(cx, 0, cx, size - 1)   # vertical
+        p.drawLine(0, cx, size - 1, cx)   # horizontal
+        p.end()
+        return QCursor(px, cx, cx)
+
+    @staticmethod
     def _cursor_for_handle(handle: str) -> Qt.CursorShape:
         return {'move': Qt.CursorShape.SizeAllCursor, 'resize_NW': Qt.CursorShape.SizeFDiagCursor, 'resize_SE': Qt.CursorShape.SizeFDiagCursor, 'resize_NE': Qt.CursorShape.SizeBDiagCursor, 'resize_SW': Qt.CursorShape.SizeBDiagCursor, 'resize_N': Qt.CursorShape.SizeVerCursor, 'resize_S': Qt.CursorShape.SizeVerCursor, 'resize_W': Qt.CursorShape.SizeHorCursor, 'resize_E': Qt.CursorShape.SizeHorCursor}.get(handle, Qt.CursorShape.ArrowCursor)
 
-    def wheelEvent(self, event):
-        from PySide6.QtCore import Qt as _Qt
-        if not (event.modifiers() & _Qt.KeyboardModifier.ControlModifier):
-            super().wheelEvent(event)
-            return
-        if not self._pixmap:
-            return
-        delta    = event.angleDelta().y()
-        factor   = 1.15 if delta > 0 else 1.0 / 1.15
-        old_zoom = self._zoom
-        new_zoom = max(1.0, min(6.0, old_zoom * factor))
-        if abs(new_zoom - old_zoom) < 0.001:
-            return
-
-        # Cursor position in widget coords
-        cx = event.position().x()
-        cy = event.position().y()
-
-        # Find scroll area — walk up parent chain
-        sa = self.parent()
-        while sa and not hasattr(sa, 'horizontalScrollBar'):
-            sa = sa.parent()
-
-        # Current scroll offset (how much the viewport is shifted)
-        sx = sa.horizontalScrollBar().value() if sa else 0
-        sy = sa.verticalScrollBar().value()   if sa else 0
-
-        # Point in image-space under cursor
-        # widget coords → viewport coords: widget_pos - scroll_offset
-        # viewport coords = widget coords when widget is at (0,0) in scroll area
-        s_old = self._fit_scale * old_zoom
-        img_x = (cx + sx - self._offset_x) / s_old
-        img_y = (cy + sy - self._offset_y) / s_old
-
-        # Apply new zoom
-        self._zoom = new_zoom
-        self._compute_transform()
-        self.resize(self.sizeHint())
-        self.updateGeometry()
-        self.update()
-
-        # Adjust scrollbars so img_x/img_y stays under cursor
-        # new widget pos of that point = img * s_new + offset_x
-        s_new    = self._fit_scale * new_zoom
-        new_wx   = img_x * s_new + self._offset_x
-        new_wy   = img_y * s_new + self._offset_y
-        # scroll so that new_wx lands at cx in viewport
-        if sa:
-            sa.horizontalScrollBar().setValue(int(new_wx - cx))
-            sa.verticalScrollBar().setValue(int(new_wy - cy))
-
-        event.accept()
+    def resizeEvent(self, event): self._compute_transform(); self.update()
 
     def sizeHint(self):
-        if self._pixmap:
-            s = self._fit_scale * self._zoom
-            return QSize(max(1, int(self._pixmap.width()  * s)),
-                         max(1, int(self._pixmap.height() * s)))
-        return QSize(400, 300)
-
-    def resizeEvent(self, event):
-        self._compute_transform()
-        self.update()
+        if self._pixmap: return QSize(self._pixmap.width(), self._pixmap.height())
+        return QSize(800, 600)
 
     def _compute_transform(self):
         if not self._pixmap: return
-        pw, ph = self._pixmap.width(), self._pixmap.height()
-        ww, wh = self.width(), self.height()
-        # Fit scale: scale that fits image into scroll area viewport
-        # When zoom=1 we want image to fill the visible area
-        sx = ww / pw if pw > 0 else 1.0
-        sy = wh / ph if ph > 0 else 1.0
-        self._fit_scale = min(sx, sy, 1.0)
-        # Total scale applied to image
-        s = self._fit_scale * self._zoom
-        # At zoom=1: centre image in widget
-        # At zoom>1: widget is larger than viewport, scroll area handles panning
-        self._offset_x = max(0, (ww - int(pw * s)) // 2) if self._zoom <= 1.0 else 0
-        self._offset_y = max(0, (wh - int(ph * s)) // 2) if self._zoom <= 1.0 else 0
-
-    def _img_to_screen(self, x: float, y: float) -> tuple[int, int]:
-        s = self._fit_scale * self._zoom
-        return int(x * s) + self._offset_x, int(y * s) + self._offset_y
+        self._scale = 1.0; self._offset_x = max(0, (self.width() - self._pixmap.width()) // 2); self._offset_y = max(0, (self.height() - self._pixmap.height()) // 2)
 
     def _img_to_screen_rect(self, bbox: tuple) -> QRect:
-        x, y, w, h = bbox
-        s = self._fit_scale * self._zoom
-        sx, sy = self._img_to_screen(x, y)
-        return QRect(sx, sy, max(4, int(w * s)), max(4, int(h * s)))
+        x, y, w, h = bbox; return QRect(int(x * self._scale) + self._offset_x, int(y * self._scale) + self._offset_y, max(4, int(w * self._scale)), max(4, int(h * self._scale)))
 
     def _screen_to_img_rect(self, rect: QRect) -> tuple:
-        s = self._fit_scale * self._zoom
-        return (int((rect.x() - self._offset_x) / s),
-                int((rect.y() - self._offset_y) / s),
-                int(rect.width() / s),
-                int(rect.height() / s))
+        return (int((rect.x() - self._offset_x) / self._scale), int((rect.y() - self._offset_y) / self._scale), int(rect.width() / self._scale), int(rect.height() / self._scale))
 
     def _hit_test(self, pos: QPoint) -> int:
-        """Returns index of bbox under pos.
-        In review mode searches _review_items (drawn on canvas).
-        In annotation mode searches _annotations.
-        Searches in reverse order so topmost (last drawn) wins.
-        """
-        if self._review_items:
-            for idx in range(len(self._review_items) - 1, -1, -1):
-                bbox = self._review_items[idx].get('bbox')
-                if bbox and self._img_to_screen_rect(bbox).contains(pos):
-                    return idx
-            return -1
-        for idx in range(len(self._annotations) - 1, -1, -1):
-            if self._img_to_screen_rect(self._annotations[idx].bbox).contains(pos):
-                return idx
+        for idx, ann in enumerate(self._annotations):
+            if self._img_to_screen_rect(ann.bbox).contains(pos): return idx
         return -1

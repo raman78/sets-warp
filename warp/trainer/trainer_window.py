@@ -1300,7 +1300,8 @@ class WarpCoreWindow(QMainWindow):
             if 0 <= row < len(self._recognition_items):
                 self._recognition_items[row]['bbox'] = bbox
             self._rematch_current_item(row, bbox)
-        elif getattr(self, '_add_bbox_mode', False):
+        elif getattr(self, '_add_bbox_mode', False) \
+                or getattr(self._ann_widget, '_alt_draw', False):
             self._add_bbox_mode = False
             self._btn_add_bbox.setChecked(False)
             self._manual_mode_lbl.setVisible(False)
@@ -1606,6 +1607,9 @@ class WarpCoreWindow(QMainWindow):
         self._ann_widget.set_review_items(self._recognition_items)
         self._data_mgr.save()
         self._auto_sync()
+        # Deferred focus — after all signals settle, return focus to list
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._review_list.setFocus)
 
     # cache.equipment item['type'] → trainer slot name
     # Mirrors EQUIPMENT_TYPES in src/constants.py + SLOT_TO_CACHE_KEY above.
@@ -1945,6 +1949,8 @@ class WarpCoreWindow(QMainWindow):
         if text in self.BOFF_ABILITY_PROPERTIES:
             career, _ = self.BOFF_ABILITY_PROPERTIES[text]
             self._slot_combo.setCurrentText(f'Boff {career}')
+        # Return focus to review list — deactivates name field
+        self._review_list.setFocus()
 
     def _on_train(self):
         if self._train_worker and self._train_worker.isRunning():

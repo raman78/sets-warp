@@ -1,72 +1,88 @@
-# SETS - STO Equipment and Trait Selector
-A Star Trek Online build tool in Python. Please refer to the [website](https://stobuilds.com/apps/sets) for information on how this app is used and included features.
+# SETS-WARP
 
-## Description
-Build management and sharing tool for STO.
-Builds can be exported to a PNG or JSON file that can be opened by another person using SETS.
+A build planning and screenshot recognition tool for Star Trek Online.
+
+---
+
+## What is this?
+
+**SETS-WARP** combines two tools:
+
+**SETS** *(STO Equipment and Trait Selector)* is a build planner for Star Trek Online. It lets you plan ship and ground loadouts, skill trees, and bridge officer assignments — without needing to own the items in-game. Builds can be shared as PNG or JSON files.
+
+**WARP** *(Weaponry & Armament Recognition Platform)* is a recognition module built on top of SETS. It reads your in-game screenshots and automatically fills in your build — detecting equipment, traits, bridge officers, and ship information using computer vision and machine learning.
+
+**WARP CORE** is the trainer interface inside WARP. It lets you review and correct recognition results, confirm annotations, and train the local ML model on your own data to improve accuracy over time.
+
+---
+
+## How it works
+
+1. Take screenshots of your in-game build screens (equipment, traits, bridge officers — separately or as combined screenshots).
+2. Open WARP, select the build type, point it at your screenshot folder.
+3. WARP detects your ship, reads slot counts, recognises each item, and fills your SETS build automatically.
+4. Use WARP CORE to review results, correct mistakes, and confirm items — building up a personal training dataset that improves recognition over time.
+
+---
+
+## Screenshot types supported
+
+WARP handles three ways players share their builds:
+
+- **Separate screens** — one screenshot per game tab (equipment, traits, bridge officers, etc.), all placed in one folder.
+- **Mixed screen** — a single combined screenshot assembled from multiple tabs.
+- **Partial** — only some screens provided (e.g. equipment only, or traits only).
+
+The build type selector in the WARP import dialog tells WARP what to expect.
+
+---
 
 ## Installation
-### Executable for Windows
-Download the zipped app from the [release](https://github.com/STOCD/SETS/releases) page. Unzip it into a folder where you want your app to live. To speed up the image downloading process, obtain the images library as detailed below (Images library section). Double-clicking `SETS.exe` will start the app.
 
-You can create a desktop shortcut by rightclicking on `SETS.exe` and clicking on "Create shortcut" in the context menu. Then move the created shortcut to your desktop. To create a start menu entry, open the start menu folder by rightclicking on an arbitrary app in your start menu and clicking on "Open file location". Then move the created shortcut to the folder that opened.
+No installer — the app manages its own Python environment automatically via `bootstrap.py`. You need Python 3.11+ already installed on your system.
 
-### Script (UNIX-like systems)
-*Before installation, make sure python 3 is installed on your system alongside the python package manager pip.*
+### Linux / macOS
 
-First, create a folder to house your app and open it in your file manager or shell.
+```bash
+git clone https://github.com/STOCD/SETS.git
+cd SETS
+./SETS.sh
+```
 
-Download the source code. This can be done using `git` or manual download:
-- Manual Download: On the GitHub page of [this repository](https://github.com/STOCD/SETS), click on the green `CODE` button and select "Download ZIP". Save the archive and unpack it so that the files and folders seen on the repository page are *directly* inside your app folder.
-- Git: run `git clone https://github.com/STOCD/SETS.git .`
+On first run `SETS.sh` creates a local `.venv`, downloads a portable Python runtime, and installs all dependencies automatically. Subsequent launches are fast.
 
-Run the `install.sh` script by double-clicking it in your file manager or running `./install.sh` in your shell. If you cannot run the file, make sure it is executable using your file manager or the command `chmod +x install.sh`.
+If tkinter is missing (required only for the first-run installer window), the script will print the exact install command for your Linux distribution.
 
-To speed up the image download process on first start of the app, download the latest image archive from [releases](https://github.com/STOCD/SETS/releases). Create a `.config` folder and unpack the images archive into it. The images should be in `<app_root>/.config/images/`.
+### Windows
 
-Start the app by running the `run.sh` file by double-clicking it in your file manager or running `.run.sh` in your shell. If you cannot run the file, make sure it is executable using your file manager or the command `chmod +x run.sh`.
+```
+git clone https://github.com/STOCD/SETS.git
+cd SETS
+SETS.bat
+```
 
-
-### Script (Cross-Platform)
-*The commands below are for Windows and require a version of python 3 to be installed. If you want to install the app on Linux, use `python3` instead of `python`. A more comprehensive guide for installing the script version can be found on the [website](https://stobuilds.com/apps/sets/installation).*
-
-First, create a folder to house your app. Open a command prompt and navigate *inside* the created folder.
-
-Download the source code. This can be done using `git` or manual download:
-- Manual Download: On the GitHub page of [this repository](https://github.com/STOCD/SETS), click on the green `CODE` button and select "Download ZIP". Save the archive and unpack it so that the files and folders seen on the repository page are *directly* inside your app folder.
-- Git: run `git clone https://github.com/STOCD/SETS.git .`
-
-Install dependencies by running `python -m pip install .`.
-
-To speed up the image download process on first start of the app, download the latest image archive from [releases](https://github.com/STOCD/SETS/releases). Create a `.config` folder and unpack the images archive into it. The images should be in `<app_root>\.config\images\`.
-
-*Ubuntu* users might need to install the `libxcb-cursor0` package for this app to work: `sudo apt install libxcb-cursor0`
-
-To run the app, navigate to your apps folder. Then:
-- Windows: Use `python main.py` to start the app.
-- Linux: Use `python3 main.py` to start the app.
+`SETS.bat` finds your Python 3 installation and runs `bootstrap.py`, which sets up the environment on first launch.
 
 ### Images library
-All installation methods require an images library containing the game icons. The app will download these automatically, but as this takes a very long time, it is recommended to download the newest compressed image library from the [release](https://github.com/STOCD/SETS/releases) page. Once downloaded this has to be decompressed and placed in into the `.config/images` folder. You might need to create a folder with the name `.config` manually. The folder structure should look like below:
+
+On first launch, SETS downloads item icons automatically. To speed this up, download the latest image archive from the [releases page](https://github.com/STOCD/SETS/releases) and extract it to `.config/images/`.
+
+---
+
+## Updating
+
+```bash
+git pull
+./SETS.sh     # Linux / macOS
+SETS.bat      # Windows
 ```
-SETS
- +- .config
- |  `- images
- |    `- <lots of images>
- +- SETS.exe / main.py
- +- ...
-```
 
-## Updating the app
-### Executable for Windows
-Navigate to your SETS folder and delete all files and folders **except** the `.config` folder and the `.SETS_settings.ini` file. Download the newest version from the [release](https://github.com/STOCD/SETS/releases) page and unpack it into the SETS folder to replace the files and folders deleted before.
+`bootstrap.py` automatically detects and installs any new dependencies on launch.
 
-### Script (Cross-Platform)
-When using Git, open a command line at the location of your SETS folder and type `git pull` to get the newest version of the app.
-
-Otherwise, navigate to your SETS folder and delete all files and folders **except** the `.config` folder and the `.SETS_settings.ini` file. Also keep your *virtual environment* folder in place if you used a virtual environment to install dependencies. Download the app into the same folder as detailed in the installation section above. Open a command line at the location of your SETS folder and update dependencies by running `python -m pip install .`.
+---
 
 ## Contributing
-If you find any information or images missing, please check or update the [official wiki](https://stowiki.net) -- where SETS gets this information. You can report wiki issues on the [Star Trek Online Community Discord Server](https://discord.gg/eApUvTRr5q) in the "#wiki-discussion" channel or on the [STOBuilds Discord Server](https://discord.gg/kxwHxbsqzF) in the "#wiki-update-talk" channel.
 
-For application-related issues or suggestions, please visit the [STOBuilds Discord](https://discord.gg/kxwHxbsqzF) ("#sets-support" channel).
+Item data comes from the [official STO wiki](https://stowiki.net). If something is missing or wrong, update it there.
+
+For app bugs or suggestions: [STOBuilds Discord](https://discord.gg/kxwHxbsqzF) → `#sets-support`.
