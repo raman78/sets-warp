@@ -42,6 +42,10 @@ from PySide6.QtWidgets import (
 from warp.trainer.training_data import TrainingDataManager
 
 logger = logging.getLogger(__name__)
+try:
+    from src.setsdebug import log as _slog
+except Exception:
+    _slog = logger
 
 # Hugging Face dataset repository ID
 HF_DATASET_REPO  = "sets-sto/sto-icon-dataset"
@@ -154,6 +158,7 @@ class SyncWorker(QThread):
         staging_crop = f"{staging_dir}/crops"
 
         confirmed = self._mgr.get_confirmed_crops()
+        _slog.info(f'HF Sync: {len(confirmed)} potwierdzonych cropów lokalnie')
         if not confirmed:
             self.progress.emit(100, "Nothing to upload.")
             return
@@ -167,6 +172,7 @@ class SyncWorker(QThread):
         except Exception:
             pass
         daily_count = rl.get(today, 0)
+        _slog.info(f'HF Sync: dziś już wysłano {daily_count}/{MAX_DAILY_UPLOADS}')
         if daily_count >= MAX_DAILY_UPLOADS:
             self.progress.emit(100, f"Daily upload limit ({MAX_DAILY_UPLOADS}) reached.")
             return
@@ -174,6 +180,7 @@ class SyncWorker(QThread):
         # Fetch existing hashes in this user's staging folder
         self.progress.emit(5, "Checking existing uploads…")
         existing_hashes = self._fetch_staging_hashes(api, staging_crop)
+        _slog.info(f'HF Sync: {len(existing_hashes)} cropów już na HF staging')
 
         new_annotations: list[dict] = []
         uploaded = 0
@@ -203,9 +210,11 @@ class SyncWorker(QThread):
 
             sha = self._file_sha256(crop_path)
             if sha in existing_hashes:
+                _slog.debug(f'HF Sync: pominięto (już na HF): {Path(item["path"]).name}')
                 continue   # already uploaded
 
             # Upload crop to staging
+            _slog.info(f'HF Sync: wysyłam [{item["slot"]}] {item["name"]} → {sha[:12]}…')
             api.upload_file(
                 path_or_fileobj=str(crop_path),
                 path_in_repo=f"{staging_crop}/{sha}.png",
@@ -233,7 +242,9 @@ class SyncWorker(QThread):
         except Exception:
             pass
 
-        self.progress.emit(100, f"Uploaded {uploaded} annotations to staging.")
+        msg = f"Uploaded {uploaded} annotations to staging." if uploaded else "Nothing new to upload (all already on HF)."
+        _slog.info(f'HF Sync: gotowe — wysłano {uploaded} nowych, łącznie na HF: {len(existing_hashes)}')
+        self.progress.emit(100, msg)
 
     def _fetch_staging_hashes(self, api, staging_crop_dir: str) -> set[str]:
         try:

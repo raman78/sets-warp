@@ -2141,13 +2141,23 @@ class WarpCoreWindow(QMainWindow):
     def _auto_sync(self):
         try:
             token = (Path(__file__).parent.parent / 'warp' / 'hub_token.txt').read_text().strip()
-            if not token or token == 'YOUR_HF_TOKEN_HERE' or (self._sync_worker and self._sync_worker.isRunning()):
+            if not token or token == 'YOUR_HF_TOKEN_HERE':
                 return
+            if self._sync_worker and self._sync_worker.isRunning():
+                log.debug('HF Sync: poprzedni upload jeszcze trwa, pomijam')
+                return
+            log.info('HF Sync: start uploadu do HuggingFace…')
             self._sync_worker = SyncWorker(data_manager=self._data_mgr, hf_token=token, mode='upload')
-            self._sync_worker.finished.connect(lambda ok: self.statusBar().showMessage('Synced.' if ok else 'Sync failed.'))
+            self._sync_worker.progress.connect(lambda pct, msg: log.debug(f'HF Sync [{pct}%]: {msg}'))
+            self._sync_worker.finished.connect(self._on_sync_finished)
             self._sync_worker.start()
-        except:
-            pass
+        except Exception as e:
+            log.warning(f'HF Sync: błąd inicjalizacji: {e}')
+
+    def _on_sync_finished(self, ok: bool):
+        msg = 'Synced.' if ok else 'Sync failed.'
+        self.statusBar().showMessage(msg)
+        log.info(f'HF Sync: zakończono — {"OK" if ok else "BŁĄD"}')
 
     def _update_progress(self):
         total = len(self._screenshots)
