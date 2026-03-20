@@ -263,10 +263,12 @@ class ShipDB:
             ships = json.loads(p.read_text(encoding='utf-8'))
             self._ships = ships
             for ship in ships:
-                name = (ship.get('name') or '').strip()
+                raw_name = ship.get('name') or ''
+                name = (' '.join(raw_name) if isinstance(raw_name, list) else str(raw_name)).strip()
                 if name:
                     self._index[name.lower()] = ship
-                stype = (ship.get('type') or '').strip()
+                raw_type = ship.get('type') or ''
+                stype = (' '.join(raw_type) if isinstance(raw_type, list) else str(raw_type)).strip()
                 if stype:
                     self._by_type[stype.lower()] = ship
             log.info(f'ShipDB: loaded {len(self._ships)} ships, '

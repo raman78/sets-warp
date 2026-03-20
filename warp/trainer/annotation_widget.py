@@ -197,22 +197,20 @@ class AnnotationWidget(QWidget):
             painter.drawRect(rect)
 
     _STATE_COLOR = {
-        'pending':   QColor(200, 200, 200, 180),
+        'pending':   QColor(220,  80,  80, 220),
         'confirmed': QColor( 60, 220, 100, 220),
-        'new':       QColor(255, 220,   0, 200),
+        'new':       QColor(220,  80,  80, 220),
     }
 
     def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, selected: bool, highlighted: bool):
         if not bbox: return
         if highlighted and not selected:
-            color = QColor(255, 50, 50, 220); pw = SELECTED_PEN_WIDTH + 1; style = Qt.PenStyle.DashLine
+            color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = SELECTED_PEN_WIDTH + 1; style = Qt.PenStyle.DashLine
+        elif selected:
+            color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = SELECTED_PEN_WIDTH; style = Qt.PenStyle.DashLine
         else:
-            color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = SELECTED_PEN_WIDTH if selected else DRAW_PEN_WIDTH; style = Qt.PenStyle.SolidLine
+            color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = DRAW_PEN_WIDTH; style = Qt.PenStyle.SolidLine
         pen = QPen(color, pw, style); painter.setPen(pen); painter.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 25))); rect = self._img_to_screen_rect(bbox); painter.drawRect(rect)
-        # badge text removed — info shown via tooltip in review list
-        if selected:
-            h = self._HANDLE; painter.setPen(QPen(QColor(0, 0, 0, 180), 1)); painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
-            for hx, hy in self._handle_positions(rect): painter.drawRect(hx - h//2, hy - h//2, h, h)
 
     # ---------------------------------------------------------------- mouse events
 
@@ -251,8 +249,13 @@ class AnnotationWidget(QWidget):
             self._selected_idx = clicked; self._pending_bbox = None; ann = self._annotations[clicked]
             self.item_selected.emit({'slot': ann.slot, 'name': ann.name, 'bbox': ann.bbox})
         else:
-            self._selected_idx = -1
-            self.item_deselected.emit()
+            row = self._hit_test_review(pos)
+            if row >= 0:
+                ri = self._review_items[row]
+                self.item_selected.emit({'slot': ri.get('slot', ''), 'name': ri.get('name', ''), 'bbox': ri.get('bbox')})
+            else:
+                self._selected_idx = -1
+                self.item_deselected.emit()
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -490,4 +493,11 @@ class AnnotationWidget(QWidget):
     def _hit_test(self, pos: QPoint) -> int:
         for idx, ann in enumerate(self._annotations):
             if self._img_to_screen_rect(ann.bbox).contains(pos): return idx
+        return -1
+
+    def _hit_test_review(self, pos: QPoint) -> int:
+        """Check click against _review_items (unconfirmed recognition results)."""
+        for idx, ri in enumerate(self._review_items):
+            bbox = ri.get('bbox')
+            if bbox and self._img_to_screen_rect(bbox).contains(pos): return idx
         return -1

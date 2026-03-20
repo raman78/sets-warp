@@ -14,10 +14,19 @@ from PySide6.QtWidgets import (
     QProgressBar, QToolBar, QStatusBar, QMessageBox,
     QInputDialog, QSizePolicy, QFrame, QScrollArea,
     QAbstractItemView, QCompleter, QMenu, QPlainTextEdit,
-    QCheckBox, QDoubleSpinBox
+    QCheckBox, QDoubleSpinBox, QStyledItemDelegate
 )
 from PySide6.QtCore import Qt, QSettings, QThread, Signal, QSortFilterProxyModel, QSize
-from PySide6.QtGui import QFont, QAction, QColor, QStandardItemModel, QStandardItem, QKeySequence, QShortcut
+from PySide6.QtGui import QFont, QAction, QColor, QStandardItemModel, QStandardItem, QKeySequence, QShortcut, QBrush, QPalette
+
+
+class _ColorPreservingDelegate(QStyledItemDelegate):
+    """Keep item's ForegroundRole color visible even when the row is selected."""
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        brush = index.data(Qt.ItemDataRole.ForegroundRole)
+        if isinstance(brush, QBrush) and brush.color().isValid():
+            option.palette.setColor(QPalette.ColorRole.HighlightedText, brush.color())
 
 
 from warp.trainer.annotation_widget import AnnotationWidget
@@ -438,6 +447,7 @@ class WarpCoreWindow(QMainWindow):
         self._recognition_items: list[dict] = []
         self._manual_bbox_mode = False
         self._add_bbox_mode = False
+        self._loading_row = False
         self._sync_client = None
         self._sync_timer = None
         self._init_sync_client()
@@ -558,6 +568,8 @@ class WarpCoreWindow(QMainWindow):
         for t in SHIP_TIER_VALUES:
             self._tier_combo.addItem(t)
         self._tier_combo.hide()
+        self._tier_combo.textActivated.connect(
+            lambda _: self._on_accept() if self._slot_combo.currentText() == 'Ship Tier' else None)
         nc.addWidget(self._tier_combo)
         self._ship_type_combo = QComboBox()
         self._ship_type_combo.setEditable(True)
@@ -570,6 +582,10 @@ class WarpCoreWindow(QMainWindow):
         stc.setMaxVisibleItems(14)
         self._ship_type_combo.setCompleter(stc)
         self._ship_type_combo.hide()
+        self._ship_type_combo.textActivated.connect(
+            lambda _: self._on_accept() if self._slot_combo.currentText() == 'Ship Type' else None)
+        stc.activated.connect(
+            lambda _: self._on_accept() if self._slot_combo.currentText() == 'Ship Type' else None)
         nc.addWidget(self._ship_type_combo)
         lay.addLayout(nc, 1)
         bc = QVBoxLayout()
@@ -619,6 +635,7 @@ class WarpCoreWindow(QMainWindow):
         sep.setStyleSheet('color:#333;')
         pl.addWidget(sep)
         self._review_list = QListWidget()
+        self._review_list.setItemDelegate(_ColorPreservingDelegate(self._review_list))
         self._review_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._review_list.currentRowChanged.connect(self._on_review_row_changed)
         self._review_list.installEventFilter(self)
@@ -1092,13 +1109,13 @@ class WarpCoreWindow(QMainWindow):
         if confirmed:
             item.setForeground(QColor('#7effc8'))
         elif not name:
-            item.setForeground(QColor('#ff7e7e'))
+            item.setForeground(QColor('#ff5555'))
         elif conf >= CONF_HIGH:
-            item.setForeground(QColor('#7effc8'))
+            item.setForeground(QColor('#ffaaaa'))
         elif conf >= CONF_MEDIUM:
-            item.setForeground(QColor('#e8c060'))
+            item.setForeground(QColor('#ff8888'))
         else:
-            item.setForeground(QColor('#ff9966'))
+            item.setForeground(QColor('#ff5555'))
         self._review_list.addItem(item)
 
     def _on_review_item_clicked(self, item: QListWidgetItem):
@@ -1113,33 +1130,39 @@ class WarpCoreWindow(QMainWindow):
             self._ann_widget.clear_highlight()
             return
         self._selection_just_changed = True
-        if 0 <= row < len(self._recognition_items):
-            ri = self._recognition_items[row]
-            is_confirmed = ri.get('state') == 'confirmed'
-            self._btn_remove_item.setEnabled(True)
-            # self._btn_edit_bbox.setEnabled(True)  # disabled
-            # if is_confirmed:
-            #     self._btn_edit_bbox.setChecked(False)
-            #     self._ann_widget.set_draw_mode(False)
-            slot = ri['slot']
-            idx = self._slot_combo.findText(slot)
-            if idx < 0:
-                self._slot_combo.blockSignals(True)
-                self._slot_combo.clear()
-                for s in ALL_SLOTS:
-                    self._slot_combo.addItem(s)
-                self._slot_combo.blockSignals(False)
+        self._loading_row = True
+        try:
+            if 0 <= row < len(self._recognition_items):
+                ri = self._recognition_items[row]
+                is_confirmed = ri.get('state') == 'confirmed'
+                self._btn_remove_item.setEnabled(True)
+                # self._btn_edit_bbox.setEnabled(True)  # disabled
+                # if is_confirmed:
+                #     self._btn_edit_bbox.setChecked(False)
+                #     self._ann_widget.set_draw_mode(False)
+                slot = ri['slot']
                 idx = self._slot_combo.findText(slot)
-            if idx >= 0:
-                self._slot_combo.setCurrentIndex(idx)
-            # Populate completer for this slot without triggering clear on name_edit
-            self._populate_name_completer(slot)
-            # Set name field directly (slot already set above, skip _on_slot_changed clear)
-            self._name_edit.blockSignals(True)
-            self._name_edit.setText(ri['name'])
-            self._name_edit.blockSignals(False)
-            if ri.get('bbox'):
-                self._ann_widget.set_highlighted_row(row)
+                if idx < 0:
+                    self._slot_combo.blockSignals(True)
+                    self._slot_combo.clear()
+                    for s in ALL_SLOTS:
+                        self._slot_combo.addItem(s)
+                    self._slot_combo.blockSignals(False)
+                    idx = self._slot_combo.findText(slot)
+                if idx >= 0:
+                    self._slot_combo.setCurrentIndex(idx)
+                # Populate completer for this slot without triggering clear on name_edit
+                self._populate_name_completer(slot)
+                # Set name field directly (slot already set above, skip _on_slot_changed clear)
+                self._name_edit.blockSignals(True)
+                self._name_edit.setText(ri['name'])
+                self._name_edit.blockSignals(False)
+                if ri.get('bbox'):
+                    self._ann_widget.set_highlighted_row(row)
+                if is_confirmed:
+                    self._review_list.setFocus()
+        finally:
+            self._loading_row = False
 
     def _init_sync_client(self):
         try:
@@ -1415,8 +1438,11 @@ class WarpCoreWindow(QMainWindow):
             self._name_edit.blockSignals(True)
             self._name_edit.setText(name)
             self._name_edit.blockSignals(False)
-            self._suppress_next_focus_popup = True
-            self._name_edit.setFocus()
+            if not _auto:
+                self._suppress_next_focus_popup = True
+                self._name_edit.setFocus()
+            else:
+                self._review_list.setFocus()
         else:
             self._name_edit.setFocus()
             self._name_edit.clear()
@@ -1457,6 +1483,39 @@ class WarpCoreWindow(QMainWindow):
                 self._on_accept()
         except:
             pass
+
+    def _rematch_with_slot(self, row: int, slot: str, crop_bgr):
+        """Re-run icon matching for an existing crop when the user changes the slot."""
+        try:
+            from warp.recognition.icon_matcher import SETSIconMatcher
+            from src.setsdebug import log as _sl
+            candidates = set(self._build_search_candidates(slot)) or None
+            name, conf, thumb = SETSIconMatcher(self._sets).match(crop_bgr, candidate_names=candidates)
+            _sl.info(f'rematch_slot slot={slot!r} → name={name!r} conf={conf:.2f}')
+            if conf < 0.40 and candidates:
+                name2, conf2, thumb2 = SETSIconMatcher(self._sets).match(crop_bgr, candidate_names=None)
+                _sl.info(f'rematch_slot pass2 → name={name2!r} conf={conf2:.2f}')
+                if conf2 > conf:
+                    name, conf, thumb = name2, conf2, thumb2
+            if conf < 0.40:
+                name, conf, thumb = '', 0.0, None
+            ri = self._recognition_items[row]
+            ri.update({'name': name, 'conf': conf, 'thumb': thumb})
+            self._name_edit.blockSignals(True)
+            self._name_edit.setText(name)
+            self._name_edit.blockSignals(False)
+            litem = self._review_list.item(row)
+            if litem:
+                litem.setText(f'{slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]')
+                if conf >= CONF_HIGH:
+                    litem.setForeground(QColor('#ffaaaa'))
+                elif conf >= CONF_MEDIUM:
+                    litem.setForeground(QColor('#ff8888'))
+                else:
+                    litem.setForeground(QColor('#ff5555'))
+        except Exception as e:
+            from src.setsdebug import log as _sl
+            _sl.warning(f'rematch_with_slot failed: {e}')
 
     def _on_canvas_deselected(self):
         """Canvas click on already-selected bbox or empty area → deselect everything."""
@@ -1884,6 +1943,13 @@ class WarpCoreWindow(QMainWindow):
         # Pre-populate completer with new slot's candidates
         if not is_tier and not is_ship_type and slot not in NON_ICON_SLOTS:
             self._populate_name_completer(slot)
+        # Re-run icon matching with new slot's candidates (user-initiated change only)
+        if not self._loading_row and not is_tier and not is_ship_type and slot not in NON_ICON_SLOTS:
+            row = self._review_list.currentRow()
+            if 0 <= row < len(self._recognition_items):
+                crop_bgr = self._recognition_items[row].get('crop_bgr')
+                if crop_bgr is not None:
+                    self._rematch_with_slot(row, slot, crop_bgr)
 
     def _populate_ship_type_combo(self):
         if self._ship_type_combo.count() > 0:

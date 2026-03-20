@@ -348,8 +348,10 @@ class LayoutDetector:
                 # Pixel count unreliable here — use profile exactly
                 n_icons = profile_count
             else:
-                # Multi-slot row: trust pixel count, cap at profile+1 to avoid noise
-                n_icons = min(max(pixel_count, 1), profile_count + 1)
+                # Multi-slot row: pixel analysis can undercount (empty slots, misalignment)
+                # Use max of pixel count and profile count so ShipDB is the floor,
+                # but allow pixel count to exceed profile by 1 (T6-X tier upgrades)
+                n_icons = min(max(pixel_count, profile_count), profile_count + 1)
             if n_icons == 0: continue
             _slog.info(f'LayoutDetector: row {i} [{slot_name}] pixel_count={pixel_count} profile={profile_count} → using {n_icons}')
             iy, bboxes = (y_top + y_bot) // 2 - icon_h // 2, []
