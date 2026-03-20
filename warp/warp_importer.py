@@ -293,9 +293,27 @@ class ShipDB:
             log.debug(f'ShipDB exact type: {ship_type!r}')
             return self._entry_to_profile(entry)
 
-        # 2. Fuzzy type match — handles OCR errors and multi-line joins
+        # 2. Fuzzy type match — handles OCR errors and extra/missing words
         if st and self._by_type:
             type_candidates = list(self._by_type.keys())
+
+            # 2a. Word-subset match: OCR words are a subset of DB name words
+            # e.g. 'Fleet Temporal Science Vessel' ⊆ 'Fleet Nautilus Temporal Science Vessel'
+            ocr_words = set(st.split())
+            subset_hits = [(c, self._by_type[c]) for c in type_candidates
+                           if ocr_words.issubset(set(c.split()))]
+            if len(subset_hits) == 1:
+                # Unique subset match — high confidence
+                log.debug(f'ShipDB subset match: {ship_type!r} → {subset_hits[0][0]!r}')
+                return self._entry_to_profile(subset_hits[0][1])
+            elif len(subset_hits) > 1:
+                # Multiple subset matches — pick the one with fewest extra words
+                best = min(subset_hits, key=lambda x: len(set(x[0].split()) - ocr_words))
+                log.debug(f'ShipDB subset match (best of {len(subset_hits)}): '
+                          f'{ship_type!r} → {best[0]!r}')
+                return self._entry_to_profile(best[1])
+
+            # 2b. Standard fuzzy match as fallback
             type_matches = get_close_matches(st, type_candidates, n=1, cutoff=0.68)
             if type_matches:
                 entry = self._by_type[type_matches[0]]

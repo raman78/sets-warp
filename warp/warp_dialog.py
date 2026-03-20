@@ -336,9 +336,20 @@ class WarpDialog(QDialog):
                     if r.ship_type in ships:
                         match = r.ship_type
                     else:
-                        hits = get_close_matches(r.ship_type, candidates, n=1, cutoff=0.72)
-                        if hits:
-                            match = hits[0]
+                        # Word-subset: OCR may omit subtype words (e.g. 'Nautilus')
+                        ocr_words = set(r.ship_type.lower().split())
+                        subset_hits = [c for c in candidates
+                                       if ocr_words.issubset(set(c.lower().split()))]
+                        if len(subset_hits) == 1:
+                            match = subset_hits[0]
+                        elif len(subset_hits) > 1:
+                            # Pick fewest extra words
+                            match = min(subset_hits,
+                                        key=lambda c: len(set(c.lower().split()) - ocr_words))
+                        else:
+                            hits = get_close_matches(r.ship_type, candidates, n=1, cutoff=0.68)
+                            if hits:
+                                match = hits[0]
                     if match:
                         _slog.info(f'WARP: auto-selecting ship {match!r} from {r.ship_type!r}')
                         # Use select_ship logic directly — handles image, tier, slots

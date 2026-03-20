@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
     QCheckBox, QDoubleSpinBox
 )
 from PySide6.QtCore import Qt, QSettings, QThread, Signal, QSortFilterProxyModel, QSize
-from PySide6.QtGui import QFont, QAction, QColor, QStandardItemModel, QStandardItem
+from PySide6.QtGui import QFont, QAction, QColor, QStandardItemModel, QStandardItem, QKeySequence, QShortcut
+
 
 from warp.trainer.annotation_widget import AnnotationWidget
 from warp.trainer.training_data      import TrainingDataManager, AnnotationState
@@ -25,10 +26,12 @@ from warp.trainer.sync               import SyncWorker, HFTokenDialog
 
 log = logging.getLogger(__name__)
 
-_KEY_LAST_DIR      = 'warp_core/last_dir'
-_KEY_HF_TOKEN      = 'warp_core/hf_token'
-_KEY_TRAIN_REPEATS = 'warp_core/train_repeats'
+_KEY_LAST_DIR       = 'warp_core/last_dir'
+_KEY_HF_TOKEN       = 'warp_core/hf_token'
+_KEY_TRAIN_REPEATS  = 'warp_core/train_repeats'
 _KEY_TRAIN_DLG_SIZE = 'warp_core/train_dlg_size'
+_KEY_AUTO_ACCEPT    = 'warp_core/auto_accept_enabled'
+_KEY_AUTO_CONF      = 'warp_core/auto_accept_conf'
 
 CONF_HIGH   = 0.85
 CONF_MEDIUM = 0.70
@@ -450,6 +453,7 @@ class WarpCoreWindow(QMainWindow):
         self.setWindowTitle('WARP CORE — ML Trainer')
         self.setMinimumSize(1280, 740)
         self._build_ui()
+        self._setup_shortcuts()
         self._build_toolbar()
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage('Ready — open a folder of STO screenshots to start annotating.')
@@ -571,7 +575,6 @@ class WarpCoreWindow(QMainWindow):
         self._btn_accept = QPushButton('Accept')
         self._btn_accept.setStyleSheet('QPushButton{background:#1a5c3a;color:#7effc8;border:1px solid #3aac6a;border-radius:3px;padding:5px 12px;font-weight:bold;}QPushButton:hover{background:#2a8c5a;}')
         self._btn_accept.clicked.connect(self._on_accept)
-        self._btn_accept.setShortcut('Return')
         self._btn_accept.setToolTip('Accept (Enter)')
         br.addWidget(self._btn_accept)
         self._chk_auto_accept = QCheckBox('Auto ≥')
@@ -1043,6 +1046,8 @@ class WarpCoreWindow(QMainWindow):
             if aid not in seen_ids:
                 merged.append(ci)
         self._recognition_items = merged
+        # Auto-accept high-conf items before drawing the list
+        self._apply_auto_accept()
         self._review_list.clear()
         self._review_summary.setText('')
         self._set_review_buttons_enabled(False)
@@ -1164,6 +1169,27 @@ class WarpCoreWindow(QMainWindow):
 
     def _on_edit_bbox_toggle(self, checked: bool):
         pass  # Edit BBox disabled — reserved for future implementation
+
+    def _setup_shortcuts(self):
+        """Global keyboard shortcuts — work regardless of focus."""
+        QShortcut(QKeySequence('Alt+A'), self,
+                  activated=lambda: self._btn_add_bbox.click())
+        QShortcut(QKeySequence('Alt+R'), self,
+                  activated=self._on_remove_item)
+        QShortcut(QKeySequence('Return'), self,
+                  activated=self._on_accept)
+        QShortcut(QKeySequence('Delete'), self,
+                  activated=self._on_remove_item)
+        # Restore auto-accept settings
+        self._chk_auto_accept.setChecked(
+            self._settings.value(_KEY_AUTO_ACCEPT, False, type=bool))
+        self._spin_auto_conf.setValue(
+            float(self._settings.value(_KEY_AUTO_CONF, 0.75)))
+        # Save on change
+        self._chk_auto_accept.toggled.connect(
+            lambda v: self._settings.setValue(_KEY_AUTO_ACCEPT, v))
+        self._spin_auto_conf.valueChanged.connect(
+            lambda v: self._settings.setValue(_KEY_AUTO_CONF, v))
 
     def eventFilter(self, obj, event):
         """Handle Delete key on review list to remove selected bbox."""
@@ -1292,13 +1318,20 @@ class WarpCoreWindow(QMainWindow):
                         from src.setsdebug import log as _slog
                         _slog.info(f'add_bbox: crop {x},{y},{w},{h} px from {path.name}')
                         from warp.recognition.icon_matcher import SETSIconMatcher
-                        # Build candidate set from current slot's allowed items
                         _current_slot = self._slot_combo.currentText()
                         _candidates = set(self._build_search_candidates(_current_slot)) or None
+                        # Pass 1: match with slot-restricted candidates
                         name, conf, thumb = SETSIconMatcher(self._sets).match(
                             crop_bgr, candidate_names=_candidates)
-                        _slog.info(f'add_bbox: matcher → name={name!r} conf={conf:.2f} '
+                        _slog.info(f'add_bbox: pass1 → name={name!r} conf={conf:.2f} '
                                    f'(slot={_current_slot!r}, pool={len(_candidates) if _candidates else "all"})')
+                        # Pass 2: if low conf, retry without slot restriction
+                        if conf < 0.40 and _candidates:
+                            name2, conf2, thumb2 = SETSIconMatcher(self._sets).match(
+                                crop_bgr, candidate_names=None)
+                            _slog.info(f'add_bbox: pass2 (unrestricted) → name={name2!r} conf={conf2:.2f}')
+                            if conf2 > conf:
+                                name, conf, thumb = name2, conf2, thumb2
                         # Discard low-confidence results — below threshold means 'no match'
                         if conf < 0.40:
                             _slog.info(f'add_bbox: conf {conf:.2f} < 0.40 — treating as unmatched')
@@ -1327,9 +1360,25 @@ class WarpCoreWindow(QMainWindow):
                     from src.setsdebug import log as _slog2
                     _slog2.info(f'add_bbox: discarding {name!r} — not valid for stype={stype}')
                     name, conf, thumb, crop_bgr = '', 0.0, None, None
-            new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': 'pending', 'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': ''}
+            # Auto-accept before adding to list if conf >= threshold
+            _auto = (name and conf > 0
+                     and getattr(self, '_chk_auto_accept', None)
+                     and self._chk_auto_accept.isChecked()
+                     and conf >= self._spin_auto_conf.value()
+                     and slot not in NON_ICON_SLOTS)
+            _state = 'confirmed' if _auto else 'pending'
+            new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': _state, 'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': ''}
             self._recognition_items.append(new_item)
-            self._add_review_row(name, slot, conf)
+            if _auto and self._current_idx >= 0:
+                _path = self._screenshots[self._current_idx]
+                self._data_mgr.add_annotation(
+                    image_path=_path, bbox=bbox, slot=slot, name=name,
+                    state=AnnotationState.CONFIRMED, ml_conf=conf, ml_name=name)
+                if crop_bgr is not None:
+                    from warp.recognition.icon_matcher import SETSIconMatcher
+                    SETSIconMatcher.add_session_example(crop_bgr, name)
+                self._data_mgr.save()
+            self._add_review_row(name, slot, conf, confirmed=_auto)
             new_row = len(self._recognition_items) - 1
             self._review_list.setCurrentRow(new_row)
             self._set_review_buttons_enabled(True)
@@ -1373,13 +1422,21 @@ class WarpCoreWindow(QMainWindow):
                 return
             name, conf, thumb = SETSIconMatcher(self._sets).match(crop)
             ri = self._recognition_items[row]
-            ri.update({'name': name, 'conf': conf, 'thumb': thumb})
+            ri.update({'name': name, 'conf': conf, 'thumb': thumb, 'crop_bgr': crop})
             self._name_edit.setText(name)
             litem = self._review_list.item(row)
             if litem:
                 colour = ('#7effc8' if conf >= CONF_HIGH else '#e8c060' if conf >= CONF_MEDIUM else '#ff7e7e')
                 litem.setText(f'{ri["slot"]}  ->  {name or "— unmatched —"}  [{conf:.0%}]')
                 litem.setForeground(QColor(colour))
+            # Auto-accept if conf >= threshold and checkbox enabled
+            if (name and conf > 0
+                    and getattr(self, '_chk_auto_accept', None)
+                    and self._chk_auto_accept.isChecked()
+                    and conf >= self._spin_auto_conf.value()
+                    and ri.get('slot', '') not in NON_ICON_SLOTS):
+                self._review_list.setCurrentRow(row)
+                self._on_accept()
         except:
             pass
 
@@ -1443,47 +1500,44 @@ class WarpCoreWindow(QMainWindow):
 
     # ── Auto-accept ───────────────────────────────────────────────────────────
 
-    def _run_auto_accept(self):
-        """Auto-accept all pending items whose ML conf >= threshold.
-        Called after recognition completes on a new screenshot."""
+    def _apply_auto_accept(self):
+        """Auto-accept pending items with conf >= threshold.
+        Called before populating review list — items are marked confirmed
+        in-place so _add_review_row renders them as confirmed directly."""
+        from src.setsdebug import log as _sl
         if not getattr(self, '_chk_auto_accept', None): return
         if not self._chk_auto_accept.isChecked(): return
         threshold = self._spin_auto_conf.value()
         accepted = 0
-        for row, ri in enumerate(self._recognition_items):
+        path = self._screenshots[self._current_idx] if self._current_idx >= 0 else None
+        for ri in self._recognition_items:
             if ri.get('state') != 'pending': continue
             if ri.get('slot', '') in NON_ICON_SLOTS: continue
             conf = ri.get('conf', 0.0)
             if conf < threshold: continue
-            # Auto-accept: slot and name are from ML, no user changes
             slot = ri.get('slot', '')
             name = ri.get('name', '') or ri.get('orig_name', '')
             if not slot or not name: continue
             ri['state'] = 'confirmed'
-            if ri.get('bbox') and self._current_idx >= 0:
-                path = self._screenshots[self._current_idx]
+            if ri.get('bbox') and path:
                 self._data_mgr.add_annotation(
                     image_path=path, bbox=ri['bbox'], slot=slot, name=name,
                     state=AnnotationState.CONFIRMED,
-                    ml_conf=conf,
-                    ml_name=name,
+                    ml_conf=conf, ml_name=name,
                 )
-            litem = self._review_list.item(row)
-            if litem:
-                litem.setText(f'{slot}  ->  {name}  [auto]')
-                litem.setForeground(QColor('#4ec9b0'))  # teal = auto-accepted
-            if ri.get('crop_bgr') is not None and slot not in NON_ICON_SLOTS:
+            if ri.get('crop_bgr') is not None:
                 from warp.recognition.icon_matcher import SETSIconMatcher
                 SETSIconMatcher.add_session_example(ri['crop_bgr'], name)
             accepted += 1
         if accepted:
-            self._update_progress()
             self._data_mgr.save()
-            # Move to first remaining pending item
-            self._advance_to_next_unconfirmed(-1)
-            from src.setsdebug import log as _sl
             _sl.info(f'TrainerWindow: auto-accepted {accepted} items '
                      f'(conf>={threshold:.2f})')
+
+    def _run_auto_accept(self):
+        """Legacy: called after panel is drawn. Now a no-op since
+        _apply_auto_accept runs before _add_review_row."""
+        pass
 
     def _on_accept(self):
         slot = self._slot_combo.currentText()
