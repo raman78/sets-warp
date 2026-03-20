@@ -276,10 +276,13 @@ class AnnotationWidget(QWidget):
         if self._selected_idx >= 0:
             handle = self._handle_hit_test(pos, self._selected_idx)
             if handle: self.setCursor(self._cursor_for_handle(handle)); return
-        # Preserve draw cursor if Alt is held
+        # Preserve context cursor if modifier held
         from PySide6.QtWidgets import QApplication as _QApp
-        if _QApp.queryKeyboardModifiers() & Qt.KeyboardModifier.AltModifier:
+        mods = _QApp.queryKeyboardModifiers()
+        if mods & Qt.KeyboardModifier.AltModifier:
             self.setCursor(self._make_draw_cursor())
+        elif mods & Qt.KeyboardModifier.ControlModifier:
+            self.setCursor(self._make_zoom_cursor())
         else:
             self.unsetCursor()
 
@@ -334,11 +337,29 @@ class AnnotationWidget(QWidget):
         return QCursor(px, cx, cx)
 
     @staticmethod
+    def _make_zoom_cursor() -> QCursor:
+        """Magnifying glass cursor shown while Ctrl is held."""
+        size = 22
+        px = QPixmap(size, size)
+        px.fill(Qt.GlobalColor.transparent)
+        p = QPainter(px)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # White outline for visibility on dark backgrounds
+        p.setPen(QPen(QColor(255, 255, 255), 4))
+        p.drawEllipse(2, 2, 12, 12)
+        p.drawLine(13, 13, 19, 19)
+        # Dark glass + handle
+        p.setPen(QPen(QColor(40, 40, 40), 2))
+        p.drawEllipse(2, 2, 12, 12)
+        p.drawLine(13, 13, 19, 19)
+        p.end()
+        return QCursor(px, 6, 6)
+
+    @staticmethod
     def _cursor_for_handle(handle: str) -> Qt.CursorShape:
         return {'move': Qt.CursorShape.SizeAllCursor, 'resize_NW': Qt.CursorShape.SizeFDiagCursor, 'resize_SE': Qt.CursorShape.SizeFDiagCursor, 'resize_NE': Qt.CursorShape.SizeBDiagCursor, 'resize_SW': Qt.CursorShape.SizeBDiagCursor, 'resize_N': Qt.CursorShape.SizeVerCursor, 'resize_S': Qt.CursorShape.SizeVerCursor, 'resize_W': Qt.CursorShape.SizeHorCursor, 'resize_E': Qt.CursorShape.SizeHorCursor}.get(handle, Qt.CursorShape.ArrowCursor)
 
     def wheelEvent(self, event):
-        from src.setsdebug import log as _sl
         ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
         if ctrl:
             if not self._pixmap: return
@@ -348,31 +369,37 @@ class AnnotationWidget(QWidget):
             fit_s = self._fit_scale
             old_s = self._scale
             new_s = max(fit_s, min(fit_s * 6.0, old_s * factor))
-            _sl.info(f'AW.zoom fit={fit_s:.3f} old={old_s:.3f} new={new_s:.3f} delta={delta}')
             if abs(new_s - old_s) < 0.0001: return
-            # Map cursor to widget coords
-            try:
-                pos = event.position()
-                cx, cy = float(pos.x()), float(pos.y())
-                sa = self.parent()
-                vp = sa.viewport() if sa and hasattr(sa, 'viewport') else None
-                if vp:
-                    from PySide6.QtCore import QPoint
-                    widget_pos = self.mapFrom(vp, QPoint(int(cx), int(cy)))
-                    cx, cy = float(widget_pos.x()), float(widget_pos.y())
-            except Exception:
-                cx, cy = self.width() / 2.0, self.height() / 2.0
-            img_x = (cx - self._offset_x) / old_s if old_s else 0.0
-            img_y = (cy - self._offset_y) / old_s if old_s else 0.0
+            # Find scroll area in parent chain
+            from PySide6.QtWidgets import QAbstractScrollArea
+            from PySide6.QtGui import QCursor
+            sa = self.parent()
+            while sa and not isinstance(sa, QAbstractScrollArea):
+                sa = sa.parent()
+            # Cursor in viewport coords + scroll offset → image point under cursor
+            if sa:
+                vp = sa.viewport()
+                vp_pos = vp.mapFromGlobal(QCursor.pos())
+                vp_cx, vp_cy = float(vp_pos.x()), float(vp_pos.y())
+                h_val = float(sa.horizontalScrollBar().value())
+                v_val = float(sa.verticalScrollBar().value())
+                img_x = (vp_cx + h_val) / old_s if old_s else 0.0
+                img_y = (vp_cy + v_val) / old_s if old_s else 0.0
+            else:
+                vp_cx, vp_cy = self.width() / 2.0, self.height() / 2.0
+                img_x = vp_cx / old_s if old_s else 0.0
+                img_y = vp_cy / old_s if old_s else 0.0
+                sa = None
             if new_s <= fit_s * 1.001:
                 self._user_scale = None
             else:
                 self._user_scale = new_s
             self._compute_transform()
-            if self._user_scale is not None:
-                self._offset_x = int(cx - img_x * new_s)
-                self._offset_y = int(cy - img_y * new_s)
             self.adjustSize()
+            # Adjust scrollbars to keep image point under cursor
+            if sa and self._user_scale is not None:
+                sa.horizontalScrollBar().setValue(int(img_x * new_s - vp_cx))
+                sa.verticalScrollBar().setValue(int(img_y * new_s - vp_cy))
             self.update()
             event.accept()
         else:
@@ -389,11 +416,13 @@ class AnnotationWidget(QWidget):
         QApplication.instance().removeEventFilter(self)
 
     def enterEvent(self, event):
-        """Mouse entered canvas area — if Alt held, show draw cursor."""
+        """Mouse entered canvas area — show context cursor if modifier held."""
         from PySide6.QtWidgets import QApplication
         mods = QApplication.queryKeyboardModifiers()
         if mods & Qt.KeyboardModifier.AltModifier:
             self.setCursor(self._make_draw_cursor())
+        elif mods & Qt.KeyboardModifier.ControlModifier:
+            self.setCursor(self._make_zoom_cursor())
 
     def leaveEvent(self, event):
         """Mouse left canvas area — restore normal cursor."""
@@ -415,6 +444,11 @@ class AnnotationWidget(QWidget):
                 else:
                     if not self._drawing:
                         self.unsetCursor()
+            elif key == Qt.Key.Key_Control and not event.isAutoRepeat():
+                if etype == QEvent.Type.KeyPress:
+                    self.setCursor(self._make_zoom_cursor())
+                else:
+                    self.unsetCursor()
         return False
 
     def resizeEvent(self, event): self._compute_transform(); self.update()
