@@ -1491,12 +1491,9 @@ class WarpCoreWindow(QMainWindow):
             from src.setsdebug import log as _sl
             candidates = set(self._build_search_candidates(slot)) or None
             name, conf, thumb = SETSIconMatcher(self._sets).match(crop_bgr, candidate_names=candidates)
-            _sl.info(f'rematch_slot slot={slot!r} → name={name!r} conf={conf:.2f}')
-            if conf < 0.40 and candidates:
-                name2, conf2, thumb2 = SETSIconMatcher(self._sets).match(crop_bgr, candidate_names=None)
-                _sl.info(f'rematch_slot pass2 → name={name2!r} conf={conf2:.2f}')
-                if conf2 > conf:
-                    name, conf, thumb = name2, conf2, thumb2
+            _sl.info(f'rematch_slot slot={slot!r} candidates={len(candidates) if candidates else "all"} → name={name!r} conf={conf:.2f}')
+            # No global fallback — if slot-scoped search can't match, show unmatched.
+            # A global fallback would return items from wrong categories.
             if conf < 0.40:
                 name, conf, thumb = '', 0.0, None
             ri = self._recognition_items[row]
@@ -1636,6 +1633,9 @@ class WarpCoreWindow(QMainWindow):
                     if ann.state.value != 'confirmed': continue
                     if ann.slot == slot: continue  # same slot = ok
                     if ann.ann_id == ri.get('ann_id', ''): continue
+                    # Ship Type and Ship Tier intentionally overlap (tier is part of type line)
+                    pair = {ann.slot, slot}
+                    if pair == {'Ship Type', 'Ship Tier'}: continue
                     # Check overlap
                     ox, oy, ow, oh = ann.bbox
                     nx, ny, nw, nh = new_bbox
@@ -1683,6 +1683,9 @@ class WarpCoreWindow(QMainWindow):
         self._ann_widget.set_review_items(self._recognition_items)
         self._data_mgr.save()
         self._auto_sync()
+        # Update learned layout for this screenshot after each confirm
+        if self._current_idx >= 0:
+            self._learn_layout_for(self._screenshots[self._current_idx])
         # Deferred focus — after all signals settle, return focus to list
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._review_list.setFocus)
@@ -2105,19 +2108,7 @@ class WarpCoreWindow(QMainWindow):
     def _on_train_finished(self, success: bool, message: str):
         if success:
             try:
-                from warp.recognition.layout_detector import LayoutDetector
-                detector = LayoutDetector()
-                learned_count = 0
-                for path in self._screenshots:
-                    anns = self._data_mgr.get_annotations(path)
-                    confirmed = [{'bbox': a.bbox, 'slot': a.slot} for a in anns if a.state == AnnotationState.CONFIRMED]
-                    if confirmed:
-                        import cv2
-                        img = cv2.imread(str(path))
-                        if img is not None:
-                            detector.learn_layout(self._screen_types.get(path.name, 'UNKNOWN'), img.shape[:2], confirmed)
-                            learned_count += 1
-                log.info(f"Learned layouts from {learned_count} files")
+                self._learn_all_layouts()
             except Exception as e:
                 log.warning(f"Layout learning failed: {e}")
             self._recognition_cache.clear()
@@ -2140,24 +2131,88 @@ class WarpCoreWindow(QMainWindow):
 
     def _auto_sync(self):
         try:
-            token = (Path(__file__).parent.parent / 'warp' / 'hub_token.txt').read_text().strip()
+            token = (Path(__file__).parent.parent / 'hub_token.txt').read_text().strip()
             if not token or token == 'YOUR_HF_TOKEN_HERE':
                 return
             if self._sync_worker and self._sync_worker.isRunning():
-                log.debug('HF Sync: poprzedni upload jeszcze trwa, pomijam')
+                log.debug('HF Sync: previous upload still running, skipping')
                 return
-            log.info('HF Sync: start uploadu do HuggingFace…')
+            log.info('HF Sync: starting upload to HuggingFace…')
             self._sync_worker = SyncWorker(data_manager=self._data_mgr, hf_token=token, mode='upload')
             self._sync_worker.progress.connect(lambda pct, msg: log.debug(f'HF Sync [{pct}%]: {msg}'))
             self._sync_worker.finished.connect(self._on_sync_finished)
             self._sync_worker.start()
         except Exception as e:
-            log.warning(f'HF Sync: błąd inicjalizacji: {e}')
+            log.warning(f'HF Sync: init error: {e}')
 
     def _on_sync_finished(self, ok: bool):
         msg = 'Synced.' if ok else 'Sync failed.'
         self.statusBar().showMessage(msg)
-        log.info(f'HF Sync: zakończono — {"OK" if ok else "BŁĄD"}')
+        log.info(f'HF Sync: finished — {"OK" if ok else "ERROR"}')
+
+    # Screen type → importer build_type mapping (same as RecognitionWorker)
+    _STYPE_TO_BUILD: dict[str, str] = {
+        'SPACE_EQ':        'SPACE',
+        'GROUND_EQ':       'GROUND',
+        'TRAITS':          'SPACE_TRAITS',
+        'BOFFS':           'BOFFS',
+        'SPECIALIZATIONS': 'SPEC',
+        'SPACE_MIXED':     'SPACE',
+        'GROUND_MIXED':    'GROUND',
+    }
+
+    def _learn_layout_for(self, path: Path) -> bool:
+        """Save confirmed layout for one screenshot to anchors.json. Returns True if saved."""
+        try:
+            anns = self._data_mgr.get_annotations(path)
+            confirmed = [{'bbox': a.bbox, 'slot': a.slot} for a in anns
+                         if a.state == AnnotationState.CONFIRMED]
+            if not confirmed:
+                return False
+            stype = self._screen_types.get(path.name, 'UNKNOWN')
+            build_type = self._STYPE_TO_BUILD.get(stype)
+            if not build_type:
+                log.debug(f'Layout learn: {path.name} — stype={stype!r} unknown, skipping')
+                return False
+            import cv2
+            from warp.recognition.layout_detector import LayoutDetector
+            img = cv2.imread(str(path))
+            if img is None:
+                return False
+            LayoutDetector().learn_layout(build_type, img.shape[:2], confirmed)
+            log.info(f'Layout learn: {path.name} [{build_type}] — {len(confirmed)} slots saved to anchors.json')
+            return True
+        except Exception as e:
+            log.warning(f'Layout learn: error for {path.name}: {e}')
+            return False
+
+    def _learn_all_layouts(self):
+        """Save confirmed layouts for all screenshots to anchors.json."""
+        import cv2
+        from warp.recognition.layout_detector import LayoutDetector
+        detector = LayoutDetector()
+        learned_count = 0
+        skipped_unknown = 0
+        for path in self._screenshots:
+            anns = self._data_mgr.get_annotations(path)
+            confirmed = [{'bbox': a.bbox, 'slot': a.slot} for a in anns
+                         if a.state == AnnotationState.CONFIRMED]
+            if not confirmed:
+                continue
+            stype = self._screen_types.get(path.name, 'UNKNOWN')
+            build_type = self._STYPE_TO_BUILD.get(stype)
+            if not build_type:
+                skipped_unknown += 1
+                log.debug(f'Layout learn: {path.name} — stype={stype!r} unknown, skipping')
+                continue
+            img = cv2.imread(str(path))
+            if img is not None:
+                detector.learn_layout(build_type, img.shape[:2], confirmed)
+                log.info(f'Layout learn: {path.name} [{build_type}] — {len(confirmed)} slots')
+                learned_count += 1
+        log.info(f'Layout learning: saved {learned_count} layouts'
+                 + (f', skipped {skipped_unknown} (unknown screen type)' if skipped_unknown else '')
+                 + ' → anchors.json')
 
     def _update_progress(self):
         total = len(self._screenshots)

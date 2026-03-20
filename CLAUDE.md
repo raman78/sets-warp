@@ -1,5 +1,11 @@
 # SETS-WARP — Claude Code Context
 
+## Language rules
+
+**All code must be in English** — comments, log messages, docstrings, variable names, string literals visible in logs. No Polish in source files. When editing existing code that contains Polish log messages or comments, translate them to English.
+
+---
+
 ## Project overview
 
 Star Trek Online build planning tool with ML-based screenshot recognition.
@@ -267,13 +273,59 @@ from src.widgets import exec_in_thread
 
 ---
 
+## sets-warp-backend
+
+Companion FastAPI service deployed on Render. Source: `/home/raman/PycharmProjects/sets-warp-backend/`.
+
+### Purpose
+Community pHash knowledge base — separate from the HF training-crop pipeline.
+
+### Endpoints
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Liveness check |
+| `POST /contribute` | Receive crop PNG + label from WARP clients |
+| `GET /knowledge` | Serve merged `knowledge.json` (phash → item_name) |
+| `POST /admin/merge` | Merge contributions → knowledge.json (requires `X-Admin-Key`) |
+
+### Storage
+HF Dataset `sets-sto/warp-knowledge`:
+- `contributions/YYYY-MM-DD/<uuid>.json` + `.png` — raw per-user contributions
+- `knowledge.json` — merged, approved knowledge base (majority-vote per phash)
+
+### Admin merge
+```bash
+# Dry-run (raport bez zapisu):
+cd /home/raman/PycharmProjects/sets-warp-backend
+/home/raman/PycharmProjects/sets-warp/.venv/bin/python admin_merge.py
+
+# Apply (zapisuje knowledge.json do HF):
+/home/raman/PycharmProjects/sets-warp/.venv/bin/python admin_merge.py --apply --min 1
+```
+
+Credentials in `.env`: `HF_TOKEN`, `HF_REPO_ID=sets-sto/warp-knowledge`, `ADMIN_KEY`.
+
+### Two separate HF channels
+| Channel | Repo | Token location | Purpose |
+|---------|------|----------------|---------|
+| pHash knowledge | `sets-sto/warp-knowledge` | Render env var only | Community overrides for icon_matcher |
+| Training crops | `sets-sto/sto-icon-dataset` | `warp/hub_token.txt` | EfficientNet fine-tuning data |
+
+`WARPSyncClient` (`warp/knowledge/sync_client.py`) talks to the Render backend.
+`SyncWorker` (`warp/trainer/sync.py`) uploads directly to HF.
+
+---
+
 ## Changes made in this development session (2026-03-20)
 
 ### Files modified
-| File | Destination |
-|------|-------------|
-| `warp/trainer/trainer_window.py` | WARP CORE main window |
-| `warp/trainer/annotation_widget.py` | Canvas widget |
+| File | Change |
+|------|--------|
+| `warp/trainer/trainer_window.py` | WARP CORE main window — UI fixes + sync logging |
+| `warp/trainer/annotation_widget.py` | Canvas widget — zoom, cursors, bbox colors, selection |
+| `warp/trainer/sync.py` | Added `_slog` logging for HF sync milestones |
+| `warp/recognition/layout_detector.py` | Fixed pixel_count=1 for multi-slot rows |
+| `warp/warp_importer.py` | Fixed ShipDB crash when `name`/`type` field is list |
 
 ---
 
@@ -357,3 +409,34 @@ from src.widgets import exec_in_thread
 #### Keyboard
 - `keyPressEvent`: Delete removes selected annotation; Alt handling moved to `eventFilter`
 - `keyReleaseEvent` removed (Alt handled globally)
+
+---
+
+### layout_detector.py changes
+
+#### pixel_count floor fix
+- **Bug:** `_count_icons_in_row` scans right-to-left; STO fills slots left-to-right → empty slots on the right stop the scan early → `pixel_count=1` for all multi-slot rows
+- **Fix:** changed `min(max(pixel_count, 1), profile_count + 1)` to `min(max(pixel_count, profile_count), profile_count + 1)` — ShipDB profile is now the floor, pixel_count can still exceed profile by 1 (T6-X extra slots)
+
+---
+
+### warp_importer.py changes
+
+#### ShipDB._load list crash fix
+- **Bug:** some entries in `ship_list.json` have `name`/`type` as a list → `str.strip()` crashed
+- **Fix:** `(' '.join(v) if isinstance(v, list) else str(v)).strip()` for both fields
+
+---
+
+### sync.py changes
+
+#### _slog logging
+- Added `from src.setsdebug import log as _slog` (SETS log panel)
+- Logs: confirmed crop count, daily rate-limit counter, existing HF hash count, each upload (slot + name), final summary
+
+### trainer_window.py (_auto_sync)
+
+#### Logging + error handling
+- Logs start of upload, per-file progress (debug), and final OK/BŁĄD
+- Bare `except: pass` replaced with `except Exception as e: log.warning(...)`
+- `finished` connection moved to separate `_on_sync_finished` method

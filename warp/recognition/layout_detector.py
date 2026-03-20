@@ -150,13 +150,16 @@ class LayoutDetector:
         }
         
         # Avoid exact duplicates
+        total = len(self._calibration['learned'])
         for existing in self._calibration['learned']:
             if existing['type'] == screen_type and existing['res'] == entry['res'] and existing['slots'] == slot_map:
+                _slog.debug(f'LayoutDetector: learn_layout {screen_type} {w}x{h} — duplicate, skipping')
                 return
 
         self._calibration['learned'].append(entry)
         self._save_calibration()
-        log.info(f"LayoutDetector: Learned new layout for {screen_type} ({w}x{h})")
+        _slog.info(f'LayoutDetector: saved new layout [{screen_type}] {w}x{h} '
+                   f'({len(slot_map)} slots, total in db: {total + 1})')
 
     def _detect_via_learned_layouts(self, img, build_type, slot_order, profile):
         """Find the best matching learned layout signature."""
@@ -171,10 +174,11 @@ class LayoutDetector:
                      if e['type'] == build_type and abs(e['aspect'] - aspect) < 0.05]
         
         if not candidates: return None
-        
-        # Pick the most recent or best matching (for now, just use the first candidate)
-        # In future, could use more complex scoring
-        best = candidates[-1] 
+
+        # Pick the most recent matching entry
+        best = candidates[-1]
+        _slog.info(f'LayoutDetector: Strategy 1 (learned) — found {len(candidates)} matching layouts '
+                   f'for [{build_type}] aspect={aspect}, using latest ({best["res"]})')
         
         panel_right = self._find_panel_right_edge(img)
         row_h_est   = int(h * 0.07)

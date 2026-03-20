@@ -56,7 +56,7 @@ ANNOTATIONS_FILE = "data/annotations.jsonl"
 STAGING_ROOT     = "staging"              # user contributions land here
 MAX_DAILY_UPLOADS = 200                   # per install_id, per UTC day
 MAX_NAME_LEN      = 120
-MIN_CROP_PX       = 32
+MIN_CROP_PX       = 24
 
 
 def _get_install_id() -> str:
@@ -158,21 +158,21 @@ class SyncWorker(QThread):
         staging_crop = f"{staging_dir}/crops"
 
         confirmed = self._mgr.get_confirmed_crops()
-        _slog.info(f'HF Sync: {len(confirmed)} potwierdzonych cropów lokalnie')
+        _slog.info(f'HF Sync: {len(confirmed)} confirmed crops locally')
         if not confirmed:
             self.progress.emit(100, "Nothing to upload.")
             return
 
         # Client-side rate limit check
         today     = datetime.datetime.utcnow().strftime('%Y-%m-%d')
-        rl_file   = Path(self._mgr._data_root) / '.sync_rate_limit.json'
+        rl_file   = self._mgr._dir / '.sync_rate_limit.json'
         rl        = {}
         try:
             rl = json.loads(rl_file.read_text())
         except Exception:
             pass
         daily_count = rl.get(today, 0)
-        _slog.info(f'HF Sync: dziś już wysłano {daily_count}/{MAX_DAILY_UPLOADS}')
+        _slog.info(f'HF Sync: {daily_count}/{MAX_DAILY_UPLOADS} uploads already sent today')
         if daily_count >= MAX_DAILY_UPLOADS:
             self.progress.emit(100, f"Daily upload limit ({MAX_DAILY_UPLOADS}) reached.")
             return
@@ -180,19 +180,20 @@ class SyncWorker(QThread):
         # Fetch existing hashes in this user's staging folder
         self.progress.emit(5, "Checking existing uploads…")
         existing_hashes = self._fetch_staging_hashes(api, staging_crop)
-        _slog.info(f'HF Sync: {len(existing_hashes)} cropów już na HF staging')
+        _slog.info(f'HF Sync: {len(existing_hashes)} crops already on HF staging')
 
+        # Collect all new files first, then upload in a single commit
+        from huggingface_hub import CommitOperationAdd
         new_annotations: list[dict] = []
+        operations:      list       = []
         uploaded = 0
         total    = len(confirmed)
 
+        self.progress.emit(10, "Preparing files…")
         for idx, item in enumerate(confirmed):
             if daily_count + uploaded >= MAX_DAILY_UPLOADS:
                 break
-            pct = 5 + int(85 * idx / total)
-            self.progress.emit(pct, f"Uploading {idx+1}/{total}…")
 
-            # Validate annotation
             err = _validate_annotation(item)
             if err:
                 logger.warning(f"Sync: skipping invalid annotation ({err}): {item}")
@@ -202,28 +203,23 @@ class SyncWorker(QThread):
             if not crop_path.exists():
                 continue
 
-            # Validate crop image
             err = _validate_crop(crop_path)
             if err:
-                logger.warning(f"Sync: skipping invalid crop ({err}): {crop_path}")
+                logger.warning(f"Sync: skipping invalid crop ({err}): {crop_path.name}")
                 continue
 
             sha = self._file_sha256(crop_path)
             if sha in existing_hashes:
-                _slog.debug(f'HF Sync: pominięto (już na HF): {Path(item["path"]).name}')
-                continue   # already uploaded
+                _slog.debug(f'HF Sync: skipping (already on HF): {crop_path.name}')
+                continue
 
-            # Upload crop to staging
-            _slog.info(f'HF Sync: wysyłam [{item["slot"]}] {item["name"]} → {sha[:12]}…')
-            api.upload_file(
-                path_or_fileobj=str(crop_path),
+            _slog.info(f'HF Sync: queuing [{item["slot"]}] {item["name"]} → {sha[:12]}…')
+            operations.append(CommitOperationAdd(
                 path_in_repo=f"{staging_crop}/{sha}.png",
-                repo_id=HF_DATASET_REPO,
-                repo_type=HF_REPO_TYPE,
-            )
+                path_or_fileobj=str(crop_path),
+            ))
             existing_hashes.add(sha)
             uploaded += 1
-
             new_annotations.append({
                 "slot":        item["slot"],
                 "name":        item["name"],
@@ -232,8 +228,15 @@ class SyncWorker(QThread):
             })
 
         if new_annotations:
-            self.progress.emit(92, "Appending annotations…")
-            self._append_staging_annotations(api, staging_anno, new_annotations)
+            self.progress.emit(88, f"Uploading {uploaded} crops in one commit…")
+            self._append_staging_annotations_to_ops(operations, staging_anno, new_annotations, api)
+            api.create_commit(
+                repo_id=HF_DATASET_REPO,
+                repo_type=HF_REPO_TYPE,
+                operations=operations,
+                commit_message=f"WARP staging: {uploaded} new crops ({today})",
+            )
+            _slog.info(f'HF Sync: commit sent — {uploaded} crops + annotations')
 
         # Update local rate limit counter
         rl[today] = daily_count + uploaded
@@ -243,7 +246,7 @@ class SyncWorker(QThread):
             pass
 
         msg = f"Uploaded {uploaded} annotations to staging." if uploaded else "Nothing new to upload (all already on HF)."
-        _slog.info(f'HF Sync: gotowe — wysłano {uploaded} nowych, łącznie na HF: {len(existing_hashes)}')
+        _slog.info(f'HF Sync: done — {uploaded} new uploads, total on HF: {len(existing_hashes)}')
         self.progress.emit(100, msg)
 
     def _fetch_staging_hashes(self, api, staging_crop_dir: str) -> set[str]:
@@ -260,23 +263,27 @@ class SyncWorker(QThread):
         except Exception:
             return set()
 
-    def _append_staging_annotations(self, api, path_in_repo: str, new_entries: list[dict]):
+    def _append_staging_annotations_to_ops(self, operations: list, path_in_repo: str,
+                                           new_entries: list[dict], api) -> None:
+        """Build annotations.jsonl content and add it as a CommitOperationAdd to operations."""
         import io
+        from huggingface_hub import CommitOperationAdd
         existing_lines: list[str] = []
         existing_hashes: set[str] = set()
         try:
-            local = api.hf_hub_download(
+            from huggingface_hub import hf_hub_download
+            local = hf_hub_download(
                 repo_id=HF_DATASET_REPO,
                 filename=path_in_repo,
                 repo_type=HF_REPO_TYPE,
+                token=self._token,
             )
             with open(local) as f:
                 for line in f:
                     line = line.strip()
                     if line:
                         try:
-                            d = json.loads(line)
-                            existing_hashes.add(d.get("crop_sha256", ""))
+                            existing_hashes.add(json.loads(line).get("crop_sha256", ""))
                         except Exception:
                             pass
                         existing_lines.append(line)
@@ -287,15 +294,12 @@ class SyncWorker(QThread):
         for entry in new_entries:
             if entry["crop_sha256"] not in existing_hashes:
                 combined.append(json.dumps(entry, ensure_ascii=False))
-                existing_hashes.add(entry["crop_sha256"])
 
         content_bytes = "\n".join(combined).encode("utf-8")
-        api.upload_file(
-            path_or_fileobj=io.BytesIO(content_bytes),
+        operations.append(CommitOperationAdd(
             path_in_repo=path_in_repo,
-            repo_id=HF_DATASET_REPO,
-            repo_type=HF_REPO_TYPE,
-        )
+            path_or_fileobj=io.BytesIO(content_bytes),
+        ))
 
     # ---------------------------------------------------------------- download
 

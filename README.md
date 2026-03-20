@@ -81,6 +81,18 @@ SETS.bat      # Windows
 
 ---
 
+## WARP gets smarter over time
+
+Every time you confirm an item in WARP CORE, two things happen in the background:
+
+**Your local model improves.** Confirmed items are saved as training data. Periodically WARP retrains the icon recognition model on your corrections — so items it got wrong today, it gets right next time.
+
+**The community knowledge base grows.** Each confirmed item is also sent (anonymously) to a shared knowledge base. When enough players confirm the same item, it's merged into the community database that all WARP users benefit from — no training required, just downloading the latest knowledge at startup.
+
+This means WARP works reasonably well out of the box, and gets noticeably better the more you use WARP CORE to correct mistakes.
+
+---
+
 ## Contributing
 
 Item data comes from the [official STO wiki](https://stowiki.net). If something is missing or wrong, update it there.

@@ -2,17 +2,17 @@
 """
 warp/tools/test_pipeline.py — End-to-end test WARP pipeline
 ============================================================
-Uruchamia pełny pipeline na folderze ze screenshotami BEZ GUI.
+Runs the full pipeline on a folder of screenshots WITHOUT the GUI.
 
-Użycie (z katalogu SETS-WARP):
-    python warp/tools/test_pipeline.py --folder /ścieżka/do/screenshotów
-    python warp/tools/test_pipeline.py --folder ~/screeny --type GROUND
-    python warp/tools/test_pipeline.py --folder ~/screeny --verbose
-    python warp/tools/test_pipeline.py --image screenshot.png   # jeden plik
+Usage (from the SETS-WARP directory):
+    python warp/tools/test_pipeline.py --folder /path/to/screenshots
+    python warp/tools/test_pipeline.py --folder ~/screenshots --type GROUND
+    python warp/tools/test_pipeline.py --folder ~/screenshots --verbose
+    python warp/tools/test_pipeline.py --image screenshot.png   # single file
 
-Wymagania:
-    - Uruchomiony raz SETS (żeby .config/cargo/ i images/ istniały)
-    - Lub: python warp/tools/test_pipeline.py --skip-matcher  (tylko layout)
+Requirements:
+    - SETS launched at least once (so .config/cargo/ and images/ exist)
+    - Or: python warp/tools/test_pipeline.py --skip-matcher  (layout only)
 """
 
 from __future__ import annotations
@@ -36,10 +36,10 @@ def _ensure_venv():
     if venv_py.exists():
         os.execv(str(venv_py), [str(venv_py)] + sys.argv)
 
-    # Brak .venv — uruchom bootstrap.py
+    # No .venv — run bootstrap.py
     bootstrap = root / 'bootstrap.py'
     if bootstrap.exists():
-        print('  → Brak .venv — uruchamiam bootstrap.py ...')
+        print('  → No .venv found — running bootstrap.py ...')
         subprocess.check_call([sys.executable, str(bootstrap)])
         if venv_py.exists():
             os.execv(str(venv_py), [str(venv_py)] + sys.argv)
@@ -76,10 +76,10 @@ class _StubCache:
         self._load_equipment(config_dir)
 
     def _load_equipment(self, config_dir: Path):
-        """Wczytaj pliki JSON z .config/cargo/ jako equipment cache."""
+        """Load JSON files from .config/cargo/ as equipment cache."""
         cargo = config_dir / 'cargo'
         if not cargo.exists():
-            log.warning(f'Brak katalogu cargo: {cargo}')
+            log.warning(f'Missing cargo directory: {cargo}')
             return
         count = 0
         for f in cargo.glob('*.json'):
@@ -129,10 +129,10 @@ def run_test(
     importer = WarpImporter(sets_app=app, build_type=build_type)
 
     if skip_matcher:
-        log.info('--skip-matcher: pomijam SETSIconMatcher')
+        log.info('--skip-matcher: skipping SETSIconMatcher')
         importer._get_matcher = lambda: None  # type: ignore
 
-    # Jeśli podano folder — zbierz pliki
+    # If a folder was given — collect files
     all_files: list[Path] = []
     for p in paths:
         if p.is_dir():
@@ -144,7 +144,7 @@ def run_test(
             log.warning(f'Nie istnieje: {p}')
 
     if not all_files:
-        print(f'{R}Brak obrazków do przetworzenia.{RS}')
+        print(f'{R}No images to process.{RS}')
         sys.exit(1)
 
     print(f'\n{W}WARP Pipeline Test{RS}')
@@ -193,7 +193,7 @@ def run_test(
             layout_det = importer._get_layout()
             layout = layout_det.detect(img, btype, profile)
             bbox_count = sum(len(v) for v in layout.values())
-            print(f'  {G}Layout:{RS} {len(layout)} grup slotów, {bbox_count} bbox łącznie')
+            print(f'  {G}Layout:{RS} {len(layout)} slot groups, {bbox_count} bboxes total')
 
             if verbose:
                 for slot, bboxes in layout.items():
@@ -286,7 +286,7 @@ Przykłady:
 
     if not paths:
         parser.print_help()
-        print(f'\n{R}Podaj --folder lub --image{RS}')
+        print(f'\n{R}Provide --folder or --image{RS}')
         sys.exit(1)
 
     run_test(
