@@ -250,7 +250,8 @@ class ShipDB:
 
     def __init__(self, cargo_dir: Path):
         self._ships: list[dict] = []
-        self._index: dict[str, dict] = {}   # lowercase name → ship entry
+        self._index:   dict[str, dict] = {}  # lowercase name → ship entry
+        self._by_type: dict[str, dict] = {}  # lowercase type → ship entry
         self._load(cargo_dir)
 
     def _load(self, cargo_dir: Path):
@@ -265,32 +266,44 @@ class ShipDB:
                 name = (ship.get('name') or '').strip()
                 if name:
                     self._index[name.lower()] = ship
-            log.info(f'ShipDB: loaded {len(self._ships)} ships')
+                stype = (ship.get('type') or '').strip()
+                if stype:
+                    self._by_type[stype.lower()] = ship
+            log.info(f'ShipDB: loaded {len(self._ships)} ships, '
+                     f'{len(self._by_type)} unique types')
         except Exception as e:
             log.warning(f'ShipDB load error: {e}')
 
     def get_profile(self, ship_name: str, ship_type: str) -> dict[str, int]:
         """
         Returns exact slot counts for a ship.
-        Tries: exact name match → fuzzy name match → type-keyword fallback.
+        ship_type is the primary key — it determines layout/slots.
+        ship_name is cosmetic only (player-given name, irrelevant to slots).
+
+        Priority:
+          1. Exact type match
+          2. Fuzzy type match (handles OCR errors, multi-line joins)
+          3. Keyword fallback from type string
         """
-        # 1. Exact match
-        entry = self._index.get(ship_name.lower().strip())
+        st = ship_type.lower().strip()
 
-        # 2. Fuzzy match (handles slight OCR errors, missing prefixes)
-        if entry is None and self._index:
-            candidates = list(self._index.keys())
-            matches = get_close_matches(
-                ship_name.lower(), candidates, n=1, cutoff=0.72)
-            if matches:
-                entry = self._index[matches[0]]
-                log.debug(f'ShipDB fuzzy: {ship_name!r} → {matches[0]!r}')
-
-        if entry is not None:
+        # 1. Exact type match
+        entry = self._by_type.get(st)
+        if entry:
+            log.debug(f'ShipDB exact type: {ship_type!r}')
             return self._entry_to_profile(entry)
 
-        # 3. Type-keyword fallback
-        log.debug(f'ShipDB: {ship_name!r} not found — using keyword fallback')
+        # 2. Fuzzy type match — handles OCR errors and multi-line joins
+        if st and self._by_type:
+            type_candidates = list(self._by_type.keys())
+            type_matches = get_close_matches(st, type_candidates, n=1, cutoff=0.68)
+            if type_matches:
+                entry = self._by_type[type_matches[0]]
+                log.debug(f'ShipDB fuzzy type: {ship_type!r} → {type_matches[0]!r}')
+                return self._entry_to_profile(entry)
+
+        # 3. Keyword fallback from type string
+        log.debug(f'ShipDB: type {ship_type!r} not found — using keyword fallback')
         return _type_keyword_profile(ship_type)
 
     def _entry_to_profile(self, e: dict) -> dict[str, int]:
@@ -413,9 +426,11 @@ class WarpImporter:
         sets_app,
         build_type: str = 'SPACE',
         progress_callback: Callable[[int, str], None] | None = None,
+        from_trainer: bool = False,
     ):
         self._app              = sets_app
         self._build_type       = build_type
+        self._from_trainer     = from_trainer
         self._progress_callback = progress_callback
         self._interrupt_check = None
         self._layout  = None
@@ -474,20 +489,30 @@ class WarpImporter:
 
     def _process_image(self, img: np.ndarray, source: str, profile_override: dict | None = None) -> ImportResult:
         _slog.info(f'WarpImporter._process_image: source={source} build_type={self._build_type}')
-        # Step 1 — extract ship info via OCR only when build_type is unknown.
-        # When called from the trainer (build_type always set), skip OCR entirely.
-        if self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
-                                'GROUND_TRAITS', 'BOFFS', 'SPEC',
-                                'SPACE_MIXED', 'GROUND_MIXED'):
+        # Step 1 — extract ship info via OCR.
+        # build_type from caller sets the import mode but we always try OCR
+        # for ship name/type — unless called from trainer (has _data_mgr attr).
+        _is_trainer_call = self._from_trainer
+        if _is_trainer_call:
+            # Trainer always has build_type set and uses confirmed annotations
             build_type = self._build_type
             ship_name  = ''
             ship_type  = ''
             text_info  = {}
         else:
+            # WARP dialog — run OCR to get ship info regardless of build_type
             text_info  = self._get_text().extract_ship_info(img)
             ship_name  = text_info.get('ship_name', '')
             ship_type  = text_info.get('ship_type', '')
-            build_type = 'GROUND' if text_info.get('build_type') == 'GROUND' else 'SPACE'
+            # Use caller's build_type as primary, OCR as confirmation
+            if self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
+                                    'GROUND_TRAITS', 'BOFFS', 'SPEC',
+                                    'SPACE_MIXED', 'GROUND_MIXED'):
+                build_type = self._build_type
+            else:
+                build_type = 'GROUND' if text_info.get('build_type') == 'GROUND' else 'SPACE'
+            _slog.info(f'WarpImporter: OCR result: name={ship_name!r} type={ship_type!r} '
+                       f'ocr_build={text_info.get("build_type")!r} → using build_type={build_type!r}')
 
         # Step 2 — get exact slot profile from ship_list.json
         profile = self._get_shipdb().get_profile(ship_name, ship_type)

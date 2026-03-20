@@ -26,6 +26,10 @@ from PySide6.QtGui import QFont, QPixmap, QImage
 from warp.warp_importer import WarpImporter, ImportResult, RecognisedItem
 
 log = logging.getLogger(__name__)
+try:
+    from src.setsdebug import log as _slog
+except Exception:
+    _slog = log
 
 # ── SETS build key mappings ────────────────────────────────────────────────────
 # Maps WARP slot names → (SETS build_key, environment, is_equipment)
@@ -312,6 +316,7 @@ class WarpDialog(QDialog):
 
         # Set ship info if recognised
         # Set ship name, ship selection and tier from recognised result
+        _slog.info(f'WARP: _apply_to_sets ship_name={r.ship_name!r} ship_type={r.ship_type!r} ship_tier={r.ship_tier!r}')
         if r.ship_name or r.ship_type or r.ship_tier:
             try:
                 build   = self._sets.build['space']
@@ -322,7 +327,7 @@ class WarpDialog(QDialog):
                     widgets.ship['name'].setText(r.ship_name)
                 # Try to select ship class from cache using ship_type string
                 # cache.ships is keyed by wiki Page name
-                if r.ship_type and build.get('ship', '<Pick Ship>') == '<Pick Ship>':
+                if r.ship_type and build.get('ship', '<Pick Ship>') in ('<Pick Ship>', '', None):
                     from difflib import get_close_matches
                     ships = getattr(self._sets.cache, 'ships', {})
                     candidates = list(ships.keys())
@@ -335,33 +340,54 @@ class WarpDialog(QDialog):
                         if hits:
                             match = hits[0]
                     if match:
-                        log.info(f'WARP: auto-selecting ship {match!r} from {r.ship_type!r}')
-                        from src.callbacks import select_ship as _sel
-                        # Simulate ship selection without opening picker
-                        from src.callbacks import _save_session_slots, align_space_frame
-                        from src.iofunc import exec_in_thread
-                        ship_data = ships[match]
-                        widgets.ship['button'].setText(match)
-                        build['space'] = build.get('space', {})
-                        build['ship']  = match
-                        tier = ship_data.get('tier', 6)
-                        widgets.ship['tier'].clear()
-                        if tier == 6:
-                            widgets.ship['tier'].addItems(('T6', 'T6-X', 'T6-X2'))
-                        elif tier == 5:
-                            widgets.ship['tier'].addItems(('T5', 'T5-U', 'T5-X', 'T5-X2'))
-                        else:
-                            widgets.ship['tier'].addItem(f'T{tier}')
-                        # Set tier from recognised result
-                        if r.ship_tier:
-                            idx = widgets.ship['tier'].findText(r.ship_tier)
+                        _slog.info(f'WARP: auto-selecting ship {match!r} from {r.ship_type!r}')
+                        # Use select_ship logic directly — handles image, tier, slots
+                        try:
+                            from src.callbacks import (
+                                _save_session_slots, _restore_session_slots,
+                                align_space_frame)
+                            from src.widgets import exec_in_thread
+                            sets = self._sets
+                            ship_data = ships[match]
+                            sets.building = True
+                            widgets.ship['button'].setText(match)
+                            # Load image
+                            image_filename = ship_data['image'][5:]
+                            def _on_ship_image(img, _w=widgets):
+                                ship_img = img[0]
+                                _w.ship['image'].set_image(ship_img)
+                            exec_in_thread(sets, sets.images.get_ship_image,
+                                           image_filename, result=_on_ship_image)
+                            # Tier combo
+                            tier = ship_data['tier']
+                            widgets.ship['tier'].clear()
+                            if tier == 6:
+                                widgets.ship['tier'].addItems(('T6', 'T6-X', 'T6-X2'))
+                            elif tier == 5:
+                                widgets.ship['tier'].addItems(('T5', 'T5-U', 'T5-X', 'T5-X2'))
+                            else:
+                                widgets.ship['tier'].addItem(f'T{tier}')
+                            # Set tier from recognised result (e.g. T6-X2)
+                            ship_tier = r.ship_tier or f'T{tier}'
+                            idx = widgets.ship['tier'].findText(ship_tier)
                             if idx >= 0:
                                 widgets.ship['tier'].setCurrentIndex(idx)
-                        build['tier'] = r.ship_tier or f'T{tier}'
+                            sets.build['space']['ship'] = match
+                            sets.build['space']['tier'] = ship_tier
+                            if ship_data.get('equipcannons') == 'yes':
+                                widgets.ship['dc'].show()
+                            else:
+                                widgets.ship['dc'].hide()
+                            _save_session_slots(sets)
+                            align_space_frame(sets, ship_data, clear=False)
+                            _restore_session_slots(sets)
+                            sets.building = False
+                        except Exception as _se:
+                            _slog.warning(f'WARP: ship select failed: {_se}')
                     else:
-                        log.info(f'WARP: ship {r.ship_type!r} not found in cache')
+                        _slog.info(f'WARP: ship {r.ship_type!r} not found in cache')
             except Exception as _e:
-                log.debug(f'WARP: ship info widget update failed: {_e}')
+                _slog.warning(f'WARP: ship info widget update failed: {_e}')
 
         for ri in r.items:
             if not ri.name:

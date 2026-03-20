@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
     QFileDialog, QComboBox, QLineEdit, QGroupBox,
     QProgressBar, QToolBar, QStatusBar, QMessageBox,
     QInputDialog, QSizePolicy, QFrame, QScrollArea,
-    QAbstractItemView, QCompleter, QMenu, QPlainTextEdit
+    QAbstractItemView, QCompleter, QMenu, QPlainTextEdit,
+    QCheckBox, QDoubleSpinBox
 )
 from PySide6.QtCore import Qt, QSettings, QThread, Signal, QSortFilterProxyModel, QSize
 from PySide6.QtGui import QFont, QAction, QColor, QStandardItemModel, QStandardItem
@@ -183,7 +184,7 @@ class RecognitionWorker(QThread):
         try:
             import cv2
             from warp.warp_importer import WarpImporter
-            importer = WarpImporter(sets_app=self._sets_app, build_type=importer_type)
+            importer = WarpImporter(sets_app=self._sets_app, build_type=importer_type, from_trainer=True)
             img = cv2.imread(str(self._path))
             if img is None:
                 _slog.warning(f'RecognitionWorker: cannot read image {self._path}')
@@ -570,7 +571,22 @@ class WarpCoreWindow(QMainWindow):
         self._btn_accept = QPushButton('Accept')
         self._btn_accept.setStyleSheet('QPushButton{background:#1a5c3a;color:#7effc8;border:1px solid #3aac6a;border-radius:3px;padding:5px 12px;font-weight:bold;}QPushButton:hover{background:#2a8c5a;}')
         self._btn_accept.clicked.connect(self._on_accept)
+        self._btn_accept.setShortcut('Return')
+        self._btn_accept.setToolTip('Accept (Enter)')
         br.addWidget(self._btn_accept)
+        self._chk_auto_accept = QCheckBox('Auto ≥')
+        self._chk_auto_accept.setToolTip(
+            'Auto-accept items where ML confidence meets threshold')
+        self._chk_auto_accept.setChecked(False)
+        self._spin_auto_conf = QDoubleSpinBox()
+        self._spin_auto_conf.setRange(0.5, 1.0)
+        self._spin_auto_conf.setSingleStep(0.05)
+        self._spin_auto_conf.setValue(0.75)
+        self._spin_auto_conf.setDecimals(2)
+        self._spin_auto_conf.setFixedWidth(58)
+        self._spin_auto_conf.setToolTip('Min confidence for auto-accept')
+        br.addWidget(self._chk_auto_accept)
+        br.addWidget(self._spin_auto_conf)
         bc.addLayout(br)
         lay.addLayout(bc)
         return g
@@ -599,6 +615,7 @@ class WarpCoreWindow(QMainWindow):
         self._review_list = QListWidget()
         self._review_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._review_list.currentRowChanged.connect(self._on_review_row_changed)
+        self._review_list.installEventFilter(self)
         self._review_list.itemClicked.connect(self._on_review_item_clicked)
         pl.addWidget(self._review_list, 1)
         self._review_summary = QLabel('')
@@ -980,6 +997,8 @@ class WarpCoreWindow(QMainWindow):
         self._recognition_cache[filename] = merged
         if self._current_idx >= 0 and self._screenshots[self._current_idx].name == filename:
             self._populate_review_panel(merged, stype)
+            # Run auto-accept after panel is populated
+            self._run_auto_accept()
 
     def _on_recognition_error(self, msg: str):
         if self._recog_dlg:
@@ -1145,6 +1164,17 @@ class WarpCoreWindow(QMainWindow):
 
     def _on_edit_bbox_toggle(self, checked: bool):
         pass  # Edit BBox disabled — reserved for future implementation
+
+    def eventFilter(self, obj, event):
+        """Handle Delete key on review list to remove selected bbox."""
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        if obj is self._review_list and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self._on_remove_item()
+                return True
+        return super().eventFilter(obj, event)
 
     def _on_add_bbox_toggle(self, checked: bool):
         if checked:
@@ -1410,6 +1440,50 @@ class WarpCoreWindow(QMainWindow):
             self._name_edit.blockSignals(True)
             self._name_edit.setText(name)
             self._name_edit.blockSignals(False)
+
+    # ── Auto-accept ───────────────────────────────────────────────────────────
+
+    def _run_auto_accept(self):
+        """Auto-accept all pending items whose ML conf >= threshold.
+        Called after recognition completes on a new screenshot."""
+        if not getattr(self, '_chk_auto_accept', None): return
+        if not self._chk_auto_accept.isChecked(): return
+        threshold = self._spin_auto_conf.value()
+        accepted = 0
+        for row, ri in enumerate(self._recognition_items):
+            if ri.get('state') != 'pending': continue
+            if ri.get('slot', '') in NON_ICON_SLOTS: continue
+            conf = ri.get('conf', 0.0)
+            if conf < threshold: continue
+            # Auto-accept: slot and name are from ML, no user changes
+            slot = ri.get('slot', '')
+            name = ri.get('name', '') or ri.get('orig_name', '')
+            if not slot or not name: continue
+            ri['state'] = 'confirmed'
+            if ri.get('bbox') and self._current_idx >= 0:
+                path = self._screenshots[self._current_idx]
+                self._data_mgr.add_annotation(
+                    image_path=path, bbox=ri['bbox'], slot=slot, name=name,
+                    state=AnnotationState.CONFIRMED,
+                    ml_conf=conf,
+                    ml_name=name,
+                )
+            litem = self._review_list.item(row)
+            if litem:
+                litem.setText(f'{slot}  ->  {name}  [auto]')
+                litem.setForeground(QColor('#4ec9b0'))  # teal = auto-accepted
+            if ri.get('crop_bgr') is not None and slot not in NON_ICON_SLOTS:
+                from warp.recognition.icon_matcher import SETSIconMatcher
+                SETSIconMatcher.add_session_example(ri['crop_bgr'], name)
+            accepted += 1
+        if accepted:
+            self._update_progress()
+            self._data_mgr.save()
+            # Move to first remaining pending item
+            self._advance_to_next_unconfirmed(-1)
+            from src.setsdebug import log as _sl
+            _sl.info(f'TrainerWindow: auto-accepted {accepted} items '
+                     f'(conf>={threshold:.2f})')
 
     def _on_accept(self):
         slot = self._slot_combo.currentText()
