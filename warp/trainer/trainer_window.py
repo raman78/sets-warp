@@ -469,6 +469,7 @@ class WarpCoreWindow(QMainWindow):
         sp.addWidget(self._make_left_panel())
         sp.addWidget(self._make_center_panel())
         sp.addWidget(self._make_right_panel())
+        sp.setSizes([400, 700, 400])
         sp.setStretchFactor(0, 0)
         sp.setStretchFactor(1, 1)
         sp.setStretchFactor(2, 0)
@@ -476,6 +477,7 @@ class WarpCoreWindow(QMainWindow):
 
     def _make_left_panel(self) -> QWidget:
         left = QWidget()
+        left.setMinimumWidth(400)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(8, 8, 8, 8)
         ll.setSpacing(6)
@@ -506,6 +508,7 @@ class WarpCoreWindow(QMainWindow):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
         self._ann_widget = AnnotationWidget(self._data_mgr)
+        self._ann_widget.installEventFilter(self)
         self._ann_widget.annotation_added.connect(self._on_bbox_drawn)
         self._ann_widget.item_selected.connect(self._on_item_selected)
         self._ann_widget.item_deselected.connect(self._on_canvas_deselected)
@@ -619,6 +622,7 @@ class WarpCoreWindow(QMainWindow):
         self._review_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._review_list.currentRowChanged.connect(self._on_review_row_changed)
         self._review_list.installEventFilter(self)
+        # ann_widget event filter set after creation in _make_center_panel
         self._review_list.itemClicked.connect(self._on_review_item_clicked)
         pl.addWidget(self._review_list, 1)
         self._review_summary = QLabel('')
@@ -1192,14 +1196,27 @@ class WarpCoreWindow(QMainWindow):
             lambda v: self._settings.setValue(_KEY_AUTO_CONF, v))
 
     def eventFilter(self, obj, event):
-        """Handle Delete key on review list to remove selected bbox."""
+        """Handle Delete key on review list and canvas to remove selected bbox."""
         from PySide6.QtCore import QEvent
-        from PySide6.QtGui import QKeyEvent
-        if obj is self._review_list and event.type() == QEvent.Type.KeyPress:
+        rl = getattr(self, '_review_list', None)
+        aw = getattr(self, '_ann_widget', None)
+        sa = getattr(self, '_scroll_area', None)
+        if obj in (rl, aw) and obj is not None and event.type() == QEvent.Type.KeyPress:
             key = event.key()
             if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 self._on_remove_item()
                 return True
+        # Ctrl+wheel anywhere over canvas → zoom (single handler, no duplicates)
+        from PySide6.QtCore import QEvent as _QE
+        if event.type() == _QE.Type.Wheel and aw is not None and sa is not None:
+            ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            if ctrl:
+                from PySide6.QtGui import QCursor as _QC
+                from PySide6.QtCore import QRect
+                sa_rect = QRect(sa.mapToGlobal(sa.rect().topLeft()), sa.rect().size())
+                if sa_rect.contains(_QC.pos()):
+                    aw.wheelEvent(event)
+                    return True
         return super().eventFilter(obj, event)
 
     def _on_add_bbox_toggle(self, checked: bool):
@@ -1949,7 +1966,8 @@ class WarpCoreWindow(QMainWindow):
         if text in self.BOFF_ABILITY_PROPERTIES:
             career, _ = self.BOFF_ABILITY_PROPERTIES[text]
             self._slot_combo.setCurrentText(f'Boff {career}')
-        # Return focus to review list — deactivates name field
+        # Selection from dropdown = immediate confirm, no need to click Accept
+        self._on_accept()
         self._review_list.setFocus()
 
     def _on_train(self):
@@ -2105,6 +2123,11 @@ class WarpCoreWindow(QMainWindow):
         return Path('.')
 
     def closeEvent(self, event):
+        try:
+            from PySide6.QtWidgets import QApplication
+            QApplication.instance().removeEventFilter(self)
+        except Exception:
+            pass
         if self._data_mgr:
             self._data_mgr.save()
         event.accept()

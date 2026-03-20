@@ -53,6 +53,11 @@ class AnnotationWidget(QWidget):
         self._scale:    float          = 1.0
         self._offset_x: int            = 0
         self._offset_y: int            = 0
+        self._user_scale: 'float | None' = None  # None = fit-to-window
+        self._fit_scale: float          = 1.0   # computed once at load, stable
+        self._zoom:     float          = 1.0   # 1.0–6.0
+        self._zoom_ox:  float          = 0.0
+        self._zoom_oy:  float          = 0.0
 
         # Mode flags — drawing/editing only active when explicitly enabled
         self._draw_mode_forced: bool = False   # set by + Add BBox / Edit BBox
@@ -86,6 +91,7 @@ class AnnotationWidget(QWidget):
         self._HANDLE = 9
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(400, 300)
         self.setStyleSheet("background: #111;")
@@ -102,6 +108,9 @@ class AnnotationWidget(QWidget):
         self._drawing       = False
         self._highlighted_row = -1
         self._selected_row = -1
+        self._zoom = 1.0
+        self._zoom_ox = 0.0
+        self._zoom_oy = 0.0
         self._compute_transform()
         if self._pixmap:
             self.resize(self._pixmap.width(), self._pixmap.height())
@@ -156,7 +165,9 @@ class AnnotationWidget(QWidget):
     def paintEvent(self, event: QPaintEvent):
         painter = QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._pixmap:
-            painter.drawPixmap(self._offset_x, self._offset_y, self._pixmap.width(), self._pixmap.height(), self._pixmap)
+            zw = int(self._pixmap.width()  * self._scale)
+            zh = int(self._pixmap.height() * self._scale)
+            painter.drawPixmap(self._offset_x, self._offset_y, zw, zh, self._pixmap)
         else:
             painter.fillRect(self.rect(), QColor("#111")); painter.setPen(QColor("#555")); painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No image loaded\nOpen a folder to start")
             return
@@ -198,8 +209,7 @@ class AnnotationWidget(QWidget):
         else:
             color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = SELECTED_PEN_WIDTH if selected else DRAW_PEN_WIDTH; style = Qt.PenStyle.SolidLine
         pen = QPen(color, pw, style); painter.setPen(pen); painter.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 25))); rect = self._img_to_screen_rect(bbox); painter.drawRect(rect)
-        badge = name or slot
-        if badge: painter.setPen(color); painter.setFont(QFont("", FONT_SIZE_BADGE)); painter.drawText(rect.bottomLeft() + QPoint(2, 12), badge[:28])
+        # badge text removed — info shown via tooltip in review list
         if selected:
             h = self._HANDLE; painter.setPen(QPen(QColor(0, 0, 0, 180), 1)); painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
             for hx, hy in self._handle_positions(rect): painter.drawRect(hx - h//2, hy - h//2, h, h)
@@ -266,7 +276,12 @@ class AnnotationWidget(QWidget):
         if self._selected_idx >= 0:
             handle = self._handle_hit_test(pos, self._selected_idx)
             if handle: self.setCursor(self._cursor_for_handle(handle)); return
-        self.setCursor(Qt.CursorShape.ArrowCursor)
+        # Preserve draw cursor if Alt is held
+        from PySide6.QtWidgets import QApplication as _QApp
+        if _QApp.queryKeyboardModifiers() & Qt.KeyboardModifier.AltModifier:
+            self.setCursor(self._make_draw_cursor())
+        else:
+            self.unsetCursor()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton: return
@@ -311,7 +326,7 @@ class AnnotationWidget(QWidget):
         px = QPixmap(size, size)
         px.fill(Qt.GlobalColor.transparent)
         p = QPainter(px)
-        p.setPen(QPen(DRAW_BBOX_COLOR, 1))
+        p.setPen(QPen(DRAW_BBOX_COLOR, 2))
         cx = size // 2
         p.drawLine(cx, 0, cx, size - 1)   # vertical
         p.drawLine(0, cx, size - 1, cx)   # horizontal
@@ -322,21 +337,121 @@ class AnnotationWidget(QWidget):
     def _cursor_for_handle(handle: str) -> Qt.CursorShape:
         return {'move': Qt.CursorShape.SizeAllCursor, 'resize_NW': Qt.CursorShape.SizeFDiagCursor, 'resize_SE': Qt.CursorShape.SizeFDiagCursor, 'resize_NE': Qt.CursorShape.SizeBDiagCursor, 'resize_SW': Qt.CursorShape.SizeBDiagCursor, 'resize_N': Qt.CursorShape.SizeVerCursor, 'resize_S': Qt.CursorShape.SizeVerCursor, 'resize_W': Qt.CursorShape.SizeHorCursor, 'resize_E': Qt.CursorShape.SizeHorCursor}.get(handle, Qt.CursorShape.ArrowCursor)
 
+    def wheelEvent(self, event):
+        from src.setsdebug import log as _sl
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        if ctrl:
+            if not self._pixmap: return
+            delta = event.angleDelta().y()
+            factor = 1.15 if delta > 0 else 1.0 / 1.15
+            # Use _fit_scale computed at load time — stable, doesn't grow with widget
+            fit_s = self._fit_scale
+            old_s = self._scale
+            new_s = max(fit_s, min(fit_s * 6.0, old_s * factor))
+            _sl.info(f'AW.zoom fit={fit_s:.3f} old={old_s:.3f} new={new_s:.3f} delta={delta}')
+            if abs(new_s - old_s) < 0.0001: return
+            # Map cursor to widget coords
+            try:
+                pos = event.position()
+                cx, cy = float(pos.x()), float(pos.y())
+                sa = self.parent()
+                vp = sa.viewport() if sa and hasattr(sa, 'viewport') else None
+                if vp:
+                    from PySide6.QtCore import QPoint
+                    widget_pos = self.mapFrom(vp, QPoint(int(cx), int(cy)))
+                    cx, cy = float(widget_pos.x()), float(widget_pos.y())
+            except Exception:
+                cx, cy = self.width() / 2.0, self.height() / 2.0
+            img_x = (cx - self._offset_x) / old_s if old_s else 0.0
+            img_y = (cy - self._offset_y) / old_s if old_s else 0.0
+            if new_s <= fit_s * 1.001:
+                self._user_scale = None
+            else:
+                self._user_scale = new_s
+            self._compute_transform()
+            if self._user_scale is not None:
+                self._offset_x = int(cx - img_x * new_s)
+                self._offset_y = int(cy - img_y * new_s)
+            self.adjustSize()
+            self.update()
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance().installEventFilter(self)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance().removeEventFilter(self)
+
+    def enterEvent(self, event):
+        """Mouse entered canvas area — if Alt held, show draw cursor."""
+        from PySide6.QtWidgets import QApplication
+        mods = QApplication.queryKeyboardModifiers()
+        if mods & Qt.KeyboardModifier.AltModifier:
+            self.setCursor(self._make_draw_cursor())
+
+    def leaveEvent(self, event):
+        """Mouse left canvas area — restore normal cursor."""
+        if not self._drawing:
+            self.unsetCursor()
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        etype = event.type()
+        if etype in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            # Only react when mouse is over this widget
+            from PySide6.QtGui import QCursor as _QC
+            if not self.rect().contains(self.mapFromGlobal(_QC.pos())):
+                return False
+            key = event.key()
+            if key == Qt.Key.Key_Alt and not event.isAutoRepeat():
+                if etype == QEvent.Type.KeyPress:
+                    self.setCursor(self._make_draw_cursor())
+                else:
+                    if not self._drawing:
+                        self.unsetCursor()
+        return False
+
     def resizeEvent(self, event): self._compute_transform(); self.update()
 
     def sizeHint(self):
-        if self._pixmap: return QSize(self._pixmap.width(), self._pixmap.height())
+        if self._pixmap:
+            return QSize(max(1,int(self._pixmap.width()*self._scale)),
+                         max(1,int(self._pixmap.height()*self._scale)))
         return QSize(800, 600)
 
     def _compute_transform(self):
         if not self._pixmap: return
-        self._scale = 1.0; self._offset_x = max(0, (self.width() - self._pixmap.width()) // 2); self._offset_y = max(0, (self.height() - self._pixmap.height()) // 2)
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        if self._user_scale is None:
+            # Fit-to-window using stored _fit_scale
+            # _fit_scale is set once at load_image, never changes
+            self._scale = self._fit_scale
+            ww = int(pw * self._scale)
+            wh = int(ph * self._scale)
+            self._offset_x = max(0, (self.width()  - ww) // 2)
+            self._offset_y = max(0, (self.height() - wh) // 2)
+        else:
+            self._scale = self._user_scale
+            self._offset_x = 0
+            self._offset_y = 0
+        self._zoom = self._scale
 
     def _img_to_screen_rect(self, bbox: tuple) -> QRect:
-        x, y, w, h = bbox; return QRect(int(x * self._scale) + self._offset_x, int(y * self._scale) + self._offset_y, max(4, int(w * self._scale)), max(4, int(h * self._scale)))
+        s = self._scale
+        x, y, w, h = bbox
+        return QRect(int(x*s)+self._offset_x, int(y*s)+self._offset_y,
+                     max(4,int(w*s)), max(4,int(h*s)))
 
     def _screen_to_img_rect(self, rect: QRect) -> tuple:
-        return (int((rect.x() - self._offset_x) / self._scale), int((rect.y() - self._offset_y) / self._scale), int(rect.width() / self._scale), int(rect.height() / self._scale))
+        s = self._scale
+        return (int((rect.x()-self._offset_x)/s), int((rect.y()-self._offset_y)/s),
+                int(rect.width()/s), int(rect.height()/s))
 
     def _hit_test(self, pos: QPoint) -> int:
         for idx, ann in enumerate(self._annotations):
