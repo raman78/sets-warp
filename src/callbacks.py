@@ -643,7 +643,7 @@ def load_build_callback(self):
     """
     load_path = browse_path(
             self, self.config['config_subfolders']['library'],
-            'SETS Files (*.json *.png);;JSON file (*.json);;PNG image (*.png);;Any File (*.*)')
+            'SETS Build (*.json *.png)')
     if load_path != '':
         load_build_file(self, load_path)
 
@@ -654,14 +654,39 @@ def load_skills_callback(self):
     """
     load_path = browse_path(
             self, self.config['config_subfolders']['library'],
-            'SETS Files (*.json *.png);;JSON file (*.json);;PNG image (*.png);;Any File (*.*)')
+            'SETS Build (*.json *.png)')
     if load_path != '':
         load_skill_tree_file(self, load_path)
 
 
+def _save_both_formats(self, base_path: str, save_fn) -> bool:
+    """
+    Save build/skills as both .json and .png under the same base name.
+    Warns the user if either file already exists.
+    Returns True if saved, False if cancelled.
+    """
+    from PySide6.QtWidgets import QMessageBox
+    json_path = base_path + '.json'
+    png_path  = base_path + '.png'
+    existing = [p for p in (json_path, png_path) if os.path.exists(p)]
+    if existing:
+        names = '\n'.join(f'  • {os.path.basename(p)}' for p in existing)
+        reply = QMessageBox.question(
+            self.window, 'Overwrite files?',
+            f'The following files will be overwritten:\n{names}\n\nContinue?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return False
+    save_fn(self, json_path)
+    save_fn(self, png_path)
+    return True
+
+
 def save_build_callback(self):
     """
-    Saves build to file
+    Saves build to file — always writes both .json and .png under the same name.
     """
     if self.widgets.ship['button'].text() == '<Pick Ship>':
         proposed_filename = '(Ship Template)'
@@ -670,27 +695,25 @@ def save_build_callback(self):
     if self.widgets.ship['name'].text() != '':
         proposed_filename = f"{self.widgets.ship['name'].text()} {proposed_filename}"
     default_path = os.path.join(self.config['config_subfolders']['library'], proposed_filename)
-    if self.settings.value('default_save_format') == 'PNG':
-        file_types = 'PNG image (*.png);;JSON file (*.json);;Any File (*.*)'
-    else:
-        file_types = 'JSON file (*.json);;PNG image (*.png);;Any File (*.*)'
-    save_path = browse_path(self, default_path, file_types, save=True)
-    if save_path != '':
-        save_build_file(self, save_path)
+    save_path = browse_path(self, default_path, 'SETS Build (*.json *.png)', save=True)
+    if not save_path:
+        return
+    base, _, ext = save_path.rpartition('.')
+    base_path = base if ext.lower() in ('json', 'png') and base else save_path
+    _save_both_formats(self, base_path, save_build_file)
 
 
 def save_skills_callback(self):
     """
-    Save skills to file
+    Saves skill tree to file — always writes both .json and .png under the same name.
     """
     default_path = os.path.join(self.config['config_subfolders']['library'], 'Skill Tree')
-    if self.settings.value('default_save_format') == 'PNG':
-        file_types = 'PNG image (*.png);;JSON file (*.json);;Any File (*.*)'
-    else:
-        file_types = 'JSON file (*.json);;PNG image (*.png);;Any File (*.*)'
-    save_path = browse_path(self, default_path, file_types, save=True)
-    if save_path != '':
-        save_skill_tree_file(self, save_path)
+    save_path = browse_path(self, default_path, 'SETS Build (*.json *.png)', save=True)
+    if not save_path:
+        return
+    base, _, ext = save_path.rpartition('.')
+    base_path = base if ext.lower() in ('json', 'png') and base else save_path
+    _save_both_formats(self, base_path, save_skill_tree_file)
 
 
 def ship_info_callback(self):
