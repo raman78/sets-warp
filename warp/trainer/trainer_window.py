@@ -1414,12 +1414,15 @@ class WarpCoreWindow(QMainWindow):
                     from src.setsdebug import log as _slog2
                     _slog2.info(f'add_bbox: discarding {name!r} — not valid for stype={stype}')
                     name, conf, thumb, crop_bgr = '', 0.0, None, None
-            # Auto-accept before adding to list if conf >= threshold
-            _auto = (name and conf > 0
-                     and getattr(self, '_chk_auto_accept', None)
-                     and self._chk_auto_accept.isChecked()
-                     and conf >= self._spin_auto_conf.value()
-                     and slot not in NON_ICON_SLOTS)
+            # NON_ICON_SLOTS (Ship Name/Type/Tier) — position only, always confirmed
+            if slot in NON_ICON_SLOTS:
+                _auto = True
+            else:
+                # Auto-accept before adding to list if conf >= threshold
+                _auto = (name and conf > 0
+                         and getattr(self, '_chk_auto_accept', None)
+                         and self._chk_auto_accept.isChecked()
+                         and conf >= self._spin_auto_conf.value())
             _state = 'confirmed' if _auto else 'pending'
             new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': _state, 'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': ''}
             self._recognition_items.append(new_item)
