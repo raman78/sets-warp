@@ -44,7 +44,7 @@ def _ensure_venv():
         if venv_py.exists():
             os.execv(str(venv_py), [str(venv_py)] + sys.argv)
 
-    print('ERROR: brak .venv — uruchom najpierw SETS.sh / SETS.bat', file=sys.stderr)
+    print('ERROR: brak .venv — uruchom najpierw sets_warp.sh / sets_warp.bat', file=sys.stderr)
     sys.exit(1)
 
 _ensure_venv()

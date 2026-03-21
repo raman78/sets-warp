@@ -15,7 +15,7 @@ Star Trek Online build planning tool with ML-based screenshot recognition.
 - **WARP CORE** — ML trainer UI for reviewing/correcting recognition results
 
 **Stack:** Python 3.13.2, PySide6, OpenCV, PyTorch, EasyOCR  
-**Entry point:** `SETS.sh` (Linux/macOS) or `SETS.bat` (Windows) → `bootstrap.py` → `main.py`
+**Entry point:** `sets_warp.sh` (Linux/macOS) or `sets_warp.bat` (Windows) → `bootstrap.py` → `main.py`
 
 ---
 
@@ -25,7 +25,7 @@ Star Trek Online build planning tool with ML-based screenshot recognition.
 sets-warp/
 ├── main.py                        # App entry
 ├── bootstrap.py                   # Env setup (portable Python, venv)
-├── SETS.sh / SETS.bat             # Launch scripts
+├── sets_warp.sh / sets_warp.bat             # Launch scripts
 ├── src/                           # SETS core
 │   ├── app.py                     # Main window
 │   ├── callbacks.py               # UI callbacks (select_ship, tier_callback, …)
@@ -357,7 +357,7 @@ Credentials in `.env`: `HF_TOKEN`, `HF_REPO_ID=sets-sto/warp-knowledge`, `ADMIN_
 #### README.md
 - Removed `.exe` installer reference (doesn't exist)
 - Removed `install.sh` reference (doesn't exist)
-- Correct install: `SETS.sh` (Linux/macOS), `SETS.bat` (Windows)
+- Correct install: `sets_warp.sh` (Linux/macOS), `sets_warp.bat` (Windows)
 
 ---
 

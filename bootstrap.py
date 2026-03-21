@@ -28,7 +28,7 @@ import zipfile
 from pathlib import Path
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-# SETS_DIR is set by SETS.sh — always use it when available so ROOT is correct
+# SETS_DIR is set by sets_warp.sh — always use it when available so ROOT is correct
 # even if Python caches a .pyc from a different location (e.g. Trash)
 ROOT        = Path(os.environ['SETS_DIR']).resolve() if 'SETS_DIR' in os.environ else Path(__file__).resolve().parent
 VENV_DIR    = ROOT / ".venv"

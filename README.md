@@ -46,10 +46,10 @@ No installer — the app manages its own Python environment automatically via `b
 ```bash
 git clone https://github.com/STOCD/SETS.git
 cd SETS
-./SETS.sh
+./sets_warp.sh
 ```
 
-On first run `SETS.sh` creates a local `.venv`, downloads a portable Python runtime, and installs all dependencies automatically. Subsequent launches are fast.
+On first run `sets_warp.sh` creates a local `.venv`, downloads a portable Python runtime, and installs all dependencies automatically. Subsequent launches are fast.
 
 If tkinter is missing (required only for the first-run installer window), the script will print the exact install command for your Linux distribution.
 
@@ -58,10 +58,10 @@ If tkinter is missing (required only for the first-run installer window), the sc
 ```
 git clone https://github.com/STOCD/SETS.git
 cd SETS
-SETS.bat
+sets_warp.bat
 ```
 
-`SETS.bat` finds your Python 3 installation and runs `bootstrap.py`, which sets up the environment on first launch.
+`sets_warp.bat` finds your Python 3 installation and runs `bootstrap.py`, which sets up the environment on first launch.
 
 ### Images library
 
@@ -73,8 +73,8 @@ On first launch, SETS downloads item icons automatically. To speed this up, down
 
 ```bash
 git pull
-./SETS.sh     # Linux / macOS
-SETS.bat      # Windows
+./sets_warp.sh     # Linux / macOS
+sets_warp.bat      # Windows
 ```
 
 `bootstrap.py` automatically detects and installs any new dependencies on launch.
