@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QCompleter, QMenu, QPlainTextEdit,
     QCheckBox, QDoubleSpinBox, QStyledItemDelegate
 )
-from PySide6.QtCore import Qt, QSettings, QThread, Signal, QSortFilterProxyModel, QSize
+from PySide6.QtCore import Qt, QSettings, QThread, Signal, QSortFilterProxyModel, QSize, QTimer
 from PySide6.QtGui import QFont, QAction, QColor, QStandardItemModel, QStandardItem, QKeySequence, QShortcut, QBrush, QPalette
 
 
@@ -457,7 +457,8 @@ class WarpCoreWindow(QMainWindow):
         self._recog_worker = None
         self._detect_dlg = None
         self._recog_dlg = None
-        self._sync_worker = None
+        self._sync_worker  = None
+        self._pending_sync = False   # set True when confirmed data changes; timer flushes
         self._train_dlg = None
         self._selection_just_changed = False
         self.setWindowTitle('WARP CORE — ML Trainer')
@@ -467,6 +468,19 @@ class WarpCoreWindow(QMainWindow):
         self._build_toolbar()
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage('Ready — open a folder of STO screenshots to start annotating.')
+
+        # Periodic HF sync — fires every 5 minutes, uploads only if data changed
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(5 * 60 * 1000)   # 5 minutes in ms
+        self._sync_timer.timeout.connect(self._on_sync_timer)
+        self._sync_timer.start()
+
+        # Check for centrally-trained model update in background (once per 24 h)
+        try:
+            from warp.trainer.model_updater import ModelUpdater
+            ModelUpdater().check_and_update(self._sets_root)
+        except Exception as _e:
+            log.debug(f'Model update check skipped: {_e}')
 
     def _build_ui(self):
         c = QWidget()
@@ -2133,20 +2147,29 @@ class WarpCoreWindow(QMainWindow):
         self._train_worker = None
 
     def _auto_sync(self):
+        """Mark that confirmed data changed — actual upload happens on next timer tick."""
+        self._pending_sync = True
+
+    def _on_sync_timer(self):
+        """Called every 5 minutes — uploads to HF if data changed since last sync."""
+        if not self._pending_sync:
+            return
         try:
             token = (Path(__file__).parent.parent / 'hub_token.txt').read_text().strip()
             if not token or token == 'YOUR_HF_TOKEN_HERE':
                 return
             if self._sync_worker and self._sync_worker.isRunning():
-                log.debug('HF Sync: previous upload still running, skipping')
+                log.debug('HF Sync: previous upload still running, will retry next tick')
                 return
-            log.info('HF Sync: starting upload to HuggingFace…')
+            log.info('HF Sync: timer tick — uploading pending changes to HuggingFace…')
+            self._pending_sync = False
             self._sync_worker = SyncWorker(data_manager=self._data_mgr, hf_token=token, mode='upload')
             self._sync_worker.progress.connect(lambda pct, msg: log.debug(f'HF Sync [{pct}%]: {msg}'))
             self._sync_worker.finished.connect(self._on_sync_finished)
             self._sync_worker.start()
         except Exception as e:
             log.warning(f'HF Sync: init error: {e}')
+            self._pending_sync = True  # restore flag so next tick retries
 
     def _on_sync_finished(self, ok: bool):
         msg = 'Synced.' if ok else 'Sync failed.'
@@ -2262,6 +2285,10 @@ class WarpCoreWindow(QMainWindow):
             QApplication.instance().removeEventFilter(self)
         except Exception:
             pass
+        self._sync_timer.stop()
+        if self._pending_sync:
+            # Fire one last upload before closing — non-blocking, best-effort
+            self._on_sync_timer()
         if self._data_mgr:
             self._data_mgr.save()
         event.accept()

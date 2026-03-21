@@ -40,6 +40,8 @@ MAX_EPOCHS      = 30
 LR              = 3e-4
 MIN_SAMPLES     = 1           # minimum confirmed items to start training
 PATIENCE        = 5           # early-stop patience (epochs without improvement)
+FOCAL_GAMMA     = 2.0         # focal loss focusing parameter
+                              # easy samples (p≥0.9) contribute <1% of standard loss
 
 
 class LocalTrainWorker(QThread):
@@ -190,7 +192,27 @@ class LocalTrainWorker(QThread):
             filter(lambda p: p.requires_grad, model.parameters()), lr=LR)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=MAX_EPOCHS)
-        criterion = torch.nn.CrossEntropyLoss()
+
+        # Class weights — penalise rare items more (many items have only 1 crop)
+        import torch.nn.functional as _F
+        from collections import Counter as _Counter
+        counts = _Counter(y)
+        _cw = torch.tensor(
+            [1.0 / max(counts[i], 1) for i in range(n_classes)],
+            dtype=torch.float32, device=device)
+        _cw = _cw / _cw.sum() * n_classes   # normalise so average weight ≈ 1
+
+        class _FocalLoss(torch.nn.Module):
+            """Focal loss — downweights easy samples, focuses on hard/uncertain ones.
+            Samples already predicted with p≥0.9 contribute <1% of standard CE loss.
+            Automatically increases attention if an icon drops below that threshold.
+            """
+            def forward(self, logits, targets):
+                ce  = _F.cross_entropy(logits, targets, weight=_cw, reduction='none')
+                pt  = torch.exp(-ce)           # probability of the correct class
+                return ((1.0 - pt) ** FOCAL_GAMMA * ce).mean()
+
+        criterion = _FocalLoss().to(device)
 
         self.progress.emit(25, f'Training on {device}...')
 
@@ -269,11 +291,25 @@ class LocalTrainWorker(QThread):
             self.finished.emit(False, f'Model save failed: {e}')
             return
 
-        # Write label map and meta
+        # Write label map, meta, and version stamp
         with open(label_path, 'w') as f:
             json.dump(idx_to_label, f, ensure_ascii=False, indent=2)
         with open(meta_path, 'w') as f:
             json.dump({'n_classes': n_classes, 'input_size': MODEL_IMG_SIZE}, f)
+
+        import hashlib as _hl
+        from datetime import datetime as _dt, timezone as _tz
+        _model_sha = _hl.sha256(pt_path.read_bytes()).hexdigest()[:16]
+        version_path = models_dir / 'model_version.json'
+        with open(version_path, 'w') as f:
+            json.dump({
+                'version':    _model_sha,
+                'trained_at': _dt.now(_tz.utc).isoformat() + 'Z',
+                'n_classes':  n_classes,
+                'val_acc':    round(best_val_acc, 4),
+                'n_samples':  len(crops),
+                'source':     'local',
+            }, f, indent=2)
 
         # Remove unavailability sentinel if it exists
         flag = models_dir / 'model_unavailable.flag'

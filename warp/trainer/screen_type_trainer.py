@@ -51,6 +51,8 @@ BATCH_SIZE           = 8
 MAX_EPOCHS           = 60   # more epochs needed for small dataset
 LR                   = 3e-4
 PATIENCE             = 10   # early stopping
+FOCAL_GAMMA          = 2.0  # focal loss focusing parameter
+                             # easy samples (p≥0.9) contribute <1% of standard loss
 
 
 # ── QThread worker ─────────────────────────────────────────────────────────────
@@ -261,7 +263,21 @@ class ScreenTypeTrainerWorker:
         optimiser = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, model.parameters()),
             lr=LR)
-        criterion = nn.CrossEntropyLoss(weight=loss_weights.to(device))
+
+        import torch.nn.functional as _F
+        _lw = loss_weights.to(device)
+
+        class _FocalLoss(nn.Module):
+            """Focal loss — downweights easy samples, focuses on hard/uncertain ones.
+            Samples already predicted with p≥0.9 contribute <1% of standard CE loss.
+            Automatically increases attention if a class drops below that threshold.
+            """
+            def forward(self, logits, targets):
+                ce  = _F.cross_entropy(logits, targets, weight=_lw, reduction='none')
+                pt  = torch.exp(-ce)              # probability of the correct class
+                return ((1.0 - pt) ** FOCAL_GAMMA * ce).mean()
+
+        criterion = _FocalLoss().to(device)
 
         WARMUP_EPOCHS = 10  # epochs with frozen backbone
 
@@ -298,21 +314,31 @@ class ScreenTypeTrainerWorker:
                 optimiser.step()
                 train_loss += loss.item()
 
-            # Validation
+            # Validation — track per-class accuracy to surface struggling classes
             model.eval()
-            correct = total = 0
+            class_correct = [0] * n_classes
+            class_total   = [0] * n_classes
             with torch.no_grad():
                 for xb, yb in va_loader:
                     preds = model(xb.to(device)).argmax(1).cpu()
-                    correct += (preds == yb).sum().item()
-                    total   += len(yb)
+                    for p, t in zip(preds, yb):
+                        class_correct[t] += int(p == t)
+                        class_total[t]   += 1
+            total   = sum(class_total)
+            correct = sum(class_correct)
             val_acc = correct / total if total > 0 else 0.0
 
+            # Report classes below 90% so user knows where focal loss is focusing
+            hard = [label_map[i] for i in range(n_classes)
+                    if class_total[i] > 0
+                    and class_correct[i] / class_total[i] < 0.90]
+
             pct = 15 + int(75 * (epoch + 1) / MAX_EPOCHS)
+            detail = f'  [hard: {", ".join(hard)}]' if hard else '  [all classes ≥90%]'
             prog(pct,
                  f'Epoch {epoch+1}/{MAX_EPOCHS}  '
                  f'loss={train_loss/max(len(tr_loader),1):.3f}  '
-                 f'val_acc={val_acc:.1%}')
+                 f'val_acc={val_acc:.1%}{detail}')
 
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
