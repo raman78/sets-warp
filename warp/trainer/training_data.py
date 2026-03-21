@@ -31,6 +31,17 @@ class AnnotationState(str, Enum):
     SKIPPED   = "skipped"     # user chose to skip (unknown item)
 
 
+# Slots where only one confirmed annotation is allowed per image.
+# Accepting a new confirmed annotation for these slots removes any existing one
+# at a different bbox position (prevents duplicates from misclicks).
+SINGLE_INSTANCE_SLOTS: frozenset = frozenset({
+    'Ship Name', 'Ship Type', 'Ship Tier',
+    'Deflector', 'Sec-Def', 'Engines', 'Warp Core', 'Shield',
+    'Kit', 'Body Armor', 'EV Suit', 'Personal Shield',
+    'Primary Specialization', 'Secondary Specialization',
+})
+
+
 @dataclass
 class Annotation:
     """One bounding-box annotation for an icon in a screenshot."""
@@ -105,19 +116,46 @@ class TrainingDataManager:
         ml_conf: float = 0.0,
         ml_name: str = "",
     ) -> Annotation:
-        """Add or update annotation by ann_id (no duplicates)."""
+        """Add or update annotation, treating the same bbox as the same annotation.
+
+        Lookup priority:
+          1. Match by ann_id (exact, same bbox+slot — no change needed)
+          2. Match by bbox alone — handles slot/name edits on existing bbox
+             (old ann_id had slot baked in; new slot → different ann_id, same bbox)
+          3. Single-instance slots: remove any other confirmed annotation for the
+             same slot before inserting (prevents duplicate Deflector, Shield, etc.)
+          4. Insert as new annotation
+        """
         ann = Annotation(bbox=bbox, slot=slot, name=name, state=state,
                          ml_conf=ml_conf, ml_name=ml_name)
         key = image_path.name
         if key not in self._annotations:
             self._annotations[key] = []
-        # Update in-place if ann_id already exists
+
+        # 1. Update in-place if ann_id already exists (exact match — fast path)
         for i, d in enumerate(self._annotations[key]):
             if d.get('ann_id') == ann.ann_id:
                 self._annotations[key][i] = asdict(ann)
                 self._dirty = True
                 return ann
-        # New annotation
+
+        # 2. Fallback: same bbox, slot was edited → update in-place without duplicating
+        bbox_t = tuple(bbox)
+        for i, d in enumerate(self._annotations[key]):
+            if tuple(d.get('bbox', [])) == bbox_t:
+                self._annotations[key][i] = asdict(ann)
+                self._dirty = True
+                return ann
+
+        # 3. Single-instance slots: drop any existing confirmed annotation for
+        #    this slot at a different bbox (user re-drew at correct position)
+        if state == AnnotationState.CONFIRMED and slot in SINGLE_INSTANCE_SLOTS:
+            self._annotations[key] = [
+                d for d in self._annotations[key]
+                if not (d.get('slot') == slot and d.get('state') == 'confirmed')
+            ]
+
+        # 4. New annotation
         self._annotations[key].append(asdict(ann))
         self._dirty = True
         try:

@@ -219,7 +219,7 @@ class ScreenTypeClassifier:
             idx    = int(np.argmax(probs))
             conf   = float(probs[idx])
             name   = self._label_map.get(idx, SCREEN_TYPES[idx] if idx < len(SCREEN_TYPES) else '')
-            _slog.debug(f'ScreenClassifier: probs={[f"{p:.2f}" for p in probs]} → {name} ({conf:.2f})')
+            # _slog.debug(f'ScreenClassifier: probs={[f"{p:.2f}" for p in probs]} → {name} ({conf:.2f})')
             return name, conf
         except Exception as e:
             _slog.warning(f'ScreenClassifier ML inference error: {e}')

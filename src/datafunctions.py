@@ -396,7 +396,7 @@ def load_base_images(self, threaded_worker: ThreadObject):
 
     skill_current = 0
     for skill_node in skill_nodes:
-        log.debug(f'load_base_images: skill image [{skill_current}/{skill_total}] {skill_node["image"]}')
+        # log.debug(f'load_base_images: skill image [{skill_current}/{skill_total}] {skill_node["image"]}')
         self.cache.images[skill_node['image']] = retrieve_image(
             self, skill_node['image'], img_folder, threaded_worker.update_splash,
             f'{WIKI_IMAGE_URL}{skill_node["image"]}.png')

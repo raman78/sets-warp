@@ -116,6 +116,14 @@ SLOT_ORDER = {
     'SPEC':          SPEC_SLOT_ORDER,
 }
 
+# Global slot_def lookup (slot_name → slot_def) across all slot orders, in canonical sequence.
+# Used when confirmed layout contains slots beyond the current build_type's order
+# (e.g. a SPACE screenshot that also has traits and boff abilities annotated).
+_ALL_SLOT_DEFS: dict[str, dict] = {}
+for _order_list in SLOT_ORDER.values():
+    for _sd in _order_list:
+        _ALL_SLOT_DEFS.setdefault(_sd['name'], _sd)
+
 SPACE_SLOTS        = [(s['name'], s['max']) for s in SPACE_SLOT_ORDER]
 GROUND_SLOTS       = [(s['name'], s['max']) for s in GROUND_SLOT_ORDER]
 SPACE_TRAITS_SLOTS = [(s['name'], s['max']) for s in SPACE_TRAITS_SLOT_ORDER]
@@ -601,7 +609,15 @@ class WarpImporter:
         matcher = self._get_matcher()
 
         # Step 4 — match icons per slot (in canonical order)
-        for slot_def in SLOT_ORDER.get(build_type, []):
+        # When confirmed layout is available, process ALL slots present in it —
+        # a single screenshot may contain equipment + traits + boff abilities,
+        # which span multiple slot orders beyond the selected build_type.
+        if confirmed_layout:
+            slot_defs_to_process = [sd for sd in _ALL_SLOT_DEFS.values()
+                                    if sd['name'] in confirmed_layout]
+        else:
+            slot_defs_to_process = SLOT_ORDER.get(build_type, [])
+        for slot_def in slot_defs_to_process:
             slot_name = slot_def['name']
             max_count = profile.get(slot_name, 0)
             if max_count == 0:

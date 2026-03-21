@@ -198,7 +198,7 @@ def retrieve_image(
     """
     filename = get_image_file_name(name)
     filepath = os.path.join(image_folder_path, filename)
-    log.debug(f'retrieve_image: {name!r} -> {filepath}')
+    # log.debug(f'retrieve_image: {name!r} -> {filepath}')
     image = QImage(filepath)
     if image.isNull():
         log.info(f'retrieve_image: cache miss, downloading {name!r}')
@@ -254,12 +254,12 @@ def get_ship_image(self, image_name: str, threaded_worker):
     from urllib.parse import quote as url_quote
     image_path = os.path.join(
             self.config['config_subfolders']['ship_images'], quote_plus(image_name))
-    log.info(f'get_ship_image: {image_name!r} -> {image_path}')
+    log.debug(f'get_ship_image: {image_name!r} -> {image_path}')
 
     # Try loading from disk first
     image = QImage(image_path)
     if not image.isNull():
-        log.info(f'get_ship_image: loaded from disk OK size={image.width()}x{image.height()}')
+        log.debug(f'get_ship_image: loaded from disk OK size={image.width()}x{image.height()}')
         threaded_worker.result.emit((image,))
         return
 

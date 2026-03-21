@@ -1412,9 +1412,10 @@ class WarpCoreWindow(QMainWindow):
             self._recognition_items.append(new_item)
             if _auto and self._current_idx >= 0:
                 _path = self._screenshots[self._current_idx]
-                self._data_mgr.add_annotation(
+                _saved = self._data_mgr.add_annotation(
                     image_path=_path, bbox=bbox, slot=slot, name=name,
                     state=AnnotationState.CONFIRMED, ml_conf=conf, ml_name=name)
+                new_item['ann_id'] = _saved.ann_id
                 if crop_bgr is not None:
                     from warp.recognition.icon_matcher import SETSIconMatcher
                     SETSIconMatcher.add_session_example(crop_bgr, name)
@@ -1594,11 +1595,12 @@ class WarpCoreWindow(QMainWindow):
             if not slot or not name: continue
             ri['state'] = 'confirmed'
             if ri.get('bbox') and path:
-                self._data_mgr.add_annotation(
+                _saved = self._data_mgr.add_annotation(
                     image_path=path, bbox=ri['bbox'], slot=slot, name=name,
                     state=AnnotationState.CONFIRMED,
                     ml_conf=conf, ml_name=name,
                 )
+                ri['ann_id'] = _saved.ann_id
             if ri.get('crop_bgr') is not None:
                 from warp.recognition.icon_matcher import SETSIconMatcher
                 SETSIconMatcher.add_session_example(ri['crop_bgr'], name)
@@ -1657,12 +1659,13 @@ class WarpCoreWindow(QMainWindow):
             ri['state'] = 'confirmed'
             if ri.get('bbox') and self._current_idx >= 0:
                 path = self._screenshots[self._current_idx]
-                self._data_mgr.add_annotation(
+                saved = self._data_mgr.add_annotation(
                     image_path=path, bbox=ri['bbox'], slot=slot, name=name,
                     state=AnnotationState.CONFIRMED,
                     ml_conf=ri.get('conf', 0.0),
                     ml_name=ri.get('orig_name', ''),
                 )
+                ri['ann_id'] = saved.ann_id  # track for future edits on this bbox
             litem = self._review_list.item(row)
             if litem:
                 litem.setText(f'{slot}  ->  {name or "—"}  [confirmed]')

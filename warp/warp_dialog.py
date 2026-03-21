@@ -39,6 +39,7 @@ SLOT_MAP = {
     'Fore Weapons':          ('fore_weapons',   'space', True),
     'Aft Weapons':           ('aft_weapons',    'space', True),
     'Experimental Weapon':   ('experimental',   'space', True),
+    'Experimental':          ('experimental',   'space', True),  # alias used by WARP CORE annotations
     'Devices':               ('devices',        'space', True),
     'Hangars':               ('hangars',        'space', True),
     'Deflector':             ('deflector',      'space', True),
@@ -51,10 +52,12 @@ SLOT_MAP = {
     'Science Consoles':      ('sci_consoles',   'space', True),
     'Tactical Consoles':     ('tac_consoles',   'space', True),
     # SPACE traits
-    'Personal Space Traits': ('traits',         'space', False),
-    'Starship Traits':       ('starship_traits','space', False),
-    'Reputation Traits':     ('rep_traits',     'space', False),
-    'Active Rep Traits':     ('active_rep_traits','space',False),
+    'Personal Space Traits': ('traits',          'space', False),
+    'Starship Traits':       ('starship_traits', 'space', False),
+    'Space Reputation':      ('rep_traits',      'space', False),  # name from SPACE_TRAITS_SLOT_ORDER
+    'Reputation Traits':     ('rep_traits',      'space', False),  # legacy alias
+    'Active Space Rep':      ('active_rep_traits','space', False),  # name from SPACE_TRAITS_SLOT_ORDER
+    'Active Rep Traits':     ('active_rep_traits','space', False),  # legacy alias
     # GROUND equipment
     'Body Armor':            ('armor',          'ground', True),
     'EV Suit':               ('ev_suit',        'ground', True),
@@ -64,8 +67,10 @@ SLOT_MAP = {
     'Kit Modules':           ('kit_modules',    'ground', True),
     'Ground Devices':        ('ground_devices', 'ground', True),
     # GROUND traits
-    'Personal Ground Traits':('traits',         'ground', False),
-    'Ground Rep Traits':     ('rep_traits',     'ground', False),
+    'Personal Ground Traits': ('traits',          'ground', False),
+    'Ground Reputation':      ('rep_traits',      'ground', False),  # name from GROUND_TRAITS_SLOT_ORDER
+    'Ground Rep Traits':      ('rep_traits',      'ground', False),  # legacy alias
+    'Active Ground Rep':      ('active_rep_traits','ground', False),  # name from GROUND_TRAITS_SLOT_ORDER
 }
 
 BUILD_TYPES = [
@@ -314,6 +319,8 @@ class WarpDialog(QDialog):
         if r is None:
             return
 
+        _ship_data = None  # captured for boff seat mapping after ship selection
+
         # Set ship info if recognised
         # Set ship name, ship selection and tier from recognised result
         _slog.info(f'WARP: _apply_to_sets ship_name={r.ship_name!r} ship_type={r.ship_type!r} ship_tier={r.ship_tier!r}')
@@ -360,6 +367,7 @@ class WarpDialog(QDialog):
                             from src.widgets import exec_in_thread
                             sets = self._sets
                             ship_data = ships[match]
+                            _ship_data = ship_data  # capture for boff writing below
                             sets.building = True
                             widgets.ship['button'].setText(match)
                             # Load image
@@ -400,8 +408,13 @@ class WarpDialog(QDialog):
             except Exception as _e:
                 _slog.warning(f'WARP: ship info widget update failed: {_e}')
 
+        boff_items = []
         for ri in r.items:
             if not ri.name:
+                continue
+            # Boff abilities are handled separately after equipment/traits
+            if ri.slot.startswith('Boff '):
+                boff_items.append(ri)
                 continue
             slot_info = SLOT_MAP.get(ri.slot)
             if not slot_info:
@@ -415,12 +428,22 @@ class WarpDialog(QDialog):
                 if is_equipment:
                     item_data = self._make_equipment_item(ri, build_key, env)
                     if item_data:
-                        slot_equipment_item(self._sets, item_data, env, build_key, idx)
+                        build_list = self._sets.build[env].get(build_key, [])
+                        if idx >= len(build_list):
+                            log.warning(
+                                f'WARP: slot {ri.slot}[{idx}] out of range '
+                                f'(build has {len(build_list)} slots) — skipping "{ri.name}"'
+                            )
+                        else:
+                            slot_equipment_item(self._sets, item_data, env, build_key, idx)
                 else:
                     item_data = {'item': ri.name}
                     slot_trait_item(self._sets, item_data, env, build_key, idx)
             except Exception as e:
                 log.warning(f'WARP: Failed to import "{ri.name}" into {ri.slot}[{idx}]: {e}')
+
+        if boff_items:
+            self._write_boffs_to_build(boff_items, _ship_data)
 
         # Switch to the correct build tab
         tab_map = {
@@ -432,6 +455,76 @@ class WarpDialog(QDialog):
         tab_idx = tab_map.get(self._build_type, 0)
         self._sets.switch_main_tab(tab_idx)
         self._sets.autosave()
+
+    def _write_boffs_to_build(self, boff_items: list, ship_data: dict | None) -> None:
+        """Write recognized boff abilities to the SETS build.
+
+        Maps abilities by profession to seats in rank-descending order
+        (same order as align_space_frame). Each profession's abilities fill
+        the lowest available rank slots of matching seats sequentially.
+        """
+        from src.buildupdater import get_boff_spec, load_boff_stations
+
+        if not ship_data:
+            log.debug(f'WARP boff: no ship_data for seat mapping — {len(boff_items)} boff items ignored')
+            return
+
+        # Group by profession, preserve annotation order within each profession
+        boff_by_prof: dict[str, list[str]] = {}
+        for ri in sorted(boff_items, key=lambda x: (x.slot, x.slot_index)):
+            prof = ri.slot[5:]  # 'Boff Temporal' → 'Temporal'
+            boff_by_prof.setdefault(prof, []).append(ri.name)
+
+        # Compute seat order — same sort as align_space_frame (rank descending)
+        try:
+            seats = sorted(
+                [get_boff_spec(self._sets, s) for s in ship_data.get('boffs', [])],
+                reverse=True)
+        except Exception as e:
+            log.warning(f'WARP boff: could not compute seat order: {e}')
+            return
+
+        boffs_build      = self._sets.build['space']['boffs']
+        all_boff_cache   = self._sets.cache.boff_abilities.get('all', {})
+        prof_idx: dict[str, int] = {}
+        written = 0
+
+        for seat_id, (rank, profession, _spec) in enumerate(seats):
+            if seat_id >= len(boffs_build) or rank == 0:
+                break
+
+            # Universal seat: use whichever profession still has queued abilities
+            if profession == 'Universal':
+                prof_to_use = next(
+                    (p for p in boff_by_prof
+                     if prof_idx.get(p, 0) < len(boff_by_prof[p])),
+                    None)
+            else:
+                prof_to_use = profession
+
+            if not prof_to_use:
+                continue
+
+            abilities = boff_by_prof.get(prof_to_use, [])
+            idx = prof_idx.get(prof_to_use, 0)
+            for rank_slot in range(rank):
+                if idx >= len(abilities):
+                    break
+                ability_name = abilities[idx]
+                idx += 1
+                if ability_name not in all_boff_cache:
+                    log.debug(f'WARP boff: {ability_name!r} not in boff cache — skip')
+                    continue
+                boffs_build[seat_id][rank_slot] = {'item': ability_name}
+                log.info(f'WARP: boff seat[{seat_id}][{rank_slot}] {prof_to_use} ← {ability_name!r}')
+                written += 1
+            prof_idx[prof_to_use] = idx
+
+        if written:
+            load_boff_stations(self._sets, 'space')
+            log.info(f'WARP: wrote {written} boff abilities to build')
+        else:
+            log.debug(f'WARP boff: 0 abilities written (cache misses or empty queues)')
 
     def _make_equipment_item(
         self, ri: RecognisedItem, build_key: str, env: str

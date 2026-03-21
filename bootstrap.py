@@ -1241,7 +1241,23 @@ def _repair_worker(on_line, on_done, on_error, broken: list[str]):
         on_line("Starting SETS-WARP...")
         on_done()
     except Exception as exc:
-        on_error(str(exc))
+        # Repair failed (broken venv Python, corrupted pip, version mismatch, etc.)
+        # → wipe both dirs and retry with a clean install before giving up
+        on_line(f"\nRepair failed: {exc}")
+        on_line("Attempting clean reinstall (wiping .venv and .python)...")
+        import shutil
+        wiped = []
+        for d in (VENV_DIR, PYTHON_DIR):
+            try:
+                if d.exists():
+                    shutil.rmtree(d)
+                    wiped.append(d.name)
+            except Exception as rm_err:
+                on_line(f"  WARN could not remove {d.name}: {rm_err}")
+        if wiped:
+            on_line(f"  Removed: {', '.join(wiped)}")
+        # run_install performs a full fresh setup; on_error is called only if this also fails
+        run_install(on_line, on_done, on_error)
 
 
 def main():
@@ -1315,6 +1331,13 @@ def main():
             _run_repair(broken)
         relaunch_in_venv()
         return  # not reached on Linux/macOS (execv)
+
+    # If .venv dir exists but its Python binary is missing (broken symlink / partial
+    # extraction of .python was deleted), wipe .venv so create_venv() starts clean.
+    if VENV_DIR.exists() and not venv_python().exists():
+        import shutil
+        print("[bootstrap] .venv exists but Python binary missing — wiping .venv for clean install", flush=True)
+        shutil.rmtree(VENV_DIR, ignore_errors=True)
 
     # First run: download portable Python, create venv, install packages
     try:
