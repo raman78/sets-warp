@@ -111,9 +111,9 @@ class AnnotationWidget(QWidget):
         self._zoom = 1.0
         self._zoom_ox = 0.0
         self._zoom_oy = 0.0
+        self._user_scale  = None   # reset to fit-to-window on every image load
         self._compute_transform()
-        if self._pixmap:
-            self.resize(self._pixmap.width(), self._pixmap.height())
+        self.adjustSize()
         self.update()
 
     def confirm_current(self, slot: str, name: str):
