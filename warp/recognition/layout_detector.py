@@ -39,10 +39,18 @@ SPACE_SLOT_ORDER_STANDARD = [
 ]
 SPACE_SLOT_ORDER_CARRIER = SPACE_SLOT_ORDER_STANDARD + ['Hangars']
 
+GROUND_SLOT_ORDER = [
+    'Body Armor', 'EV Suit', 'Personal Shield', 'Weapons',
+    'Kit', 'Kit Modules', 'Ground Devices',
+]
+
 SLOT_DEFAULT_COUNTS = {
     'Fore Weapons': 5, 'Deflector': 1, 'Engines': 1, 'Warp Core': 1, 'Shield': 1,
     'Aft Weapons': 4, 'Devices': 4, 'Universal Consoles': 2, 'Engineering Consoles': 4,
     'Science Consoles': 2, 'Tactical Consoles': 4, 'Hangar': 1,
+    # Ground slots
+    'Body Armor': 1, 'EV Suit': 1, 'Personal Shield': 1, 'Weapons': 2,
+    'Kit': 1, 'Kit Modules': 6, 'Ground Devices': 3,
 }
 
 SLOT_LABEL_ALIASES = {
@@ -76,7 +84,10 @@ class LayoutDetector:
             return self._detect_spec(img)
 
         profile = ship_profile or {}
-        slot_order = (SPACE_SLOT_ORDER_CARRIER if profile.get('Hangar', 0) > 0 else SPACE_SLOT_ORDER_STANDARD)
+        if build_type == 'GROUND':
+            slot_order = GROUND_SLOT_ORDER
+        else:
+            slot_order = (SPACE_SLOT_ORDER_CARRIER if profile.get('Hangar', 0) > 0 else SPACE_SLOT_ORDER_STANDARD)
 
         # Strategy 1: Learned Layouts — tried FIRST because they contain
         # user-confirmed slot counts, more reliable than ShipDB generic fallback
