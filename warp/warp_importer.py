@@ -587,9 +587,13 @@ class WarpImporter:
             layout = self._get_layout().detect(img, build_type, profile)
 
         # If ShipDB gave generic fallback (ship_name empty), refine profile
-        # using actual icon counts from layout + keyword profile matching
-        # Only refine slots NOT already set by confirmed annotations
-        if not ship_name and layout:
+        # using actual icon counts from layout + keyword profile matching.
+        # Only refine slots NOT already set by confirmed annotations.
+        # Skip for GROUND/GROUND_MIXED — _profile_from_pixel_counts is space-only
+        # (MEASURABLE set contains only space slots), so it would pick a random
+        # space ship profile and corrupt the ground layout on the second run.
+        _is_ground = build_type in ('GROUND', 'GROUND_MIXED')
+        if not ship_name and layout and not _is_ground:
             pixel_counts = {slot: len(boxes) for slot, boxes in layout.items() if boxes}
             if pixel_counts:
                 refined = _profile_from_pixel_counts(pixel_counts)
