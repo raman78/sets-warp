@@ -67,6 +67,16 @@ def browse_path(self, default_path: str = None, types: str = 'Any File (*.*)', s
     dialog.setFilter(QDir.Filter.AllEntries | QDir.Filter.Hidden | QDir.Filter.NoDotAndDotDot)
     dialog.setNameFilter(types)
 
+    # Disable the "Files of type" combo when there is only one filter option
+    # (no choice to make — the combo is just noise)
+    if ';;' not in types:
+        from PySide6.QtWidgets import QComboBox
+        for combo in dialog.findChildren(QComboBox):
+            for i in range(combo.count()):
+                if '*.' in combo.itemText(i):
+                    combo.setEnabled(False)
+                    break
+
     # Restore last used directory (shared between save and open)
     last_dir = self.settings.value('last_dialog_dir', '')
     if last_dir and os.path.isdir(last_dir):
