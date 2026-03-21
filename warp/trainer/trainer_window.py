@@ -323,6 +323,8 @@ class _TrainProgressDialog(QWidget):
         size = self._settings.value(_KEY_TRAIN_DLG_SIZE, QSize(620, 500))
         self.resize(size)
         self._finished = False
+        import time as _time
+        self._start_time = _time.monotonic()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(8)
@@ -347,7 +349,10 @@ class _TrainProgressDialog(QWidget):
         self._btn_close.setFixedWidth(80)
         self._btn_close.setEnabled(False)
         self._btn_close.clicked.connect(self.close)
+        self._time_lbl = QLabel('Time: 0:00')
+        self._time_lbl.setStyleSheet('color:#888;font-size:10px;')
         btn_row = QHBoxLayout()
+        btn_row.addWidget(self._time_lbl)
         btn_row.addStretch()
         btn_row.addWidget(self._btn_cancel)
         btn_row.addWidget(self._btn_close)
@@ -356,6 +361,16 @@ class _TrainProgressDialog(QWidget):
         lay.addWidget(self._bar)
         lay.addWidget(self._log, 1)
         lay.addLayout(btn_row)
+        from PySide6.QtCore import QTimer as _QTimer
+        self._clock = _QTimer(self)
+        self._clock.timeout.connect(self._tick)
+        self._clock.start(1000)
+
+    def _tick(self):
+        import time as _time
+        elapsed = int(_time.monotonic() - self._start_time)
+        m, s = divmod(elapsed, 60)
+        self._time_lbl.setText(f'Time: {m}:{s:02d}')
 
     def update_progress(self, pct: int, message: str):
         self._bar.setValue(pct)
@@ -369,6 +384,8 @@ class _TrainProgressDialog(QWidget):
     def mark_finished(self, success: bool, message: str):
         """Call when training is done — switches Cancel→Close, updates title."""
         self._finished = True
+        self._clock.stop()
+        self._tick()  # final time update
         self._btn_cancel.setEnabled(False)
         self._btn_close.setEnabled(True)
         if success:
@@ -2094,7 +2111,7 @@ class WarpCoreWindow(QMainWindow):
         hl = QHBoxLayout()
         hl.addWidget(QLabel('Passes:'))
         spin = QSpinBox()
-        spin.setRange(1, 20)
+        spin.setRange(1, 5)
         spin.setValue(last_repeats)
         hl.addWidget(spin)
         vl.addLayout(hl)
