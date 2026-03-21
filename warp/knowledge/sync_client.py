@@ -231,13 +231,30 @@ class WARPSyncClient:
                 with urllib.request.urlopen(req, timeout=CONTRIBUTE_TIMEOUT) as resp:
                     return json.loads(resp.read().decode('utf-8'))
 
-            # One retry — Render free tier needs ~50 s to cold-start
-            try:
-                result = _post()
-            except Exception as first_err:
-                log.debug(f'WARPSync: contribution attempt 1 failed ({first_err}), retrying...')
-                time.sleep(3)
-                result = _post()   # raises on second failure → caught below
+            # Retry loop — Render free tier cold-starts in ~50 s,
+            # may return 503 before it's ready.
+            import urllib.error as _ue
+            last_err = None
+            result = None
+            for _attempt in range(3):
+                try:
+                    result = _post()
+                    break
+                except _ue.HTTPError as e:
+                    last_err = e
+                    if e.code == 503:
+                        wait = 20
+                    else:
+                        wait = 5
+                    log.debug(f'WARPSync: attempt {_attempt+1} failed (HTTP {e.code}), '
+                              f'retrying in {wait}s...')
+                    time.sleep(wait)
+                except Exception as e:
+                    last_err = e
+                    log.debug(f'WARPSync: attempt {_attempt+1} failed ({e}), retrying in 5s...')
+                    time.sleep(5)
+            if result is None:
+                raise last_err
 
             success = result.get('ok', False)
             if success:
