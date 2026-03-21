@@ -305,33 +305,176 @@ class LayoutDetector:
             if run_w >= min_w: bboxes.append((start, y_offset + max(0, (sh - icon_size) // 2), run_w, min(icon_size, sh)))
         return bboxes
 
+    # Boff profession → canonical slot name
+    _PROF_MAP = {
+        'tactical':      'Boff Tactical',
+        'engineering':   'Boff Engineering',
+        'science':       'Boff Science',
+        'operations':    'Boff Operations',
+        'intelligence':  'Boff Intelligence',
+        'command':       'Boff Command',
+        'pilot':         'Boff Pilot',
+        'miracle worker':'Boff Miracle Worker',
+        'temporal':      'Boff Temporal',
+        'medical':       'Boff Science',
+    }
+
     def _detect_boffs(self, img):
         h, w = img.shape[:2]
-        PROF_MAP = {'tactical': 'Boff Tactical', 'engineering': 'Boff Engineering', 'science': 'Boff Science', 'operations': 'Boff Operations', 'intelligence': 'Boff Intelligence', 'command': 'Boff Command', 'pilot': 'Boff Pilot', 'miracle worker':'Boff Miracle Worker', 'temporal': 'Boff Temporal', 'medical': 'Boff Science'}
-        try:
-            x_start = int(w * 0.55)
-            ocr_out = self._get_ocr().readtext(img[:, x_start:])
-        except: return {}
+        x_start = int(w * 0.55)
+        icon_est = max(32, int(h * 0.055))
+
+        # ── Strategy A: OCR finds profession header labels ────────────────────
         headers = []
-        for (bbox, text, conf) in ocr_out:
-            if conf < 0.3: continue
-            text_low = text.lower().strip()
-            kw = next((k for k in PROF_MAP if k in text_low), None)
-            if kw: headers.append((PROF_MAP[kw], int((bbox[0][1] + bbox[2][1]) / 2)))
-        if not headers: return {}
-        headers.sort(key=lambda x: x[1])
-        seen, merged = set(), []
-        for n, y in headers:
-            if n not in seen: seen.add(n); merged.append((n, y))
-        icon_est, result = max(32, int(h * 0.055)), {}
-        for i, (section, hy) in enumerate(merged):
-            row_y = hy + int(icon_est * 0.3)
-            row_y_end = min(h, (merged[i + 1][1] - 5) if i + 1 < len(merged) else h)
-            strip = img[max(0, row_y): row_y_end, x_start:]
-            if strip.size == 0: continue
-            bboxes = self._find_icon_bboxes_in_strip(strip, row_y, icon_est)
-            if bboxes: result.setdefault(section, []).extend([(bx + x_start, by, bw, bh) for (bx, by, bw, bh) in bboxes])
+        try:
+            ocr_out = self._get_ocr().readtext(img[:, x_start:])
+            for (bbox, text, conf) in ocr_out:
+                if conf < 0.3:
+                    continue
+                text_low = text.lower().strip()
+                kw = next((k for k in self._PROF_MAP if k in text_low), None)
+                if kw:
+                    headers.append((self._PROF_MAP[kw], int((bbox[0][1] + bbox[2][1]) / 2)))
+        except Exception:
+            pass
+
+        if headers:
+            headers.sort(key=lambda x: x[1])
+            seen, merged = set(), []
+            for n, y in headers:
+                if n not in seen:
+                    seen.add(n)
+                    merged.append((n, y))
+            result = {}
+            for i, (section, hy) in enumerate(merged):
+                row_y     = hy + int(icon_est * 0.3)
+                row_y_end = min(h, (merged[i + 1][1] - 5) if i + 1 < len(merged) else h)
+                strip = img[max(0, row_y): row_y_end, x_start:]
+                if strip.size == 0:
+                    continue
+                bboxes = self._find_icon_bboxes_in_strip(strip, row_y, icon_est)
+                if bboxes:
+                    result.setdefault(section, []).extend(
+                        [(bx + x_start, by, bw, bh) for (bx, by, bw, bh) in bboxes]
+                    )
+            if result:
+                _slog.debug(f'LayoutDetector: _detect_boffs via OCR — {len(result)} sections')
+                return result
+            _slog.debug('LayoutDetector: _detect_boffs OCR found headers but no icons — trying color fallback')
+
+        # ── Strategy B: color-based profession detection (no OCR needed) ─────
+        _slog.debug('LayoutDetector: _detect_boffs — no OCR headers, using icon color classification')
+        panel = img[:, x_start:]
+        all_bboxes = self._find_icon_bboxes_in_strip(panel, 0, icon_est)
+        if not all_bboxes:
+            return {}
+
+        result = {}
+        for bx, by, bw, bh in all_bboxes:
+            crop = panel[by: by + bh, bx: bx + bw]
+            if crop.size == 0:
+                continue
+            prof = self._classify_boff_profession(crop)
+            if prof:
+                slot = self._PROF_MAP.get(prof)
+                if slot:
+                    result.setdefault(slot, []).append(
+                        (bx + x_start, by, bw, bh)
+                    )
+
+        _slog.debug(
+            f'LayoutDetector: _detect_boffs color — {len(result)} sections, '
+            f'{sum(len(v) for v in result.values())} icons'
+        )
         return result
+
+    @staticmethod
+    def _classify_boff_profession(crop_bgr) -> str | None:
+        """
+        Classify Boff profession from accent glow color in the icon.
+
+        All STO Boff icons share a dark navy-blue background (H 85-120).
+        Profession glow color is identified as an ACCENT on top of that background:
+
+          Tactical       — red accent      H  0-15 / 165-180, bright (V≥80)
+          Command        — dark-red accent  H  0-15 / 165-180, dim   (V<80)
+          Engineering    — amber accent     H 15-30, dominant over blue
+          Temporal       — amber + strong mid-blue (H 105-115) alongside amber
+          Intelligence   — purple accent    H 115-145
+          Miracle Worker — green accent     H 48-72
+          Pilot          — cyan accent      H 78-88  (slightly below the bg range)
+          Science        — no accent (pure background blue) → default
+
+        Returns the lowercase profession key (matches _PROF_MAP) or None.
+        """
+        import cv2
+
+        # Sample only the OUTER BORDER RING — profession glow is in the frame,
+        # not the center (which carries ability-specific art that varies per ability).
+        ih, iw = crop_bgr.shape[:2]
+        b = max(3, int(min(ih, iw) * 0.22))
+        top    = crop_bgr[:b, :].reshape(-1, 3)
+        bottom = crop_bgr[-b:, :].reshape(-1, 3)
+        left   = crop_bgr[b:-b, :b].reshape(-1, 3)
+        right  = crop_bgr[b:-b, -b:].reshape(-1, 3)
+        border = np.concatenate([top, bottom, left, right])
+
+        hsv = cv2.cvtColor(border.reshape(-1, 1, 3), cv2.COLOR_BGR2HSV).reshape(-1, 3)
+        sat_mask = (hsv[:, 1] > 80) & (hsv[:, 2] > 60)
+        if sat_mask.sum() < 8:
+            return None
+
+        hues = hsv[sat_mask, 0]   # 0-180
+        vals = hsv[sat_mask, 2]
+        mean_v = float(vals.mean())
+
+        # 36-bin hue histogram (5° per bin)
+        hist, _ = np.histogram(hues, bins=36, range=(0, 180))
+
+        # Helper: count pixels whose hue falls in [lo, hi] degrees (OpenCV 0-180)
+        def _h(lo, hi):
+            return int(hist[lo // 5: hi // 5 + 1].sum())
+
+        # Hue bands (OpenCV H: 0-180 = half of 360°)
+        red_lo    = _h(0,    9)    # pure red H0-9 (real 0-18°); H10+ is orange/amber
+        red_hi    = _h(160, 175)   # dark red / maroon (high-H side of wrap-around)
+        red_total = red_lo + red_hi
+        amber     = _h(10,  30)    # amber/gold = Engineering & Temporal (H10+ = orange-amber)
+        mid_blue  = _h(105, 120)   # Temporal's distinctive mid-blue (H105-120, NOT H90-100 bg)
+        green     = _h(48,  72)    # green = Miracle Worker
+        purple    = _h(115, 145)   # purple/violet = Intelligence
+        bg_blue   = _h(85, 120)    # common background navy (shared by all)
+
+        total = int(hist.sum()) or 1
+
+        # ── Command / Tactical (red accent) ───────────────────────────────────
+        # Command peaks at H 160-175 (dark maroon), Tactical at H 0-9 (pure red)
+        if red_total / total >= 0.05:
+            return 'command' if red_hi > red_lo else 'tactical'
+
+        # ── Intelligence (purple accent — unique to this profession) ──────────
+        if purple / total >= 0.07 or purple >= 40:
+            return 'intelligence'
+
+        # ── Miracle Worker (green accent) ─────────────────────────────────────
+        if green / total >= 0.10 or green >= 25:
+            return 'miracle worker'
+
+        # ── Engineering vs Temporal (both amber, Temporal also has strong mid-blue)
+        if amber / total >= 0.12 or amber >= 40:
+            # Temporal: amber is prominent AND significant mid-blue (H105-120) also present
+            # Engineering has mid_blue ≈ 0; Temporal has mid_blue = 30-50% of amber
+            if mid_blue >= 40 and mid_blue >= amber * 0.28:
+                return 'temporal'
+            return 'engineering'
+
+        # ── Pilot vs Science (both pure blue; Pilot peaks at H95, Science at H100+)
+        # hist bin 19 = H95-99, bin 20 = H100-104
+        if int(hist[19]) > int(hist[20]) and int(hist[19]) >= 30:
+            return 'pilot'
+
+        # ── Science (default: icon is dominated by background blue, no accent)
+        return 'science'
 
     def _detect_spec(self, img):
         h, w = img.shape[:2]
