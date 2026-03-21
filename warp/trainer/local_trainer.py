@@ -55,10 +55,11 @@ class LocalTrainWorker(QThread):
     progress = Signal(int, str)
     finished = Signal(bool, str)
 
-    def __init__(self, data_mgr, sets_root: Path, parent=None):
+    def __init__(self, data_mgr, sets_root: Path, aug_passes: int = 1, parent=None):
         super().__init__(parent)
-        self._data_mgr  = data_mgr
-        self._sets_root = sets_root
+        self._data_mgr   = data_mgr
+        self._sets_root  = sets_root
+        self._aug_passes = max(1, int(aug_passes))
 
     # ── entry point ───────────────────────────────────────────────────────────
 
@@ -155,6 +156,16 @@ class LocalTrainWorker(QThread):
         train_labels = [y[i]      for i in train_idx]
         val_crops    = [crops[i]  for i in val_idx]  if val_idx else train_crops[:1]
         val_labels   = [y[i]      for i in val_idx]  if val_idx else train_labels[:1]
+
+        # Augmentation passes — repeat training data N times;
+        # each copy gets different random transforms via transform_train
+        if self._aug_passes > 1:
+            train_crops  = train_crops  * self._aug_passes
+            train_labels = train_labels * self._aug_passes
+            self.progress.emit(
+                15, f'Aug passes={self._aug_passes}: '
+                    f'{len(train_crops)} effective training samples '
+                    f'({len(val_crops)} val, unchanged)')
 
         ds_train = CropDataset(train_crops, train_labels, transform_train)
         ds_val   = CropDataset(val_crops,   val_labels,   transform_val)

@@ -2080,7 +2080,10 @@ class WarpCoreWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle('Train Model')
         vl = QVBoxLayout(dlg)
-        vl.addWidget(QLabel('How many passes over the data?'))
+        vl.addWidget(QLabel(
+            'Augmentation passes — each pass repeats the training set\n'
+            'with different random transforms (crop/brightness/contrast).\n'
+            'More passes = more variety, but longer training.'))
         hl = QHBoxLayout()
         hl.addWidget(QLabel('Passes:'))
         spin = QSpinBox()
@@ -2103,6 +2106,7 @@ class WarpCoreWindow(QMainWindow):
         models_dir = self._sets_root / 'warp' / 'models'
         data_mgr = self._data_mgr
         sets_root = self._sets_root
+        aug_passes = train_repeats
         class _CombinedTrainWorker(QThread):
             progress = Signal(int, str)
             finished = Signal(bool, str)
@@ -2113,7 +2117,7 @@ class WarpCoreWindow(QMainWindow):
                 w.run(lambda p, m: self_.progress.emit(int(p*0.45), f'[Screen] {m}'), lambda ok, msg: None, interrupted)
                 from warp.trainer.local_trainer import LocalTrainWorker as _LTW
                 # Instantiate properly so QThread.__init__ is called
-                icon_worker = _LTW(data_mgr=data_mgr, sets_root=sets_root)
+                icon_worker = _LTW(data_mgr=data_mgr, sets_root=sets_root, aug_passes=aug_passes)
                 class _FakeSignal:
                     def __init__(self2, cb): self2._cb = cb
                     def emit(self2, *a): self2._cb(*a)
