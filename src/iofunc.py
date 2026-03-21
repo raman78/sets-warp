@@ -67,15 +67,25 @@ def browse_path(self, default_path: str = None, types: str = 'Any File (*.*)', s
     dialog.setFilter(QDir.Filter.AllEntries | QDir.Filter.Hidden | QDir.Filter.NoDotAndDotDot)
     dialog.setNameFilter(types)
 
-    # Disable the "Files of type" combo when there is only one filter option
-    # (no choice to make — the combo is just noise)
+    # When there is only one filter: hide the entire "Files of type" row
+    # (label + combo) so the grid layout doesn't shift the filename field.
     if ';;' not in types:
-        from PySide6.QtWidgets import QComboBox
-        for combo in dialog.findChildren(QComboBox):
-            for i in range(combo.count()):
-                if '*.' in combo.itemText(i):
-                    combo.setEnabled(False)
+        from PySide6.QtWidgets import QComboBox, QLabel
+        from PySide6.QtCore import QTimer
+
+        def _hide_row():
+            c = dialog.findChild(QComboBox, 'fileTypeCombo')
+            if c is None:
+                cs = dialog.findChildren(QComboBox)
+                c = cs[-1] if cs else None
+            if c:
+                c.setVisible(False)
+            for lbl in dialog.findChildren(QLabel):
+                if 'type' in lbl.text().lower():
+                    lbl.setVisible(False)
                     break
+
+        QTimer.singleShot(0, _hide_row)
 
     # Restore last used directory (shared between save and open)
     last_dir = self.settings.value('last_dialog_dir', '')
