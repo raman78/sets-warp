@@ -111,7 +111,6 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
     'UNKNOWN':        'ALL',   # unknown type → show everything, let user decide
 }
 
-TEXT_SLOTS: frozenset[str] = frozenset(['Ship Name'])
 FIXED_VALUE_SLOTS: frozenset[str] = frozenset(['Ship Tier', 'Ship Type'])
 from warp.trainer.training_data import NON_ICON_SLOTS  # Ship Name/Type/Tier — no ML crops
 SHIP_TIER_VALUES: list[str] = ['T1', 'T2', 'T3', 'T4', 'T5', 'T5-U', 'T5-X', 'T5-X2', 'T6', 'T6-X', 'T6-X2']
@@ -1563,6 +1562,7 @@ class WarpCoreWindow(QMainWindow):
         # Set name fields
         if slot == 'Ship Tier':
             self._tier_combo.setVisible(True)
+            self._ship_type_combo.setVisible(False)
             self._name_edit.setVisible(False)
             self._name_label.setText('Tier:')
             idx = self._tier_combo.findText(name)
@@ -1570,6 +1570,7 @@ class WarpCoreWindow(QMainWindow):
                 self._tier_combo.setCurrentIndex(idx)
         elif slot == 'Ship Type':
             self._ship_type_combo.setVisible(True)
+            self._tier_combo.setVisible(False)
             self._name_edit.setVisible(False)
             self._name_label.setText('Ship Type:')
             self._populate_ship_type_combo()
@@ -1578,10 +1579,19 @@ class WarpCoreWindow(QMainWindow):
                 self._ship_type_combo.setCurrentIndex(idx)
             else:
                 self._ship_type_combo.lineEdit().setText(name)
+        elif slot == 'Ship Name':
+            self._tier_combo.setVisible(False)
+            self._ship_type_combo.setVisible(False)
+            self._name_edit.setVisible(True)
+            self._name_edit.setEnabled(False)
+            self._name_edit.setPlaceholderText('OCR only — bbox position saved')
+            self._name_label.setText('Ship Name:')
         else:
             self._tier_combo.setVisible(False)
             self._ship_type_combo.setVisible(False)
             self._name_edit.setVisible(True)
+            self._name_edit.setEnabled(True)
+            self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
             self._name_label.setText('Item name:')
             self._name_edit.blockSignals(True)
             self._name_edit.setText(name)
@@ -1938,19 +1948,22 @@ class WarpCoreWindow(QMainWindow):
     def _on_slot_changed(self, slot: str):
         is_tier = (slot == 'Ship Tier')
         is_ship_type = (slot == 'Ship Type')
-        is_text = (slot in TEXT_SLOTS)
+        is_ship_name = (slot == 'Ship Name')
         self._tier_combo.setVisible(is_tier)
         self._ship_type_combo.setVisible(is_ship_type)
         self._name_edit.setVisible(not is_tier and not is_ship_type)
+        self._name_edit.setEnabled(not is_ship_name)
         if is_tier:
             self._name_label.setText('Tier:')
         elif is_ship_type:
             self._name_label.setText('Ship Type:')
             self._populate_ship_type_combo()
-        elif is_text:
-            self._name_label.setText('Value:')
+        elif is_ship_name:
+            self._name_label.setText('Ship Name:')
+            self._name_edit.setPlaceholderText('OCR only — bbox position saved')
         else:
             self._name_label.setText('Item name:')
+            self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
         # Clear item name field and reset completer state whenever slot changes
         self._suppress_next_focus_popup = True
         self._name_edit.blockSignals(True)

@@ -327,6 +327,11 @@ class AnnotationWidget(QWidget):
 
     def _handle_hit_test(self, pos: QPoint, ann_idx: int) -> str | None:
         if ann_idx < 0 or ann_idx >= len(self._annotations): return None
+        try:
+            from warp.trainer.training_data import NON_ICON_SLOTS
+            if self._annotations[ann_idx].slot in NON_ICON_SLOTS: return None
+        except Exception:
+            pass
         rect = self._img_to_screen_rect(self._annotations[ann_idx].bbox); h = self._HANDLE + 2; l, t, r, b = rect.left(), rect.top(), rect.right(), rect.bottom(); mx, my = (l + r) // 2, (t + b) // 2
         handles = [('resize_NW', l, t), ('resize_N', mx, t), ('resize_NE', r, t), ('resize_W', l, my), ('resize_E', r, my), ('resize_SW', l, b), ('resize_S', mx, b), ('resize_SE', r, b), ('move', mx, my)]
         x, y = pos.x(), pos.y()
