@@ -113,7 +113,7 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
 
 TEXT_SLOTS: frozenset[str] = frozenset(['Ship Name'])
 FIXED_VALUE_SLOTS: frozenset[str] = frozenset(['Ship Tier', 'Ship Type'])
-NON_ICON_SLOTS: frozenset[str] = TEXT_SLOTS | FIXED_VALUE_SLOTS
+from warp.trainer.training_data import NON_ICON_SLOTS  # Ship Name/Type/Tier — no ML crops
 SHIP_TIER_VALUES: list[str] = ['T1', 'T2', 'T3', 'T4', 'T5', 'T5-U', 'T5-X', 'T5-X2', 'T6', 'T6-X', 'T6-X2']
 _SHIP_INFO_SLOTS = ['Ship Name', 'Ship Type', 'Ship Tier']
 

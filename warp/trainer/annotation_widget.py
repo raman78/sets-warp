@@ -201,15 +201,24 @@ class AnnotationWidget(QWidget):
         'confirmed': QColor( 60, 220, 100, 220),
         'new':       QColor(220,  80,  80, 220),
     }
+    # Text/fixed-value slots (Ship Name/Type/Tier) use cyan — visually distinct
+    # from icon slots; signals "bbox saved for layout learning, no ML crop"
+    _TEXT_SLOT_COLOR = QColor(0, 200, 220, 220)
 
     def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, selected: bool, highlighted: bool):
         if not bbox: return
+        try:
+            from warp.trainer.training_data import NON_ICON_SLOTS
+            is_text_slot = slot in NON_ICON_SLOTS
+        except Exception:
+            is_text_slot = False
+        base_color = self._TEXT_SLOT_COLOR if is_text_slot else self._STATE_COLOR.get(state, QColor(200, 200, 200, 180))
         if highlighted and not selected:
-            color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = SELECTED_PEN_WIDTH + 1; style = Qt.PenStyle.DashLine
+            color = base_color; pw = SELECTED_PEN_WIDTH + 1; style = Qt.PenStyle.DashLine
         elif selected:
-            color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = SELECTED_PEN_WIDTH; style = Qt.PenStyle.DashLine
+            color = base_color; pw = SELECTED_PEN_WIDTH; style = Qt.PenStyle.DashLine
         else:
-            color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180)); pw = DRAW_PEN_WIDTH; style = Qt.PenStyle.SolidLine
+            color = base_color; pw = DRAW_PEN_WIDTH; style = Qt.PenStyle.SolidLine
         pen = QPen(color, pw, style); painter.setPen(pen); painter.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 25))); rect = self._img_to_screen_rect(bbox); painter.drawRect(rect)
 
     # ---------------------------------------------------------------- mouse events

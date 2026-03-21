@@ -41,6 +41,16 @@ SINGLE_INSTANCE_SLOTS: frozenset = frozenset({
     'Primary Specialization', 'Secondary Specialization',
 })
 
+# Slots that contain text / fixed values — NOT icons.
+# Bboxes for these slots are stored in annotations.json for layout learning
+# (so OCR can be directed to the right region) but must NOT generate crop PNGs
+# or crop_index entries, since ML cannot classify free-form text.
+NON_ICON_SLOTS: frozenset = frozenset({
+    'Ship Name',   # free-text, unique per ship — OCR only
+    'Ship Type',   # fixed vocabulary, but text — OCR only
+    'Ship Tier',   # T1–T6-X2 — OCR only
+})
+
 
 @dataclass
 class Annotation:
@@ -268,7 +278,12 @@ class TrainingDataManager:
         - Updates state (PENDING → CONFIRMED etc.)
         - Updates name and slot (may change after user confirmation)
         - Re-exports crop if it doesn't exist yet
+        - NON_ICON_SLOTS are skipped — their bbox is kept in annotations.json
+          for layout learning, but no crop PNG or crop_index entry is created.
         """
+        if ann.slot in NON_ICON_SLOTS:
+            return
+
         safe_slot = ann.slot.replace(" ", "_").lower()
         safe_name = (ann.name or "unknown").replace(" ", "_").lower()[:40]
         fname     = f"{safe_slot}__{safe_name}__{ann.ann_id}.png"
@@ -305,7 +320,10 @@ class TrainingDataManager:
         """
         Crops the icon region from the original screenshot and saves it as PNG.
         Filename is derived from item name + slot (for easy dataset browsing).
+        NON_ICON_SLOTS are skipped — text fields have no icon to classify.
         """
+        if ann.slot in NON_ICON_SLOTS:
+            return
         import cv2
         img = cv2.imread(str(image_path))
         if img is None:
