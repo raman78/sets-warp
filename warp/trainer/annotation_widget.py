@@ -83,6 +83,10 @@ class AnnotationWidget(QWidget):
         self._selected_row: int = -1      # row for full edit mode (with handles)
         self._highlighted_row: int = -1   # row for simple highlight (red dotted box)
 
+        # Hover tooltip state
+        self._hover_row:   int   = -1
+        self._hover_timer: object = None
+
         # Drag/resize state
         self._drag_mode:  str | None = None   # 'move' | 'resize_NW' | etc.
         self._drag_start: QPoint | None = None
@@ -297,6 +301,21 @@ class AnnotationWidget(QWidget):
             self.setCursor(self._make_zoom_cursor())
         else:
             self.unsetCursor()
+        # Hover tooltip — find review item under mouse
+        hovered = -1
+        for idx, ri in enumerate(self._review_items):
+            bbox = ri.get('bbox')
+            if bbox and self._img_to_screen_rect(bbox).contains(pos):
+                hovered = idx
+                break
+        if hovered != self._hover_row:
+            self._hover_row = hovered
+            self._cancel_hover_timer()
+            if hovered >= 0:
+                self._start_hover_timer(hovered)
+            else:
+                from PySide6.QtWidgets import QToolTip
+                QToolTip.hideText()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton: return
@@ -320,6 +339,47 @@ class AnnotationWidget(QWidget):
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Delete and self._selected_idx >= 0:
             ann = self._annotations[self._selected_idx]; self._data_mgr.remove_annotation(self._img_path, ann); self._annotations = self._data_mgr.get_annotations(self._img_path); self._selected_idx = -1; self.update()
+
+    def _cancel_hover_timer(self):
+        if self._hover_timer is not None:
+            self._hover_timer.stop()
+            self._hover_timer = None
+
+    def _start_hover_timer(self, row: int):
+        from PySide6.QtCore import QTimer
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.timeout.connect(lambda: self._show_hover_tooltip(row))
+        self._hover_timer.start(700)
+
+    def _show_hover_tooltip(self, row: int):
+        if row < 0 or row >= len(self._review_items):
+            return
+        ri        = self._review_items[row]
+        name      = ri.get('name') or '— unmatched —'
+        slot      = ri.get('slot', '?')
+        conf      = ri.get('conf', 0.0)
+        state     = ri.get('state', 'pending')
+        orig_name = ri.get('orig_name', '')
+        if state == 'confirmed':
+            lines = [f'<b>{slot}</b>', name, '<i>confirmed by user</i>']
+            if conf > 0.0:
+                color = ('#7effc8' if conf >= 0.85 else
+                         '#e8c060' if conf >= 0.70 else '#ff9966')
+                ml_text = orig_name if orig_name and orig_name != name else name
+                lines.append(f'ML: <span style="color:{color}">{ml_text} ({conf:.1%})</span>')
+            else:
+                lines.append('<span style="color:#888">ML: unknown (previous session)</span>')
+            text = '<br>'.join(lines)
+        else:
+            pct   = f'{conf:.1%}'
+            color = ('#7effc8' if conf >= 0.85 else
+                     '#e8c060' if conf >= 0.70 else '#ff9966')
+            text  = (f'<b>{slot}</b><br>{name}'
+                     f'<br>Confidence: <span style="color:{color}">{pct}</span>')
+        from PySide6.QtWidgets import QToolTip
+        from PySide6.QtGui import QCursor
+        QToolTip.showText(QCursor.pos(), text, self)
 
     def _handle_positions(self, rect: QRect) -> list[tuple[int, int]]:
         l, t, r, b = rect.left(), rect.top(), rect.right(), rect.bottom(); mx, my = (l + r) // 2, (t + b) // 2
