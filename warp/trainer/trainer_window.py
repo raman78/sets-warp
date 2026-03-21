@@ -1456,8 +1456,7 @@ class WarpCoreWindow(QMainWindow):
             self._name_edit.setText(name)
             self._name_edit.blockSignals(False)
             if not _auto:
-                self._suppress_next_focus_popup = True
-                self._name_edit.setFocus()
+                self._ann_widget.setFocus()
             else:
                 self._review_list.setFocus()
         else:
