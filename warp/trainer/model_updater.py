@@ -158,6 +158,10 @@ class ModelUpdater:
         models_dir.mkdir(parents=True, exist_ok=True)
         tmp_files: list[tuple[Path, Path]] = []  # (tmp_path, final_path)
 
+        # Use upload token if available — suppresses HF unauthenticated warning
+        # and gets higher rate limits. Falls back to anonymous (public repo).
+        token = self._read_hub_token(models_dir.parent)
+
         for hf_path, local_name in _MODEL_FILES:
             final_path = models_dir / local_name
             try:
@@ -165,7 +169,7 @@ class ModelUpdater:
                     repo_id=hf_repo,
                     filename=hf_path,
                     repo_type='dataset',
-                    token=None,   # public repo
+                    token=token or None,
                 )
                 tmp_files.append((Path(downloaded), final_path))
             except Exception as e:
@@ -209,6 +213,14 @@ class ModelUpdater:
             pass
 
     # ── helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _read_hub_token(warp_dir: Path) -> str:
+        """Read hub_token.txt from warp/ directory. Returns '' if not found."""
+        try:
+            return (warp_dir / 'hub_token.txt').read_text().strip()
+        except Exception:
+            return ''
 
     @staticmethod
     def _read_local_trained_at(models_dir: Path) -> str:
