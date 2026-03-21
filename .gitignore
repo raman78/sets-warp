@@ -3,7 +3,7 @@ images/
 ..debug/
 __pycache__/
 *.py[cod]
-.SETS_settings.ini
+.sets_warp_settings.ini
 .venv/
 .python/
 *.log

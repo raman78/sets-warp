@@ -34,7 +34,7 @@ ROOT        = Path(os.environ['SETS_DIR']).resolve() if 'SETS_DIR' in os.environ
 VENV_DIR    = ROOT / ".venv"
 PYTHON_DIR  = ROOT / ".python"
 PYPROJECT   = ROOT / "pyproject.toml"
-SETUP_LOG   = ROOT / "sets_setup.log"
+SETUP_LOG   = ROOT / "sets_warp_setup.log"
 
 IS_WINDOWS  = sys.platform == "win32"
 IS_MAC      = sys.platform == "darwin"
@@ -478,7 +478,7 @@ def run_install(on_line, on_done, on_error, repair_only: bool = False):
 # ── tkinter GUI ────────────────────────────────────────────────────────────────
 
 def _setup_log_writer():
-    """Returns a callable that appends a timestamped line to sets_setup.log."""
+    """Returns a callable that appends a timestamped line to sets_warp_setup.log."""
     import datetime
     try:
         log_file = open(SETUP_LOG, 'a', encoding='utf-8', buffering=1)

@@ -1,6 +1,6 @@
 """
 Crash-safe debug logger.
-- Writes to ~/sets_debug.log (fsynced after every line)
+- Writes to ~/sets_warp_debug.log (fsynced after every line)
 - Also prints to stderr (visible in terminal even on crash)
 """
 import os
@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import os as _os
-_log_path = Path(_os.environ.get('SETS_DIR') or Path(__file__).parent.parent) / 'sets_debug.log'
+_log_path = Path(_os.environ.get('SETS_DIR') or Path(__file__).parent.parent) / 'sets_warp_debug.log'
 _lock = threading.Lock()
 
 try:

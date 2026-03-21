@@ -4,7 +4,7 @@ print('[SETS] main.py: Python started', flush=True)
 # Ultra-early file log — written before ANY Qt import
 # Log goes next to sets_warp.sh — find it by walking up from __file__ or using env var
 _script_dir = os.environ.get('SETS_DIR') or os.path.dirname(os.path.abspath(__file__))
-_early_log_path = os.path.join(_script_dir, 'sets_early.log')
+_early_log_path = os.path.join(_script_dir, 'sets_warp_early.log')
 _early_log = open(_early_log_path, 'w', buffering=1)
 def _elog(msg):
     import time
@@ -626,7 +626,7 @@ class Launcher():
     @staticmethod
     def app_config() -> dict:
         config = {
-            'settings_path': '.SETS_settings.ini',
+            'settings_path': '.sets_warp_settings.ini',
             'config_folder_path': '.config',
             'config_subfolders': {
                 'library': 'library',
