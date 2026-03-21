@@ -118,48 +118,91 @@ class LayoutDetector:
 
     def learn_layout(self, screen_type: str, img_size: tuple[int, int], annotations: list[dict]):
         """
-        Record a successful layout to the anchors.json database.
-        signature: {screen_type, aspect_ratio, slot_rel_y: {slot_name: y_rel}}
+        Record a confirmed layout to anchors.json.
+
+        Stores full relative geometry per slot:
+          x0_rel   — leftmost icon X / image width
+          y_rel    — icon row center Y / image height
+          w_rel    — icon width / image width
+          h_rel    — icon height / image height
+          step_rel — X step between consecutive icons / image width
+          count    — number of icons stored (for this ship)
+
+        All values are relative so the layout scales correctly to different
+        window sizes and resolutions without any estimation.
         """
         if not annotations: return
         h, w = img_size
         aspect = round(w / h, 3)
-        
-        # Calculate relative Y for each slot
-        slot_map = {}
+
+        # Group annotations by slot, keeping only confirmed ones
+        from collections import defaultdict
+        slot_bboxes: dict[str, list] = defaultdict(list)
         for ann in annotations:
             bbox = ann.get('bbox')
             slot = ann.get('slot')
-            if not bbox or not slot: continue
-            # Store center Y relative to image height
-            y_rel = round((bbox[1] + bbox[3] / 2) / h, 4)
-            slot_map[slot] = y_rel
+            if not bbox or not slot:
+                continue
+            slot_bboxes[slot].append(bbox)
 
-        if not slot_map: return
+        if not slot_bboxes:
+            return
 
-        # Update calibration data
-        if not self._calibration: self._calibration = {}
-        if 'learned' not in self._calibration: self._calibration['learned'] = []
-        
+        slot_map = {}
+        for slot, bboxes in slot_bboxes.items():
+            # Sort left-to-right
+            bboxes_s = sorted(bboxes, key=lambda b: b[0])
+            bw = int(round(sum(b[2] for b in bboxes_s) / len(bboxes_s)))
+            bh = int(round(sum(b[3] for b in bboxes_s) / len(bboxes_s)))
+            cy = int(round(sum(b[1] + b[3] / 2 for b in bboxes_s) / len(bboxes_s)))
+            x0 = bboxes_s[0][0]
+
+            if len(bboxes_s) > 1:
+                steps = [bboxes_s[i+1][0] - bboxes_s[i][0] for i in range(len(bboxes_s) - 1)]
+                step = int(round(sum(steps) / len(steps)))
+            else:
+                step = bw + max(2, int(bw * 0.08))   # sensible gap when only 1 icon
+
+            slot_map[slot] = {
+                'x0_rel':   round(x0 / w, 5),
+                'y_rel':    round(cy / h, 5),
+                'w_rel':    round(bw / w, 5),
+                'h_rel':    round(bh / h, 5),
+                'step_rel': round(step / w, 5),
+                'count':    len(bboxes_s),
+            }
+
+        if not slot_map:
+            return
+
+        if not self._calibration:
+            self._calibration = {}
+        if 'learned' not in self._calibration:
+            self._calibration['learned'] = []
+
         entry = {
-            'type': screen_type,
-            'aspect': aspect,
-            'slots': slot_map,
-            'res': f"{w}x{h}",
-            'timestamp': int(__import__('time').time())
+            'type':      screen_type,
+            'aspect':    aspect,
+            'slots':     slot_map,
+            'res':       f'{w}x{h}',
+            'timestamp': int(__import__('time').time()),
         }
-        
+
         # Avoid exact duplicates
         total = len(self._calibration['learned'])
         for existing in self._calibration['learned']:
-            if existing['type'] == screen_type and existing['res'] == entry['res'] and existing['slots'] == slot_map:
+            if (existing['type'] == screen_type
+                    and existing['res'] == entry['res']
+                    and existing['slots'] == slot_map):
                 _slog.debug(f'LayoutDetector: learn_layout {screen_type} {w}x{h} — duplicate, skipping')
                 return
 
         self._calibration['learned'].append(entry)
         self._save_calibration()
-        _slog.info(f'LayoutDetector: saved new layout [{screen_type}] {w}x{h} '
-                   f'({len(slot_map)} slots, total in db: {total + 1})')
+        _slog.info(
+            f'LayoutDetector: saved layout [{screen_type}] {w}x{h} '
+            f'({len(slot_map)} slots, total={total + 1})'
+        )
 
     def _detect_via_learned_layouts(self, img, build_type, slot_order, profile):
         """Find the best matching learned layout signature."""
@@ -180,29 +223,35 @@ class LayoutDetector:
         _slog.info(f'LayoutDetector: Strategy 1 (learned) — found {len(candidates)} matching layouts '
                    f'for [{build_type}] aspect={aspect}, using latest ({best["res"]})')
         
-        panel_right = self._find_panel_right_edge(img)
-        row_h_est   = int(h * 0.07)
-        cell_w      = max(30, int(row_h_est * 0.80))
-        icon_w      = cell_w - 4
-        icon_h      = max(26, int(row_h_est * 0.78))
-
         result = {}
         for slot_name in slot_order:
-            y_rel = best['slots'].get(slot_name)
-            if y_rel is None: continue
-            
-            n_icons = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
-            if n_icons == 0: continue
+            geo = best['slots'].get(slot_name)
+            if geo is None:
+                continue
 
-            iy = int(h * y_rel) - icon_h // 2
+            # Backward compatibility: old entries stored a plain float (y_rel only)
+            if isinstance(geo, (int, float)):
+                _slog.debug(f'LayoutDetector: slot {slot_name} has old-format entry, skipping')
+                continue
+
+            n_icons = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
+            if n_icons == 0:
+                continue
+
+            x0   = int(geo['x0_rel']   * w)
+            cy   = int(geo['y_rel']    * h)
+            bw   = max(1, int(geo['w_rel']   * w))
+            bh   = max(1, int(geo['h_rel']   * h))
+            step = max(bw, int(geo['step_rel'] * w))
+
             bboxes = []
             for j in range(n_icons):
-                ix = panel_right - (j + 1) * cell_w + 2
-                bboxes.append((max(0, ix), iy, icon_w, icon_h))
-            bboxes.reverse()
+                ix = x0 + j * step
+                iy = cy - bh // 2
+                bboxes.append((max(0, ix), max(0, iy), bw, bh))
             result[slot_name] = bboxes
-            
-        return result if len(result) > 0 else None
+
+        return result if result else None
 
     # ── Original Logic (truncated for brevity, but kept in final write) ────────
 

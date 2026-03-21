@@ -133,7 +133,7 @@ class SETS():
             _cookies['cf_clearance'] = _env['SETS_CF_CLEARANCE']
             log.info('SETS.__init__: cf_clearance cookie loaded from .env')
         else:
-            log.info('SETS.__init__: no cf_clearance in .env — wiki downloads may be blocked')
+            log.debug('SETS.__init__: no cf_clearance in .env — wiki downloads may be blocked')
         self.downloader.configure_default_session(cookies=_cookies, headers=_headers)
         self.cargo: CargoManager = CargoManager(self.config['config_subfolders'])
         log.info('SETS.__init__: CargoManager OK')
