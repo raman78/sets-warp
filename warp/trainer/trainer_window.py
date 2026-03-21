@@ -1526,6 +1526,14 @@ class WarpCoreWindow(QMainWindow):
                     litem.setForeground(QColor('#ff8888'))
                 else:
                     litem.setForeground(QColor('#ff5555'))
+            # Auto-accept if threshold met after rematch
+            if (name and conf >= 0.40
+                    and getattr(self, '_chk_auto_accept', None)
+                    and self._chk_auto_accept.isChecked()
+                    and conf >= self._spin_auto_conf.value()
+                    and slot not in NON_ICON_SLOTS):
+                self._review_list.setCurrentRow(row)
+                self._on_accept()
         except Exception as e:
             from src.setsdebug import log as _sl
             _sl.warning(f'rematch_with_slot failed: {e}')
