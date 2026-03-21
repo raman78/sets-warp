@@ -45,7 +45,8 @@ RATE_LIMIT_FILE           = Path('warp') / 'knowledge' / 'rate_limit.json'
 MAX_CONTRIBUTIONS_PER_DAY = 200    # per installation, per day
 KNOWLEDGE_MAX_AGE_HOURS   = 24     # re-download knowledge base after this
 CONNECT_TIMEOUT           = 5      # seconds
-READ_TIMEOUT              = 15     # seconds
+READ_TIMEOUT              = 15     # seconds — knowledge download (has cache fallback)
+CONTRIBUTE_TIMEOUT        = 60     # seconds — longer: covers Render cold-start (~50 s)
 
 WARP_VERSION = '0.4.0'
 
@@ -216,17 +217,27 @@ class WARPSyncClient:
             }, ensure_ascii=False).encode('utf-8')
 
             import urllib.request
-            req = urllib.request.Request(
-                f'{self._url}/contribute',
-                data=payload,
-                headers={
-                    'Content-Type': 'application/json',
-                    'User-Agent':   f'WARP/{WARP_VERSION}',
-                },
-                method='POST',
-            )
-            with urllib.request.urlopen(req, timeout=CONNECT_TIMEOUT + READ_TIMEOUT) as resp:
-                result = json.loads(resp.read().decode('utf-8'))
+
+            def _post() -> dict:
+                req = urllib.request.Request(
+                    f'{self._url}/contribute',
+                    data=payload,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'User-Agent':   f'WARP/{WARP_VERSION}',
+                    },
+                    method='POST',
+                )
+                with urllib.request.urlopen(req, timeout=CONTRIBUTE_TIMEOUT) as resp:
+                    return json.loads(resp.read().decode('utf-8'))
+
+            # One retry — Render free tier needs ~50 s to cold-start
+            try:
+                result = _post()
+            except Exception as first_err:
+                log.debug(f'WARPSync: contribution attempt 1 failed ({first_err}), retrying...')
+                time.sleep(3)
+                result = _post()   # raises on second failure → caught below
 
             success = result.get('ok', False)
             if success:
