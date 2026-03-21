@@ -543,8 +543,14 @@ class WarpImporter:
                        f'ocr_build={text_info.get("build_type")!r} → using build_type={build_type!r}')
 
         # Step 2 — get exact slot profile from ship_list.json
-        profile = self._get_shipdb().get_profile(ship_name, ship_type)
-        _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}: {dict((k,v) for k,v in profile.items() if v)}')
+        # Skip for GROUND/GROUND_MIXED — ShipDB contains space ship data only
+        _is_ground = build_type in ('GROUND', 'GROUND_MIXED')
+        if _is_ground:
+            profile = {}
+            _slog.info(f'WarpImporter: GROUND build — skipping ShipDB lookup')
+        else:
+            profile = self._get_shipdb().get_profile(ship_name, ship_type)
+            _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}: {dict((k,v) for k,v in profile.items() if v)}')
         # Apply profile override from confirmed annotations
         # Priority 1: explicitly passed override (from RecognitionWorker)
         # Priority 2: load from training_data/annotations.json on disk
@@ -592,7 +598,6 @@ class WarpImporter:
         # Skip for GROUND/GROUND_MIXED — _profile_from_pixel_counts is space-only
         # (MEASURABLE set contains only space slots), so it would pick a random
         # space ship profile and corrupt the ground layout on the second run.
-        _is_ground = build_type in ('GROUND', 'GROUND_MIXED')
         if not ship_name and layout and not _is_ground:
             pixel_counts = {slot: len(boxes) for slot, boxes in layout.items() if boxes}
             if pixel_counts:
