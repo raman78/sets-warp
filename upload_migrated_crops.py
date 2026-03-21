@@ -181,6 +181,25 @@ def main():
         print(f'  Skipped {skipped_no_name} crops with unparseable names')
     print(f'  {len(items)} crops with valid names')
 
+    # Deduplicate by sha256 — identical PNGs with different labels would cause
+    # conflicting votes in admin_train.py; keep first occurrence of each sha.
+    seen_shas: dict[str, str] = {}   # sha256 → first item_name seen
+    deduped: list[tuple[Path, str]] = []
+    skipped_dup = 0
+    for path, name in items:
+        sha = _sha256(path)
+        if sha in seen_shas:
+            skipped_dup += 1
+            # Log collision only when names differ (same icon, different label)
+            if seen_shas[sha] != name:
+                print(f'  Dup SHA, different names: "{seen_shas[sha]}" vs "{name}" — keeping first')
+        else:
+            seen_shas[sha] = name
+            deduped.append((path, name))
+    if skipped_dup:
+        print(f'  Deduplicated {skipped_dup} crops with identical PNG content ({len(deduped)} unique)')
+    items = deduped
+
     # ── Dry-run preview ───────────────────────────────────────────────────────
     if args.dry_run:
         print('\n--- DRY RUN (first 20 crops) ---')
