@@ -1226,7 +1226,7 @@ class WarpCoreWindow(QMainWindow):
                   activated=self._on_remove_item)
         # Restore auto-accept settings
         self._chk_auto_accept.setChecked(
-            self._settings.value(_KEY_AUTO_ACCEPT, False, type=bool))
+            self._settings.value(_KEY_AUTO_ACCEPT, True, type=bool))
         self._spin_auto_conf.setValue(
             float(self._settings.value(_KEY_AUTO_CONF, 0.75)))
         # Save on change
