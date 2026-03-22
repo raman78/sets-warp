@@ -1379,13 +1379,13 @@ class WarpCoreWindow(QMainWindow):
                         _current_slot = self._slot_combo.currentText()
                         _candidates = set(self._build_search_candidates(_current_slot)) or None
                         # Pass 1: match with slot-restricted candidates
-                        name, conf, thumb = SETSIconMatcher(self._sets).match(
+                        name, conf, thumb, _ = SETSIconMatcher(self._sets).match(
                             crop_bgr, candidate_names=_candidates)
                         _slog.info(f'add_bbox: pass1 → name={name!r} conf={conf:.2f} '
                                    f'(slot={_current_slot!r}, pool={len(_candidates) if _candidates else "all"})')
                         # Pass 2: if low conf, retry without slot restriction
                         if conf < 0.40 and _candidates:
-                            name2, conf2, thumb2 = SETSIconMatcher(self._sets).match(
+                            name2, conf2, thumb2, _ = SETSIconMatcher(self._sets).match(
                                 crop_bgr, candidate_names=None)
                             _slog.info(f'add_bbox: pass2 (unrestricted) → name={name2!r} conf={conf2:.2f}')
                             if conf2 > conf:
