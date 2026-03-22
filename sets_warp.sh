@@ -13,13 +13,29 @@ fi
 # regardless of Python's __file__ or .pyc cache pointing elsewhere
 export SETS_DIR="$SCRIPT_DIR"
 
-# ── Linux desktop integration (first run only) ─────────────────────────────────
-# Silently installs .desktop entry and app icon if not already present.
-# Safe to re-run; skipped on macOS and on subsequent runs.
-if [ "$(uname)" = "Linux" ] && [ ! -f "$HOME/.local/share/applications/sets-warp.desktop" ]; then
-    if [ -f "$SCRIPT_DIR/installer/install_desktop.sh" ]; then
+# ── Linux desktop integration ─────────────────────────────────────────────────
+# Each install path gets its own .desktop file (keyed by a hash of SCRIPT_DIR)
+# so multiple installations coexist without overwriting each other.
+if [ "$(uname)" = "Linux" ] && [ -f "$SCRIPT_DIR/installer/install_desktop.sh" ]; then
+    # 8-char hash of install path — stable, unique per location
+    _PHASH=$(printf '%s' "$SCRIPT_DIR" | sha256sum 2>/dev/null | cut -c1-8)
+    if [ -z "$_PHASH" ]; then
+        _PHASH=$(printf '%s' "$SCRIPT_DIR" | md5sum 2>/dev/null | cut -c1-8)
+    fi
+    export SETS_DESKTOP_NAME="sets-warp-${_PHASH:-default}"
+    _DESKTOP="$HOME/.local/share/applications/${SETS_DESKTOP_NAME}.desktop"
+
+    # Migrate legacy sets-warp.desktop if it belongs to this install
+    _LEGACY="$HOME/.local/share/applications/sets-warp.desktop"
+    if [ -f "$_LEGACY" ] && grep -qF "Exec=$SCRIPT_DIR/" "$_LEGACY" 2>/dev/null; then
+        mv "$_LEGACY" "$_DESKTOP" 2>/dev/null || true
+    fi
+
+    # Create entry if not present yet for this install path
+    if [ ! -f "$_DESKTOP" ]; then
         bash "$SCRIPT_DIR/installer/install_desktop.sh" > /dev/null 2>&1 || true
     fi
+    unset _PHASH _DESKTOP _LEGACY
 fi
 
 # Prevent Python from using stale .pyc cache from a previous location

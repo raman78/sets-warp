@@ -1435,6 +1435,25 @@ class SETS():
         sec_3.addWidget(build_image_label, 0, 2, alignment=ALEFT)
         scroll_layout.addLayout(sec_3)
 
+        # uninstall section
+        sep = self.create_frame()
+        sep.setFixedHeight(isp)
+        scroll_layout.addWidget(sep)
+        uninstall_header = self.create_label('Uninstall:', 'label_heading')
+        scroll_layout.addWidget(uninstall_header, alignment=ALEFT)
+        sec_uninst = GridLayout(spacing=isp)
+        sec_uninst.setColumnMinimumWidth(1, 3 * isp)
+        sec_uninst.setColumnStretch(3, 1)
+        uninstall_button = self.create_button('Uninstall SETS-WARP')
+        uninstall_button.clicked.connect(self._on_uninstall)
+        sec_uninst.addWidget(uninstall_button, 0, 0, alignment=ALEFT)
+        uninstall_label = self.create_label(
+            'Removes the desktop entry and permanently deletes this installation folder.',
+            'hint_label')
+        uninstall_label.setWordWrap(True)
+        sec_uninst.addWidget(uninstall_label, 0, 2, alignment=ALEFT)
+        scroll_layout.addLayout(sec_uninst)
+
         scroll_frame.setLayout(scroll_layout)
         scroll_area.setWidget(scroll_frame)
 
@@ -1482,3 +1501,68 @@ class SETS():
         stocd_label.setPixmap(self.cache.icons['STOCD'])
         footer_layout.addWidget(stocd_label, 0, 1, alignment=ARIGHT | ABOTTOM)
         footer_frame.setLayout(footer_layout)
+
+    def _on_uninstall(self):
+        """Confirm then schedule full uninstall: desktop entry + installation directory."""
+        from PySide6.QtWidgets import QMessageBox
+        install_dir = str(Path(__file__).resolve().parent.parent)
+        reply = QMessageBox.warning(
+            self.window,
+            'Uninstall SETS-WARP',
+            f'This will permanently delete:\n\n'
+            f'  {install_dir}\n\n'
+            f'and remove the desktop entry.\n\n'
+            f'This cannot be undone. Continue?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._run_uninstall(install_dir)
+
+    @staticmethod
+    def _run_uninstall(install_dir: str):
+        """Write a cleanup shell script to /tmp and exec it, then exit the app."""
+        import tempfile, stat
+        sets_warp_sh = str(Path(install_dir) / 'sets_warp.sh')
+
+        # Find desktop file for this install (sets-warp-<hash>.desktop or legacy)
+        apps_dir = Path.home() / '.local' / 'share' / 'applications'
+        desktop_files = []
+        for df in apps_dir.glob('sets-warp*.desktop'):
+            try:
+                if install_dir in df.read_text():
+                    desktop_files.append(str(df))
+            except Exception:
+                pass
+
+        remove_desktops = '\n'.join(f'rm -f "{d}"' for d in desktop_files)
+
+        script = f"""#!/bin/sh
+# SETS-WARP auto-uninstall — generated, runs once
+sleep 1
+{remove_desktops}
+# Refresh DE caches
+gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+rm -rf "{install_dir}"
+rm -- "$0"
+"""
+        fd, path = tempfile.mkstemp(suffix='.sh', prefix='sets_warp_uninstall_')
+        try:
+            os.write(fd, script.encode())
+            os.close(fd)
+            os.chmod(path, stat.S_IRWXU)
+        except Exception as e:
+            import traceback
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(None, 'Uninstall error', f'Could not write uninstall script:\n{e}')
+            return
+
+        # Launch script in background, then exit
+        import subprocess
+        if sys.platform != 'win32':
+            subprocess.Popen(['/bin/sh', path], close_fds=True,
+                             start_new_session=True)
+        sys.exit(0)
+
