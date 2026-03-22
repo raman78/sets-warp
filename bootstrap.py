@@ -1597,6 +1597,7 @@ def main():
         if broken:
             print(f"[bootstrap] packages missing/outdated: {broken} — repairing", flush=True)
             _run_repair(broken)
+            _save_active_mode(_get_install_mode())  # keep sentinel in sync after repair
             # Relaunch in a fresh process so main.py gets a clean QApplication
             print("[bootstrap] repair done — relaunching", flush=True)
             relaunch_in_venv()
