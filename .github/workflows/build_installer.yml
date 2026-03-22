@@ -6,6 +6,12 @@ name: Build Windows Installer
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach installer to (e.g. v1.1b)'
+        required: true
+        default: 'v1.1b'
 
 jobs:
   build:
@@ -21,7 +27,12 @@ jobs:
 
       - name: Get version from release tag
         id: version
-        run: echo "VERSION=${{ github.event.release.tag_name }}" >> $env:GITHUB_OUTPUT
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            echo "VERSION=${{ github.event.inputs.tag }}" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "VERSION=${{ github.event.release.tag_name }}" >> $env:GITHUB_OUTPUT
+          }
         shell: pwsh
 
       - name: Build installer
