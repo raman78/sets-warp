@@ -32,7 +32,7 @@ except Exception:
     log = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-VERSION     = '1.0b'           # fallback for zip installs / no git
+VERSION     = '1.1b'           # fallback for zip installs / no git
 GITHUB_REPO = 'raman78/sets-warp'
 API_URL      = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
 TIMEOUT      = 8               # seconds for the API request

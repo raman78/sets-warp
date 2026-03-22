@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## v1.1b (2026-03-22)
+
+### Auto-update
+
+- **`updater.py`** — background update checker (runs 8 s after launch, daemon thread)
+- Current version read from nearest git tag (`git describe --tags`) — advances automatically after `git pull`, no code change needed
+- Two update paths: git install → `git pull` + restart; zip install → download release zip + extract + restart
+- Update dialog: shows release notes, "Don't remind me for vX.Y" snooze checkbox
+- **Settings tab → "SETS-WARP Updates"** — Autoupdate on/off checkbox + installed version label
+- Snooze persisted in QSettings (`warp_update/snoozed_version`); clears automatically on next release
+
+### Windows Installer
+
+- **`installer/sets_warp.iss`** — Inno Setup 6 script; installs to `%LOCALAPPDATA%\SETS-WARP` (no admin rights)
+- **`launch.vbs`** — silent launcher (no cmd console window); used by Desktop / Start Menu shortcuts
+- Post-install check: warns if Python 3.11+ is not found
+- **`.github/workflows/build_installer.yml`** — builds `sets-warp-vX.Y-setup.exe` automatically on each GitHub release and attaches it as a release asset
+
+---
+
 ## v1.0b (2026-03-22) — Initial Public Beta
 
 > Tested and prepared for **Linux**. Windows support is present but not yet fully tested.
