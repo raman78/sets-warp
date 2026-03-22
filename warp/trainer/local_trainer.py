@@ -145,12 +145,23 @@ class LocalTrainWorker(QThread):
                 rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
                 return self.transform(rgb), self.labels[i]
 
-        # 80/20 train/val split
-        n     = len(crops)
-        split = max(1, int(n * 0.8))
-        idx   = list(range(n))
-        import random; random.shuffle(idx)
-        train_idx, val_idx = idx[:split], idx[split:]
+        # Stratified train/val split — classes with only 1 sample stay in train.
+        # For classes with ≥2 samples one example goes to val, rest to train.
+        import random
+        from collections import defaultdict
+        by_class: dict[int, list[int]] = defaultdict(list)
+        for i, lbl in enumerate(y):
+            by_class[lbl].append(i)
+        train_idx: list[int] = []
+        val_idx:   list[int] = []
+        for lbl, idxs in by_class.items():
+            random.shuffle(idxs)
+            if len(idxs) >= 2:
+                val_idx.append(idxs[0])
+                train_idx.extend(idxs[1:])
+            else:
+                train_idx.extend(idxs)
+        random.shuffle(train_idx)
 
         train_crops  = [crops[i]  for i in train_idx]
         train_labels = [y[i]      for i in train_idx]
