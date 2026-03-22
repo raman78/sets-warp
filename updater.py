@@ -32,7 +32,7 @@ except Exception:
     log = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-VERSION     = '1.2b'           # fallback for zip installs / no git
+VERSION     = '1.3b'           # fallback for zip installs / no git
 GITHUB_REPO = 'raman78/sets-warp'
 API_URL      = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
 TIMEOUT      = 8               # seconds for the API request
@@ -206,7 +206,7 @@ def _is_git_install() -> bool:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parent
 
 
 def _do_git_update(sets_app) -> None:
