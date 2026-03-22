@@ -1333,7 +1333,7 @@ class SETS():
         warp_inst_cb = self.create_checkbox()
         warp_inst_cb.setChecked(_get_install_mode() == 'sets_warp')
         warp_inst_hint = self.create_label(
-            'Adds ~2 GB of ML dependencies. Uncheck to switch to SETS-only (~500 MB). '
+            'Adds ~10 GB of ML dependencies. Uncheck to switch to SETS-only (~3 GB). '
             'Requires restart — the installer runs automatically on next launch.',
             'hint_label')
         warp_inst_hint.setWordWrap(True)
@@ -1351,7 +1351,7 @@ class SETS():
                 title = 'Install SETS + WARP?'
                 msg = (
                     'This will switch to the full SETS + WARP installation.\n\n'
-                    'On restart the installer will download ~2 GB of ML dependencies '
+                    'On restart the installer will download ~10 GB of ML dependencies '
                     '(PyTorch, EasyOCR, OpenCV).\n\n'
                     'Continue and restart now?'
                 )
@@ -1359,8 +1359,8 @@ class SETS():
                 title = 'Switch to SETS-only?'
                 msg = (
                     'This will switch to SETS-only mode.\n\n'
-                    'WARP buttons will be hidden. The ML packages remain on disk '
-                    '(disk space is not reclaimed automatically).\n\n'
+                    'WARP packages (~7 GB) will be removed from the virtual environment '
+                    'automatically on restart.\n\n'
                     'Continue and restart now?'
                 )
             reply = QMessageBox.question(

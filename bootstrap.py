@@ -35,11 +35,12 @@ VENV_DIR    = ROOT / ".venv"
 PYTHON_DIR  = ROOT / ".python"
 PYPROJECT   = ROOT / "pyproject.toml"
 SETUP_LOG   = ROOT / "sets_warp_setup.log"
-MODE_FILE   = ROOT / ".config" / "install_mode.txt"
+MODE_FILE        = ROOT / ".config" / "install_mode.txt"
+ACTIVE_MODE_FILE = ROOT / ".config" / "active_mode.txt"
 
 # ── install mode ───────────────────────────────────────────────────────────────
-# "sets"      — SETS build planner only  (~500 MB)
-# "sets_warp" — full install with WARP   (~2.5 GB)
+# "sets"      — SETS build planner only  (~3 GB)
+# "sets_warp" — full install with WARP   (~10 GB)
 
 _WARP_ONLY_PKGS = {
     'opencv-python-headless', 'easyocr', 'python-bidi', 'pyclipper',
@@ -65,6 +66,22 @@ def _save_install_mode(mode: str) -> None:
     try:
         MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
         MODE_FILE.write_text(mode)
+    except Exception:
+        pass
+
+
+def _get_active_mode() -> str:
+    """Last mode that was fully installed (written after run_install completes)."""
+    try:
+        return ACTIVE_MODE_FILE.read_text().strip()
+    except Exception:
+        return 'sets_warp'  # conservative default: assume full install
+
+
+def _save_active_mode(mode: str) -> None:
+    try:
+        ACTIVE_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ACTIVE_MODE_FILE.write_text(mode)
     except Exception:
         pass
 
@@ -455,10 +472,10 @@ def _check_disk_space(on_line, mode: str = 'sets_warp') -> bool:
     """
     Warn if free disk space is below the required threshold.
     Returns True if OK, False if potentially insufficient (warning only — does not block).
-    SETS-only footprint: ~500 MB.  Full SETS+WARP footprint: ~2.5 GB, peak ~4 GB.
+    SETS-only footprint: ~3 GB.  Full SETS+WARP footprint: ~10 GB, peak ~12 GB.
     """
     import shutil
-    REQUIRED_GB = 1.5 if mode == 'sets' else 4.0
+    REQUIRED_GB = 3.0 if mode == 'sets' else 12.0
     try:
         usage = shutil.disk_usage(str(ROOT))
         free_gb = usage.free / 1024 ** 3
@@ -603,8 +620,8 @@ def run_install(on_line, on_done, on_error, repair_only: bool = False,
         is_warp = install_mode != 'sets'
         app_name    = "SETS-WARP" if is_warp else "SETS"
         total_steps = 5 if is_warp else 3
-        disk_req    = "~4 GB" if is_warp else "~1.5 GB"
-        dep_size    = "~2 GB" if is_warp else "~500 MB"
+        disk_req    = "~12 GB" if is_warp else "~4 GB"
+        dep_size    = "~10 GB" if is_warp else "~3 GB"
 
         on_line(f"=== {app_name} First-Time Setup ===")
         on_line(f"ROOT: {ROOT}")
@@ -655,6 +672,7 @@ def run_install(on_line, on_done, on_error, repair_only: bool = False,
             _setup_warp_dirs(on_line)
 
         on_line(f"Setup complete!  Starting {app_name}...\n")
+        _save_active_mode(install_mode)
         on_done()
 
     except Exception as exc:
@@ -834,11 +852,11 @@ def run_with_tkinter_gui():
             child.bind('<Leave>', _unhighlight)
 
     _make_card(cards_row, 'sets',
-               'SETS only', '~500 MB',
+               'SETS only', '~3 GB',
                ['Build planner', 'Ship / equipment database',
                 'No screenshot recognition'])
     _make_card(cards_row, 'sets_warp',
-               'SETS + WARP', '~2.5 GB',
+               'SETS + WARP', '~10 GB',
                ['Build planner', 'Ship / equipment database',
                 'Screenshot recognition (WARP)',
                 'ML model training (WARP CORE)'])
@@ -868,8 +886,8 @@ def run_plain_text():
     else:
         print("")
         print("  Choose installation type:")
-        print("    [1] SETS only      — build planner (~500 MB)")
-        print("    [2] SETS + WARP    — build planner + screenshot recognition (~2.5 GB)  [default]")
+        print("    [1] SETS only      — build planner (~3 GB)")
+        print("    [2] SETS + WARP    — build planner + screenshot recognition (~10 GB)  [default]")
         print("")
         try:
             choice = input("  Enter choice [1/2, default=2]: ").strip()
@@ -958,7 +976,7 @@ def _uninstall_obsolete_packages(on_line):
     def _norm(n): return n.lower().replace('-', '_').replace('.', '_')
 
     top_level = set()
-    for dep in parse_pyproject():
+    for dep in _deps_for_mode(_get_install_mode()):
         name, _ = _parse_specifier(dep)
         top_level.add(name)
 
@@ -1581,6 +1599,16 @@ def main():
             _run_repair(broken)
             # Relaunch in a fresh process so main.py gets a clean QApplication
             print("[bootstrap] repair done — relaunching", flush=True)
+            relaunch_in_venv()
+            return  # not reached on Linux/macOS (execv)
+        # Detect downgrade: sets_warp was installed but mode changed to sets-only
+        if _get_active_mode() == 'sets_warp' and _get_install_mode() == 'sets':
+            print("[bootstrap] Mode downgrade detected (sets_warp→sets) — removing WARP packages...", flush=True)
+            def _ol(msg, **_): print(f"  {msg}", flush=True)
+            _uninstall_obsolete_packages(_ol)
+            _cleanup_venv_pycache(_ol)
+            _save_active_mode('sets')
+            print("[bootstrap] WARP packages removed — relaunching", flush=True)
             relaunch_in_venv()
             return  # not reached on Linux/macOS (execv)
         # Silently refresh WARP data in background if cargo is newer than item_db

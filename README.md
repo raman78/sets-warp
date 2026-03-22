@@ -29,7 +29,7 @@ Download **`sets-warp-vX.Y-setup.exe`** from the [Releases page](https://github.
 
 - Installs to `%LOCALAPPDATA%\SETS-WARP` — **no administrator rights required**
 - Creates Start Menu and optional Desktop shortcut
-- On first launch, chooses between **SETS only** (~500 MB) or **SETS + WARP** (~2.5 GB) and downloads all dependencies automatically
+- On first launch, chooses between **SETS only** (~3 GB) or **SETS + WARP** (~10 GB) and downloads all dependencies automatically
 - Post-install wizard warns if Python 3.11+ is missing from PATH
 
 ### Windows — Git (advanced)
@@ -52,8 +52,8 @@ On first run a graphical setup window appears asking you to choose:
 
 | Option | Disk space | What's included |
 |--------|-----------|-----------------|
-| **SETS only** | ~500 MB | Build planner, ship/equipment database |
-| **SETS + WARP** | ~2.5 GB | Everything above + screenshot recognition, ML training |
+| **SETS only** | ~3 GB | Build planner, ship/equipment database |
+| **SETS + WARP** | ~10 GB | Everything above + screenshot recognition, ML training |
 
 The installer then downloads a portable Python runtime and all required packages automatically. Subsequent launches complete in under a second.
 
@@ -79,11 +79,11 @@ The setup window walks through these steps automatically:
 
 1. Download portable Python 3.13 (~65 MB, one-time)
 2. Create isolated virtual environment (`.venv/`)
-3. Install Python packages from PyPI (~500 MB SETS-only / ~2 GB SETS+WARP, one-time)
+3. Install Python packages from PyPI (~3 GB SETS-only / ~10 GB SETS+WARP, one-time)
 4. *(SETS+WARP only)* Build WARP item database from STO cargo data
 5. *(SETS+WARP only)* Download community ML model — so WARP works immediately without manual training
 
-The choice between SETS-only and SETS+WARP is saved. If you later want to switch, delete `.config/install_mode.txt` and relaunch — the setup will appear again.
+The choice between SETS-only and SETS+WARP is saved. You can switch at any time via **Settings → Install SETS + WARP** — the installer or cleanup runs automatically on restart.
 
 ---
 
