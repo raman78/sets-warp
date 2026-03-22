@@ -1,0 +1,40 @@
+name: Build Windows Installer
+
+# Triggered automatically when a GitHub release is published.
+# Builds sets-warp-vX.Y-setup.exe and attaches it to the release.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+        shell: pwsh
+
+      - name: Get version from release tag
+        id: version
+        run: echo "VERSION=${{ github.event.release.tag_name }}" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Build installer
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" `
+            /DAppVersion=$version `
+            installer\sets_warp.iss
+        shell: pwsh
+
+      - name: Upload installer to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/dist/sets-warp-*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
