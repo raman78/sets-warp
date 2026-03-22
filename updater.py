@@ -1,10 +1,11 @@
-# warp/updater.py
+# updater.py
 #
 # Background update checker for SETS-WARP.
 #
-# Current version is read from the nearest git tag (git describe --tags).
-# After `git pull` the tag advances automatically — no hardcoded version needed.
-# WARP_VERSION constant is a fallback only (zip installs without git).
+# Checks GitHub Releases for a newer version of SETS-WARP and offers to update
+# in-place.  Current version is read from the nearest git tag (git describe),
+# so after `git pull` the version advances automatically — no code change needed.
+# VERSION constant is a fallback only (zip installs without git).
 #
 # Two update paths (auto-detected):
 #   git install  — runs `git pull` then restarts the process
@@ -31,8 +32,8 @@ except Exception:
     log = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-WARP_VERSION = '1.0b'          # fallback for zip installs / no git
-GITHUB_REPO  = 'raman78/sets-warp'
+VERSION     = '1.0b'           # fallback for zip installs / no git
+GITHUB_REPO = 'raman78/sets-warp'
 API_URL      = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
 TIMEOUT      = 8               # seconds for the API request
 
@@ -68,7 +69,7 @@ def is_autoupdate_enabled(sets_app) -> bool:
 def get_current_version() -> str:
     """
     Return the current installed version from the nearest git tag.
-    Falls back to WARP_VERSION constant when git is unavailable.
+    Falls back to VERSION constant when git is unavailable.
     """
     try:
         result = subprocess.run(
@@ -82,7 +83,7 @@ def get_current_version() -> str:
             return result.stdout.strip().lstrip('v')
     except Exception:
         pass
-    return WARP_VERSION
+    return VERSION
 
 
 # ── Background worker ──────────────────────────────────────────────────────────
@@ -145,7 +146,7 @@ def _show_update_dialog(sets_app, current: str, new_tag: str, notes: str) -> Non
 
     parent = getattr(sets_app, 'window', None)
     dlg = QDialog(parent)
-    dlg.setWindowTitle('SETS-WARP Update Available')
+    dlg.setWindowTitle('SETS-WARP Update')
     dlg.setMinimumWidth(500)
 
     layout = QVBoxLayout(dlg)

@@ -1274,11 +1274,11 @@ class SETS():
 
         # WARP Updates section
         try:
-            from warp.updater import get_current_version, is_autoupdate_enabled
+            from updater import get_current_version, is_autoupdate_enabled
             sep_wu = self.create_frame()
             sep_wu.setFixedHeight(isp)
             scroll_layout.addWidget(sep_wu)
-            wu_header = self.create_label('WARP Updates:', 'label_heading')
+            wu_header = self.create_label('SETS-WARP Updates:', 'label_heading')
             scroll_layout.addWidget(wu_header, alignment=ALEFT)
             sec_wu = GridLayout(spacing=isp)
             sec_wu.setColumnMinimumWidth(1, 3 * isp)
