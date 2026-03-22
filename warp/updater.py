@@ -2,13 +2,17 @@
 #
 # Background update checker for SETS-WARP.
 #
-# Checks GitHub Releases API once per session (in a daemon thread started 5 s
-# after app launch).  If a newer release tag is found, shows a Qt dialog
-# asking the user whether to update now or later.
+# Current version is read from the nearest git tag (git describe --tags).
+# After `git pull` the tag advances automatically — no hardcoded version needed.
+# WARP_VERSION constant is a fallback only (zip installs without git).
 #
 # Two update paths (auto-detected):
 #   git install  — runs `git pull` then restarts the process
 #   zip install  — downloads the release zip, extracts it in-place, then restarts
+#
+# User preferences (stored in QSettings):
+#   warp_update/enabled          — bool, default True  (Autoupdate checkbox)
+#   warp_update/snoozed_version  — str  (tag snoozed by "Don't remind me")
 #
 # Cross-platform: Linux, macOS, Windows.
 
@@ -27,26 +31,58 @@ except Exception:
     log = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-WARP_VERSION = '1.0b'
+WARP_VERSION = '1.0b'          # fallback for zip installs / no git
 GITHUB_REPO  = 'raman78/sets-warp'
 API_URL      = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
-TIMEOUT      = 3   # seconds for the API request
+TIMEOUT      = 8               # seconds for the API request
 
 
 # ── Public entry point ─────────────────────────────────────────────────────────
 
 def schedule_update_check(sets_app) -> None:
     """
-    Start a background update check.
-    Called once from inject_warp_buttons() after the app is ready.
-    The actual network call happens in a daemon thread so it never blocks the UI.
+    Start a background update check 8 s after app launch.
+    Skips silently if autoupdate is disabled in Settings.
     """
+    if not is_autoupdate_enabled(sets_app):
+        log.debug('WARP updater: autoupdate disabled, skipping check')
+        return
     threading.Thread(
         target=_check_worker,
         args=(sets_app,),
         daemon=True,
         name='warp-update-check',
     ).start()
+
+
+def is_autoupdate_enabled(sets_app) -> bool:
+    """Return True if autoupdate is enabled (default: True)."""
+    try:
+        return bool(sets_app.settings.value('warp_update/enabled', True, type=bool))
+    except Exception:
+        return True
+
+
+# ── Version detection ──────────────────────────────────────────────────────────
+
+def get_current_version() -> str:
+    """
+    Return the current installed version from the nearest git tag.
+    Falls back to WARP_VERSION constant when git is unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ['git', 'describe', '--tags', '--abbrev=0'],
+            cwd=str(_repo_root()),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip().lstrip('v')
+    except Exception:
+        pass
+    return WARP_VERSION
 
 
 # ── Background worker ──────────────────────────────────────────────────────────
@@ -56,34 +92,45 @@ def _check_worker(sets_app) -> None:
         import json
         import urllib.request
 
+        current = get_current_version()
+
         req = urllib.request.Request(
             API_URL,
             headers={
-                'User-Agent': f'SETS-WARP/{WARP_VERSION}',
+                'User-Agent': f'SETS-WARP/{current}',
                 'Accept': 'application/vnd.github+json',
             },
         )
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             data = json.loads(resp.read().decode('utf-8'))
 
-        tag = data.get('tag_name', '').lstrip('v')
-        if not tag:
+        remote_tag = data.get('tag_name', '').lstrip('v')
+        if not remote_tag:
             return
-        if tag == WARP_VERSION:
-            log.debug(f'WARP updater: up to date (v{WARP_VERSION})')
+        if remote_tag == current:
+            log.debug(f'WARP updater: up to date (v{current})')
             return
+
+        # Check snooze
+        try:
+            snoozed = sets_app.settings.value('warp_update/snoozed_version', '')
+            if snoozed == remote_tag:
+                log.debug(f'WARP updater: v{remote_tag} snoozed by user, skipping')
+                return
+        except Exception:
+            pass
 
         notes_raw = data.get('body', '') or ''
         notes = '\n'.join(notes_raw.splitlines()[:10]).strip()
 
-        log.info(f'WARP updater: new release v{tag} available (current v{WARP_VERSION})')
+        log.info(
+            f'WARP updater: new release v{remote_tag} available (current v{current})')
 
-        # Schedule dialog on the Qt main thread — pass QApplication as context
-        # so the lambda is guaranteed to run in the main thread's event loop
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QApplication
-        QTimer.singleShot(0, QApplication.instance(),
-                          lambda: _show_update_dialog(sets_app, tag, notes))
+        QTimer.singleShot(
+            0, QApplication.instance(),
+            lambda: _show_update_dialog(sets_app, current, remote_tag, notes))
 
     except Exception as e:
         log.warning(f'WARP updater: check failed ({e})')
@@ -91,10 +138,10 @@ def _check_worker(sets_app) -> None:
 
 # ── Dialog ─────────────────────────────────────────────────────────────────────
 
-def _show_update_dialog(sets_app, new_tag: str, notes: str) -> None:
+def _show_update_dialog(sets_app, current: str, new_tag: str, notes: str) -> None:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import (
-        QDialog, QDialogButtonBox, QLabel, QTextEdit, QVBoxLayout)
+        QCheckBox, QDialog, QDialogButtonBox, QLabel, QTextEdit, QVBoxLayout)
 
     parent = getattr(sets_app, 'window', None)
     dlg = QDialog(parent)
@@ -106,7 +153,7 @@ def _show_update_dialog(sets_app, new_tag: str, notes: str) -> None:
 
     layout.addWidget(QLabel(
         f'<b>New version available: v{new_tag}</b><br>'
-        f'Current version: v{WARP_VERSION}'
+        f'Current version: v{current}'
     ))
 
     if notes:
@@ -119,8 +166,12 @@ def _show_update_dialog(sets_app, new_tag: str, notes: str) -> None:
     if _is_git_install():
         hint = 'The app will run <b>git pull</b> and restart automatically.'
     else:
-        hint = 'The new release will be downloaded and extracted, then the app will restart.'
+        hint = ('The new release will be downloaded and extracted, '
+                'then the app will restart.')
     layout.addWidget(QLabel(hint))
+
+    snooze_cb = QCheckBox(f"Don't remind me for v{new_tag}")
+    layout.addWidget(snooze_cb)
 
     bb = QDialogButtonBox(
         QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -130,7 +181,15 @@ def _show_update_dialog(sets_app, new_tag: str, notes: str) -> None:
     bb.rejected.connect(dlg.reject)
     layout.addWidget(bb)
 
-    if dlg.exec() != QDialog.DialogCode.Accepted:
+    accepted = dlg.exec() == QDialog.DialogCode.Accepted
+
+    if not accepted:
+        if snooze_cb.isChecked():
+            try:
+                sets_app.settings.setValue('warp_update/snoozed_version', new_tag)
+                log.info(f'WARP updater: snoozed notifications for v{new_tag}')
+            except Exception:
+                pass
         return
 
     if _is_git_install():
@@ -198,7 +257,6 @@ def _do_zip_update(sets_app, new_tag: str) -> None:
         root = _repo_root()
         with zipfile.ZipFile(tmp.name) as zf:
             names = zf.namelist()
-            # Top-level folder inside zip: e.g. "sets-warp-1.0b/"
             top = names[0].rstrip('/')
             prefix = top + '/'
             for member in names:
@@ -229,7 +287,6 @@ def _restart() -> None:
     """Restart the process in-place. Cross-platform."""
     log.info('WARP updater: restarting...')
     if sys.platform == 'win32':
-        # os.execv can be unreliable on Windows — spawn new process and exit
         subprocess.Popen([sys.executable] + sys.argv)
         sys.exit(0)
     else:

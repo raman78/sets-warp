@@ -1272,6 +1272,35 @@ class SETS():
         sec_1.addWidget(backup_combo, 5, 2, alignment=ALEFT | AVCENTER)
         scroll_layout.addLayout(sec_1)
 
+        # WARP Updates section
+        try:
+            from warp.updater import get_current_version, is_autoupdate_enabled
+            sep_wu = self.create_frame()
+            sep_wu.setFixedHeight(isp)
+            scroll_layout.addWidget(sep_wu)
+            wu_header = self.create_label('WARP Updates:', 'label_heading')
+            scroll_layout.addWidget(wu_header, alignment=ALEFT)
+            sec_wu = GridLayout(spacing=isp)
+            sec_wu.setColumnMinimumWidth(1, 3 * isp)
+            sec_wu.setColumnStretch(3, 1)
+            autoupdate_label = self.create_label('Check for updates automatically')
+            sec_wu.addWidget(autoupdate_label, 0, 0, alignment=ALEFT)
+            autoupdate_cb = self.create_checkbox()
+            autoupdate_cb.setChecked(
+                bool(self.settings.value('warp_update/enabled', True, type=bool)))
+            autoupdate_cb.checkStateChanged.connect(
+                lambda state: self.settings.setValue(
+                    'warp_update/enabled',
+                    state == autoupdate_cb.checkState().Checked))
+            sec_wu.addWidget(autoupdate_cb, 0, 2, alignment=ALEFT | AVCENTER)
+            current_ver = get_current_version()
+            ver_label = self.create_label(
+                f'Installed version: v{current_ver}', 'hint_label')
+            sec_wu.addWidget(ver_label, 1, 0, 1, 3, alignment=ALEFT)
+            scroll_layout.addLayout(sec_wu)
+        except Exception:
+            pass
+
         # second section
         sep = self.create_frame()
         sep.setFixedHeight(isp)
