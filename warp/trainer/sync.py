@@ -131,6 +131,7 @@ class SyncWorker(QThread):
         try:
             if self._mode in ("upload", "both"):
                 self._upload()
+                self._upload_screen_types()
             if self._mode in ("download", "both"):
                 self._download()
             self.finished.emit(True)
@@ -300,6 +301,64 @@ class SyncWorker(QThread):
             path_in_repo=path_in_repo,
             path_or_fileobj=io.BytesIO(content_bytes),
         ))
+
+    # ---------------------------------------------------------------- screen types
+
+    def _upload_screen_types(self):
+        """Upload confirmed screen type screenshots to staging/<install_id>/screen_types/."""
+        screen_types_dir = self._mgr._dir / 'screen_types'
+        if not screen_types_dir.exists():
+            return
+        type_dirs = [d for d in screen_types_dir.iterdir() if d.is_dir()]
+        if not type_dirs:
+            return
+
+        from huggingface_hub import HfApi, CommitOperationAdd
+        api = HfApi(token=self._token)
+        install_id  = _get_install_id()
+        staging_dir = f"{STAGING_ROOT}/{install_id}/screen_types"
+
+        existing = self._fetch_staging_screen_hashes(api, staging_dir)
+        _slog.info(f'HF Sync: {len(existing)} screen type screenshots already on HF')
+
+        operations: list = []
+        for type_dir in sorted(type_dirs):
+            stype = type_dir.name
+            for png in sorted(type_dir.glob('*.png')):
+                sha = self._file_sha256(png)
+                if sha in existing:
+                    continue
+                operations.append(CommitOperationAdd(
+                    path_in_repo=f"{staging_dir}/{stype}/{sha}.png",
+                    path_or_fileobj=str(png),
+                ))
+                existing.add(sha)
+
+        if not operations:
+            _slog.info('HF Sync: no new screen type screenshots to upload')
+            return
+
+        api.create_commit(
+            repo_id=HF_DATASET_REPO,
+            repo_type=HF_REPO_TYPE,
+            operations=operations,
+            commit_message=f"WARP screen types: {len(operations)} screenshots",
+        )
+        _slog.info(f'HF Sync: uploaded {len(operations)} screen type screenshot(s)')
+
+    def _fetch_staging_screen_hashes(self, api, staging_screen_dir: str) -> set[str]:
+        try:
+            files = api.list_repo_files(
+                repo_id=HF_DATASET_REPO,
+                repo_type=HF_REPO_TYPE,
+            )
+            return {
+                Path(f).stem
+                for f in files
+                if f.startswith(staging_screen_dir) and f.endswith('.png')
+            }
+        except Exception:
+            return set()
 
     # ---------------------------------------------------------------- download
 

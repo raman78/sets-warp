@@ -42,8 +42,10 @@ _MODEL_FILES          = [           # files to download from HF knowledge repo
     ('models/label_map.json',               'label_map.json'),
     ('models/icon_classifier_meta.json',    'icon_classifier_meta.json'),
     ('models/model_version.json',           'model_version.json'),
+    ('models/screen_classifier.pt',          'screen_classifier.pt'),
+    ('models/screen_classifier_labels.json', 'screen_classifier_labels.json'),
 ]
-# Screen classifier is static (screen types never change) — downloaded once if missing
+# Used only for the one-time "download if missing" fallback
 _SCREEN_CLASSIFIER_FILES = [
     ('models/screen_classifier.pt',          'screen_classifier.pt'),
     ('models/screen_classifier_labels.json', 'screen_classifier_labels.json'),
