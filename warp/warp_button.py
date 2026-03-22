@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from PySide6.QtWidgets import QHBoxLayout, QPushButton
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QFont, QIcon, QPixmap
 
 log = logging.getLogger(__name__)
@@ -77,6 +77,10 @@ def inject_warp_buttons(sets_app, menu_layout) -> None:
     sets_app.widgets.warp_core_btn = btn_core
 
     log.info('WARP buttons injected into menu bar')
+
+    # Schedule background update check — fires 8 s after app is ready
+    from warp.updater import schedule_update_check
+    QTimer.singleShot(8000, lambda: schedule_update_check(sets_app))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

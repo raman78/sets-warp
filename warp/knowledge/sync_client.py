@@ -48,7 +48,7 @@ CONNECT_TIMEOUT           = 5      # seconds
 READ_TIMEOUT              = 15     # seconds — knowledge download (has cache fallback)
 CONTRIBUTE_TIMEOUT        = 60     # seconds — longer: covers Render cold-start (~50 s)
 
-WARP_VERSION = '0.4.0'
+WARP_VERSION = '1.0b'
 
 
 class WARPSyncClient:
