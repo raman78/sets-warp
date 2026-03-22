@@ -1375,12 +1375,13 @@ class SETS():
                 warp_inst_cb.blockSignals(False)
                 return
             _save_install_mode(new_mode)
-            # restart
+            # restart via bootstrap.py so it can detect and install missing packages
+            _bootstrap = str(Path(__file__).resolve().parent.parent / 'bootstrap.py')
             if sys.platform == 'win32':
-                subprocess.Popen([sys.executable] + sys.argv)
+                subprocess.Popen([sys.executable, _bootstrap])
                 sys.exit(0)
             else:
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+                os.execv(sys.executable, [sys.executable, _bootstrap])
 
         warp_inst_cb.checkStateChanged.connect(_on_warp_install_toggle)
         scroll_layout.addLayout(sec_inst)
