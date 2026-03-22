@@ -72,8 +72,8 @@ except (ImportError, ModuleNotFoundError) as _import_err:
 
 class Launcher():
 
-    version = '2026.03b060'
-    __version__ = '2.3'
+    version = '2026.03b070'
+    __version__ = '2.4'
 
     # holds the style of the app
     theme = {
