@@ -38,10 +38,15 @@ _VERSION_CACHE_FILE   = 'warp/models/model_version_remote_cache.json'
 _CONNECT_TIMEOUT      = 5           # seconds
 _READ_TIMEOUT         = 15          # seconds
 _MODEL_FILES          = [           # files to download from HF knowledge repo
-    ('models/icon_classifier.pt',        'icon_classifier.pt'),
-    ('models/label_map.json',            'label_map.json'),
-    ('models/icon_classifier_meta.json', 'icon_classifier_meta.json'),
-    ('models/model_version.json',        'model_version.json'),
+    ('models/icon_classifier.pt',            'icon_classifier.pt'),
+    ('models/label_map.json',               'label_map.json'),
+    ('models/icon_classifier_meta.json',    'icon_classifier_meta.json'),
+    ('models/model_version.json',           'model_version.json'),
+]
+# Screen classifier is static (screen types never change) — downloaded once if missing
+_SCREEN_CLASSIFIER_FILES = [
+    ('models/screen_classifier.pt',          'screen_classifier.pt'),
+    ('models/screen_classifier_labels.json', 'screen_classifier_labels.json'),
 ]
 
 
@@ -74,6 +79,9 @@ class ModelUpdater:
     def _bg_check(self, sets_root: Path, on_updated: Callable | None) -> None:
         try:
             models_dir = sets_root / 'warp' / 'models'
+
+            # Always ensure screen_classifier is present (static, not version-managed)
+            self._ensure_screen_classifier(models_dir)
 
             if not self._due_for_check(sets_root):
                 return
@@ -186,6 +194,33 @@ class ModelUpdater:
             log.debug(f'ModelUpdater: installed {dst.name}')
 
         return True
+
+    def _ensure_screen_classifier(self, models_dir: Path) -> None:
+        """Download screen_classifier.pt from HF if it's missing (one-time, silent)."""
+        pt_path = models_dir / 'screen_classifier.pt'
+        if pt_path.exists():
+            return
+        log.info('ModelUpdater: screen_classifier.pt missing — downloading from HF...')
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError:
+            return
+        import shutil
+        hf_repo = 'sets-sto/warp-knowledge'
+        token = self._read_hub_token(models_dir.parent)
+        models_dir.mkdir(parents=True, exist_ok=True)
+        for hf_path, local_name in _SCREEN_CLASSIFIER_FILES:
+            try:
+                downloaded = hf_hub_download(
+                    repo_id=hf_repo,
+                    filename=hf_path,
+                    repo_type='dataset',
+                    token=token or None,
+                )
+                shutil.copy2(downloaded, models_dir / local_name)
+                log.info(f'ModelUpdater: downloaded {local_name}')
+            except Exception as e:
+                log.warning(f'ModelUpdater: could not download {hf_path}: {e}')
 
     # ── rate-limiting (check at most once per 24 h) ───────────────────────────
 

@@ -542,10 +542,12 @@ def _download_community_model_bootstrap(on_line):
 
     HF_BASE = 'https://huggingface.co/datasets/sets-sto/warp-knowledge/resolve/main'
     files = [
-        ('models/icon_classifier.pt',       'icon_classifier.pt',       True),
-        ('models/label_map.json',            'label_map.json',           True),
-        ('models/icon_classifier_meta.json', 'icon_classifier_meta.json',False),
-        ('models/model_version.json',        'model_version.json',       False),
+        ('models/icon_classifier.pt',            'icon_classifier.pt',            True),
+        ('models/label_map.json',                'label_map.json',                True),
+        ('models/icon_classifier_meta.json',     'icon_classifier_meta.json',     False),
+        ('models/model_version.json',            'model_version.json',            False),
+        ('models/screen_classifier.pt',          'screen_classifier.pt',          False),
+        ('models/screen_classifier_labels.json', 'screen_classifier_labels.json', False),
     ]
 
     models_dir.mkdir(parents=True, exist_ok=True)
