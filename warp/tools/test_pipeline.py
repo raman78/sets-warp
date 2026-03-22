@@ -215,7 +215,7 @@ def run_test(
                         crop = importer._crop(img, bbox)
                         if crop is None or crop.size == 0:
                             continue
-                        name, conf, _ = matcher.match(crop)
+                        name, conf, *_ = matcher.match(crop)
                         if name:
                             matched += 1
                             total_items += 1

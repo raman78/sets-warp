@@ -235,6 +235,7 @@ class WarpDialog(QDialog):
         return page
 
     def _make_page_progress(self) -> QWidget:
+        from warp.ui_helpers import time_spent_counter
         page = QWidget()
         lay  = QVBoxLayout(page)
         lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -243,10 +244,16 @@ class WarpDialog(QDialog):
         self._progress_label.setWordWrap(True)
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
+        self._time_lbl, self._clock = time_spent_counter(page)
+        time_row = QHBoxLayout()
+        time_row.addWidget(self._time_lbl)
+        time_row.addStretch()
         lay.addStretch()
         lay.addWidget(self._progress_label)
         lay.addSpacing(10)
         lay.addWidget(self._progress_bar)
+        lay.addSpacing(4)
+        lay.addLayout(time_row)
         lay.addStretch()
         return page
 
@@ -267,6 +274,7 @@ class WarpDialog(QDialog):
         self._btn_next.setEnabled(False)
         self._progress_bar.setValue(0)
         self._progress_label.setText('Starting…')
+        self._clock.start(1000)
 
         self._worker = _ImportWorker(self._folder, self._build_type, self._sets)
         self._worker.progress.connect(self._on_progress)
@@ -275,6 +283,7 @@ class WarpDialog(QDialog):
         self._worker.start()
 
     def _on_cancel(self):
+        self._clock.stop()
         if self._worker and self._worker.isRunning():
             self._worker.requestInterruption()
             self._worker.wait(2000)
@@ -285,6 +294,7 @@ class WarpDialog(QDialog):
         self._progress_label.setText(msg)
 
     def _on_import_done(self, result: ImportResult):
+        self._clock.stop()
         self._import_result = result
         self._apply_to_sets()
         n_detected   = len(result.items)
@@ -301,6 +311,7 @@ class WarpDialog(QDialog):
         self.accept()
 
     def _on_import_error(self, msg: str):
+        self._clock.stop()
         self._stack.setCurrentIndex(0)
         self._btn_next.setEnabled(True)
         QMessageBox.critical(self, 'WARP — Analysis Error', msg)
@@ -459,72 +470,186 @@ class WarpDialog(QDialog):
     def _write_boffs_to_build(self, boff_items: list, ship_data: dict | None) -> None:
         """Write recognized boff abilities to the SETS build.
 
-        Maps abilities by profession to seats in rank-descending order
-        (same order as align_space_frame). Each profession's abilities fill
-        the lowest available rank slots of matching seats sequentially.
+        Two-phase approach:
+        1. Y/X clustering: group boff items by position into per-seat clusters.
+           STO's BOFFS screen can show 2 seats on the same visual row (same Y band)
+           separated by a large X gap — handled by pass-2 X splitting.
+        2. Profession matching: each cluster is matched to the correct ship seat by
+           comparing the dominant ability profession against seat definitions.
+           This is robust regardless of ship_data['boffs'] ordering.
         """
+        from collections import Counter
         from src.buildupdater import get_boff_spec, load_boff_stations
 
         if not ship_data:
-            log.debug(f'WARP boff: no ship_data for seat mapping — {len(boff_items)} boff items ignored')
+            _slog.debug(f'WARP boff: no ship_data — {len(boff_items)} items ignored')
             return
 
-        # Group by profession, preserve annotation order within each profession
-        boff_by_prof: dict[str, list[str]] = {}
-        for ri in sorted(boff_items, key=lambda x: (x.slot, x.slot_index)):
-            prof = ri.slot[5:]  # 'Boff Temporal' → 'Temporal'
-            boff_by_prof.setdefault(prof, []).append(ri.name)
+        ship_seats_raw = ship_data.get('boffs', [])
+        if not ship_seats_raw:
+            _slog.warning('WARP boff: ship_data has no boffs field')
+            return
 
-        # Compute seat order — same sort as align_space_frame (rank descending)
+        # Parse all seats; build SETS seat_id mapping (rank-descending sort,
+        # same as align_space_frame).
         try:
-            seats = sorted(
-                [get_boff_spec(self._sets, s) for s in ship_data.get('boffs', [])],
-                reverse=True)
+            seats_visual = [get_boff_spec(self._sets, s) for s in ship_seats_raw]
         except Exception as e:
-            log.warning(f'WARP boff: could not compute seat order: {e}')
+            _slog.warning(f'WARP boff: could not parse seat specs: {e}')
             return
 
-        boffs_build      = self._sets.build['space']['boffs']
-        all_boff_cache   = self._sets.cache.boff_abilities.get('all', {})
-        prof_idx: dict[str, int] = {}
-        written = 0
+        # visual_to_seat_id[ship_data_idx] = SETS seat_id (rank-desc position)
+        sorted_ix = sorted(enumerate(seats_visual), key=lambda p: p[1], reverse=True)
+        visual_to_seat_id = {vis_i: seat_id for seat_id, (vis_i, _) in enumerate(sorted_ix)}
 
-        for seat_id, (rank, profession, _spec) in enumerate(seats):
-            if seat_id >= len(boffs_build) or rank == 0:
-                break
+        # ── Phase 1: cluster boff items into per-seat groups ─────────────────
+        # Pass A: Y-bands (new band if Y gap > threshold)
+        # Pass B: within each Y-band, split on large X gaps between item edges
+        Y_THRESHOLD = 30   # px
+        X_THRESHOLD = 50   # px — within-seat gap ~2-5px, between-seat ~100px+
 
-            # Universal seat: use whichever profession still has queued abilities
-            if profession == 'Universal':
-                prof_to_use = next(
-                    (p for p in boff_by_prof
-                     if prof_idx.get(p, 0) < len(boff_by_prof[p])),
-                    None)
+        items_with_bbox = [ri for ri in boff_items if ri.bbox]
+        if not items_with_bbox:
+            _slog.warning('WARP boff: no boff items with bbox — cannot route')
+            return
+
+        items_sorted_y = sorted(items_with_bbox, key=lambda ri: ri.bbox[1])
+
+        y_bands: list[list] = []
+        for ri in items_sorted_y:
+            y = ri.bbox[1]
+            if not y_bands or y - y_bands[-1][-1].bbox[1] > Y_THRESHOLD:
+                y_bands.append([ri])
             else:
-                prof_to_use = profession
+                y_bands[-1].append(ri)
 
-            if not prof_to_use:
+        seat_clusters: list[list] = []
+        for band in y_bands:
+            x_sorted = sorted(band, key=lambda ri: ri.bbox[0])
+            cluster = [x_sorted[0]]
+            for ri in x_sorted[1:]:
+                prev_right = cluster[-1].bbox[0] + cluster[-1].bbox[2]
+                if ri.bbox[0] - prev_right > X_THRESHOLD:
+                    seat_clusters.append(cluster)
+                    cluster = [ri]
+                else:
+                    cluster.append(ri)
+            seat_clusters.append(cluster)
+
+        _slog.info(f'WARP boff: {len(items_with_bbox)} items → '
+                   f'{len(y_bands)} Y-bands → {len(seat_clusters)} seat clusters '
+                   f'(ship has {len(ship_seats_raw)} seats)')
+
+        # ── Phase 2: match each cluster to a ship seat by profession ─────────
+        # Map spec name → profession name (for Universal-spec seats and spec-prof seats)
+        _SPEC_TO_PROF = {
+            'Temporal Operative': 'Temporal',
+            'Command':            'Command',
+            'Miracle Worker':     'Miracle Worker',
+            'Intelligence':       'Intelligence',
+            'Pilot':              'Pilot',
+        }
+
+        # For each cluster, compute the profession distribution from slot annotations.
+        # primary_prof = most-common profession; prof_set = all professions in cluster.
+        ClusterInfo = list[tuple]   # (cluster_items, primary_prof, prof_set, rank_count)
+        cluster_info: list = []
+        for c in seat_clusters:
+            prof_counts = Counter(ri.slot[5:] for ri in c)   # 'Boff Temporal' → 'Temporal'
+            primary = prof_counts.most_common(1)[0][0]
+            cluster_info.append([c, primary, set(prof_counts.keys())])
+
+        # Match clusters to seats in three passes:
+        # 1. Named profession seats (non-Universal) with specialization
+        # 2. Named profession seats (non-Universal) without specialization
+        # 3. Universal seats with specialization (match by spec-profession)
+        # 4. Universal seats without specialization (leftover clusters)
+        unmatched = list(range(len(cluster_info)))      # indices into cluster_info
+        assigned: dict[int, int] = {}                   # ship_data_idx → cluster_info_idx
+
+        def _find_cluster(primary_prof: str, spec_prof: str | None) -> int | None:
+            for ci in unmatched:
+                c_primary, c_profs = cluster_info[ci][1], cluster_info[ci][2]
+                if c_primary != primary_prof:
+                    continue
+                if spec_prof and spec_prof not in c_profs:
+                    continue
+                return ci
+            return None
+
+        # Pass 1 & 2: explicit-profession seats
+        for vis_i, (rank, prof, spec) in enumerate(seats_visual):
+            if prof == 'Universal' or vis_i in assigned:
+                continue
+            spec_prof = _SPEC_TO_PROF.get(spec) if spec else None
+            ci = _find_cluster(prof, spec_prof)
+            if ci is not None:
+                assigned[vis_i] = ci
+                unmatched.remove(ci)
+
+        # Pass 3: Universal seats with spec
+        for vis_i, (rank, prof, spec) in enumerate(seats_visual):
+            if prof != 'Universal' or not spec or vis_i in assigned:
+                continue
+            spec_prof = _SPEC_TO_PROF.get(spec)
+            ci = _find_cluster(spec_prof, None) if spec_prof else None
+            if ci is not None:
+                assigned[vis_i] = ci
+                unmatched.remove(ci)
+
+        # Pass 4: Universal seats without spec — assign remaining clusters in order
+        for vis_i, (rank, prof, spec) in enumerate(seats_visual):
+            if prof != 'Universal' or spec or vis_i in assigned:
+                continue
+            if unmatched:
+                ci = unmatched.pop(0)
+                assigned[vis_i] = ci
+
+        # ── Phase 3: write abilities to build ────────────────────────────────
+        # Base professions a Universal seat can be set to (same options as the
+        # dropdown the user sees in the SETS UI).
+        _BASE_PROFS = {'Tactical', 'Engineering', 'Science'}
+
+        boffs_build    = self._sets.build['space']['boffs']
+        boff_specs     = self._sets.build['space']['boff_specs']
+        all_boff_cache = self._sets.cache.boff_abilities.get('all', {})
+        written        = 0
+
+        for vis_i, ci in assigned.items():
+            seat_id = visual_to_seat_id.get(vis_i)
+            if seat_id is None or seat_id >= len(boffs_build):
                 continue
 
-            abilities = boff_by_prof.get(prof_to_use, [])
-            idx = prof_idx.get(prof_to_use, 0)
-            for rank_slot in range(rank):
-                if idx >= len(abilities):
+            rank, profession, spec = seats_visual[vis_i]
+            primary_prof = cluster_info[ci][1]
+            cluster_items = sorted(cluster_info[ci][0], key=lambda ri: ri.bbox[0])
+
+            # For Universal seats: set the profession dropdown to match what was
+            # recognised — exactly as the user would do manually before picking abilities.
+            # Only applies to base professions (Tactical/Engineering/Science).
+            # Spec-based professions (Temporal, Command, …) don't change the base.
+            if profession == 'Universal' and primary_prof in _BASE_PROFS:
+                if seat_id < len(boff_specs) and isinstance(boff_specs[seat_id], list):
+                    boff_specs[seat_id][0] = primary_prof
+                    _slog.info(f'WARP boff: seat[{seat_id}] Universal → set to {primary_prof}')
+
+            _slog.info(f'WARP boff: seat[{seat_id}] {profession}/{spec or "-"} rank={rank} '
+                       f'← {[ri.name for ri in cluster_items]}')
+
+            for rank_slot, ri in enumerate(cluster_items):
+                if rank_slot >= rank:
                     break
-                ability_name = abilities[idx]
-                idx += 1
-                if ability_name not in all_boff_cache:
-                    log.debug(f'WARP boff: {ability_name!r} not in boff cache — skip')
+                if ri.name not in all_boff_cache:
+                    _slog.info(f'WARP boff: {ri.name!r} not in boff cache — skip')
                     continue
-                boffs_build[seat_id][rank_slot] = {'item': ability_name}
-                log.info(f'WARP: boff seat[{seat_id}][{rank_slot}] {prof_to_use} ← {ability_name!r}')
+                boffs_build[seat_id][rank_slot] = {'item': ri.name}
                 written += 1
-            prof_idx[prof_to_use] = idx
 
         if written:
             load_boff_stations(self._sets, 'space')
-            log.info(f'WARP: wrote {written} boff abilities to build')
+            _slog.info(f'WARP: wrote {written} boff abilities to build')
         else:
-            log.debug(f'WARP boff: 0 abilities written (cache misses or empty queues)')
+            _slog.warning('WARP boff: 0 abilities written — check cache or cluster matching')
 
     def _make_equipment_item(
         self, ri: RecognisedItem, build_key: str, env: str

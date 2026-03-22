@@ -60,13 +60,19 @@ class SETSIconMatcher:
     """
     Multi-stage icon recognition against the SETS image cache.
 
-    match(crop_bgr) -> (item_name, confidence, thumbnail_QImage)
+    match(crop_bgr) -> (item_name, confidence, thumbnail_QImage, used_session)
       name=''  if no match above threshold.
+      used_session=True when autonomous ML/template recognition failed and the
+      result came from confirmed training-data crops (session examples).
+      Callers should log this as a training gap for future ML improvement.
     """
 
     # Session examples: confirmed crops added by user during this session.
     # Shared across all instances so every match() call benefits.
     _session_examples: list[dict] = []   # {name, tmpl64, hist_hsv, orig}
+
+    # Guard: prevent re-seeding from training data on every new matcher instance.
+    _seeded_from_training_data: bool = False
 
     def __init__(self, sets_app, sync_client=None):
         self._sets        = sets_app
@@ -83,36 +89,41 @@ class SETSIconMatcher:
         self,
         crop_bgr: np.ndarray,
         candidate_names: set[str] | None = None,
-    ) -> tuple[str, float, object]:   # object = QImage | None
+    ) -> tuple[str, float, object, bool]:
         """
         Match a slot crop against the SETS icon library.
 
         candidate_names: optional set of allowed item names.
-          When provided, only entries whose name is in this set are considered.
-          Use to restrict matching to items valid for the current screen type
-          (e.g. only traits on a TRAITS screenshot, only equipment on SPACE_EQ).
-          Pass None to search the full index (default, original behaviour).
+          When provided, only entries in this set are considered.
 
-        Priority:
-          0. Community knowledge override  (phash → confirmed item_name)
-          1. Template matching + histogram (local SETS image cache)
-          2. ML classifier fallback        (ONNX, optional)
+        Two-phase design — autonomous recognition first, confirmed data as fallback:
+
+          Phase A (autonomous):
+            Stage 0 — community pHash knowledge override
+            Stage 1 — template matching + histogram (SETS wiki-icon cache)
+            Stage 2 — ML classifier (local PyTorch / HF ONNX)
+
+          Phase B (fallback — only when Phase A confidence < TEMPLATE_THRESHOLD):
+            Stage 3 — session examples (confirmed training-data crops)
 
         Returns:
-            (item_name, confidence, thumbnail_QImage)
+            (item_name, confidence, thumbnail_QImage, used_session)
             item_name='' and confidence=0.0 if nothing matched.
+            used_session=True means Phase A failed and Phase B rescued the result.
+            Callers should treat used_session=True as a training gap.
         """
         if crop_bgr is None or crop_bgr.size == 0:
-            return '', 0.0, None
+            return '', 0.0, None, False
 
         import cv2
 
-        # Resize crop once for consistent matching
         crop64 = cv2.resize(crop_bgr, (MATCH_SIZE, MATCH_SIZE),
                             interpolation=cv2.INTER_AREA)
         q_hist = self._hist_hsv(crop64)
 
-        # ── Stage 0: community knowledge override ─────────────────────────────
+        # ── Phase A — autonomous recognition ──────────────────────────────────
+
+        # Stage 0: community pHash knowledge override
         if self._sync_client is not None:
             try:
                 from warp.knowledge.sync_client import _compute_phash
@@ -120,73 +131,80 @@ class SETSIconMatcher:
                 overrides = self._sync_client.get_knowledge()
                 if phash in overrides:
                     name = overrides[phash]
-                    log.debug(f'WARPSync: knowledge override → {name!r}')
-                    return name, 1.0, self._bgr_to_qimage(crop_bgr)
+                    if candidate_names is not None and name not in candidate_names:
+                        log.debug(f'WARPSync: pHash override {name!r} rejected — not valid for slot')
+                    else:
+                        log.debug(f'WARPSync: knowledge override → {name!r}')
+                        return name, 1.0, self._bgr_to_qimage(crop_bgr), False
             except Exception as e:
                 log.debug(f'WARPSync: override lookup failed: {e}')
 
-        best_name  = ''
-        best_score = 0.0
-        best_entry = None
-
-        # ── Stage 0.5: session examples (user-confirmed this session) ─────────
-        # Checked first — highest priority, no threshold guard
-        expected_shape = tuple(HIST_BINS)
-        for entry in self._session_examples:
-            if candidate_names is not None and entry['name'] not in candidate_names:
-                continue
-            if entry['hist_hsv'].shape != expected_shape:
-                continue   # stale entry from old histogram size — skip safely
-            res      = cv2.matchTemplate(crop64, entry['tmpl64'],
-                                         cv2.TM_CCOEFF_NORMED)
-            tm_score = float(res.max())
-            h_score  = max(0.0, float(cv2.compareHist(
-                q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL)))
-            combined = tm_score * (1.0 - HIST_WEIGHT) + h_score * HIST_WEIGHT
-            if combined > best_score:
-                best_score = combined
-                best_name  = entry['name']
-                best_entry = entry
+        # Stages 1+2: template matching + histogram
+        auto_name  = ''
+        auto_score = 0.0
+        auto_entry = None
 
         for entry in self._index:
             if candidate_names is not None and entry['name'] not in candidate_names:
                 continue
-            # ── Stage 1: template match ───────────────────────────────────────
-            res     = cv2.matchTemplate(crop64, entry['tmpl64'],
-                                        cv2.TM_CCOEFF_NORMED)
+            res      = cv2.matchTemplate(crop64, entry['tmpl64'],
+                                         cv2.TM_CCOEFF_NORMED)
             tm_score = float(res.max())
             if tm_score < TEMPLATE_THRESHOLD * 0.7:   # early reject
                 continue
-
-            # ── Stage 2: histogram correlation ───────────────────────────────
             h_score = float(cv2.compareHist(
-                q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL
-            ))
+                q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL))
             if h_score < 0:
                 h_score = 0.0
-
-            # Blend: template dominates, histogram refines
             combined = tm_score * (1.0 - HIST_WEIGHT) + h_score * HIST_WEIGHT
+            if combined > auto_score:
+                auto_score = combined
+                auto_name  = entry['name']
+                auto_entry = entry
 
-            if combined > best_score:
-                best_score = combined
-                best_name  = entry['name']
-                best_entry = entry
-
-        # Hard threshold on final score
-        if best_score < TEMPLATE_THRESHOLD and not self._ml_disabled:
-            # ── Stage 3: ML fallback ──────────────────────────────────────────
+        # Stage 3 (autonomous ML): triggered when template confidence is low
+        if auto_score < TEMPLATE_THRESHOLD and not self._ml_disabled:
             ml_name, ml_conf = self._classify_ml(crop64)
-            if ml_name and ml_conf > best_score:
-                best_name  = ml_name
-                best_score = ml_conf
+            if ml_name and ml_conf > auto_score:
+                # Reject ML result if it's not valid for this slot
+                if candidate_names is None or ml_name in candidate_names:
+                    auto_name  = ml_name
+                    auto_score = ml_conf
+                    auto_entry = None
 
-        # Build thumbnail
+        # ── Phase B — session examples (confirmed crops from training data) ────
+        # Only runs when autonomous recognition is not confident enough.
+        # This is the fallback path — finding a match here is a training gap.
+        if auto_score < TEMPLATE_THRESHOLD:
+            expected_shape = tuple(HIST_BINS)
+            sess_name  = ''
+            sess_score = 0.0
+            sess_entry = None
+            for entry in self._session_examples:
+                if candidate_names is not None and entry['name'] not in candidate_names:
+                    continue
+                if entry['hist_hsv'].shape != expected_shape:
+                    continue
+                res      = cv2.matchTemplate(crop64, entry['tmpl64'],
+                                             cv2.TM_CCOEFF_NORMED)
+                tm_score = float(res.max())
+                h_score  = max(0.0, float(cv2.compareHist(
+                    q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL)))
+                combined = tm_score * (1.0 - HIST_WEIGHT) + h_score * HIST_WEIGHT
+                if combined > sess_score:
+                    sess_score = combined
+                    sess_name  = entry['name']
+                    sess_entry = entry
+
+            if sess_score > auto_score and sess_name:
+                thumb = self._bgr_to_qimage(sess_entry.get('orig')) if sess_entry else None
+                return sess_name, sess_score, thumb, True   # training gap
+
+        # Phase A result (autonomous)
         thumb = None
-        if best_entry is not None and best_score >= TEMPLATE_THRESHOLD:
-            thumb = self._bgr_to_qimage(best_entry.get('orig'))
-
-        return best_name, best_score, thumb
+        if auto_entry is not None and auto_score >= TEMPLATE_THRESHOLD:
+            thumb = self._bgr_to_qimage(auto_entry.get('orig'))
+        return auto_name, auto_score, thumb, False
 
     def classify_ml_batch(
         self,
@@ -420,6 +438,80 @@ class SETSIconMatcher:
                   f'({len(cls._session_examples)} total)')
 
     @classmethod
+    def seed_from_training_data(cls, training_data_dir) -> int:
+        """
+        Load all confirmed icon crops from annotations.json as session examples.
+        Guarded by _seeded_from_training_data — runs only once per process
+        lifetime (reset by reset_ml_session).
+        Returns the number of crops loaded (0 if already seeded).
+        """
+        if cls._seeded_from_training_data:
+            return 0
+
+        import json
+        import cv2
+        from pathlib import Path
+
+        training_data_dir = Path(training_data_dir)
+        ann_path = training_data_dir / 'annotations.json'
+        if not ann_path.exists():
+            return 0
+        try:
+            data = json.loads(ann_path.read_text(encoding='utf-8'))
+        except Exception as e:
+            log.warning(f'WARP: seed_from_training_data: {e}')
+            return 0
+
+        # These slots have no crop PNGs — skip them
+        _TEXT_SLOTS = frozenset({
+            'Ship Name', 'Ship Type', 'Ship Tier',
+            'Primary Specialization', 'Secondary Specialization',
+        })
+        crops_dir = training_data_dir / 'crops'
+        count = 0
+        for _fname, annotations in data.items():
+            for ann in annotations:
+                if ann.get('state') != 'confirmed':
+                    continue
+                name = ann.get('name', '').strip()
+                slot = ann.get('slot', '')
+                if not name or slot in _TEXT_SLOTS:
+                    continue
+
+                # Primary: explicit crop_name field (newer annotations)
+                crop_path = None
+                crop_name = ann.get('crop_name', '')
+                if crop_name:
+                    p = training_data_dir / crop_name
+                    if p.exists():
+                        crop_path = p
+
+                # Fallback: reconstruct filename from slot + name + ann_id
+                # (matches TrainingDataManager._export_crop naming convention)
+                if crop_path is None:
+                    ann_id = ann.get('ann_id', '')
+                    if ann_id:
+                        safe_slot = slot.replace(' ', '_').lower()
+                        safe_name = name.replace(' ', '_').lower()[:40]
+                        fname = f'{safe_slot}__{safe_name}__{ann_id}.png'
+                        p = crops_dir / fname
+                        if p.exists():
+                            crop_path = p
+
+                if crop_path is None:
+                    continue
+                img = cv2.imread(str(crop_path))
+                if img is None:
+                    continue
+                cls.add_session_example(img, name)
+                count += 1
+
+        cls._seeded_from_training_data = True
+        log.info(f'WARP: training data seed: {count} session examples from {len(data)} screenshots '
+                 f'(path: {training_data_dir})')
+        return count
+
+    @classmethod
     def reset_ml_session(cls):
         """
         Force reload of the ML model on next inference call.
@@ -429,10 +521,11 @@ class SETSIconMatcher:
         # Simple approach: just clear the module-level session cache flag
         # Each new SETSIconMatcher() will reload fresh from disk.
         # Existing instances need _ml_session cleared.
-        cls._shared_ml_session  = None
-        cls._shared_label_map   = {}
-        cls._shared_ml_disabled = False
-        cls._session_examples   = []
+        cls._shared_ml_session        = None
+        cls._shared_label_map         = {}
+        cls._shared_ml_disabled       = False
+        cls._session_examples         = []
+        cls._seeded_from_training_data = False
         log.info('WARP: ML session reset -- will reload on next match')
 
     def _check_repo_exists(self) -> bool:

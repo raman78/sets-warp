@@ -62,6 +62,7 @@ class Annotation:
     ann_id:   str  = ""       # unique ID (hash of image+bbox)
     ml_conf:  float = 0.0     # original ML recognition confidence (0.0 = unknown)
     ml_name:  str  = ""       # what ML originally recognised (may differ from confirmed name)
+    crop_name: str = ""       # relative path of saved crop PNG (set by _export_crop)
 
     def __post_init__(self):
         if not self.ann_id:
@@ -347,6 +348,17 @@ class TrainingDataManager:
 
         cv2.imwrite(str(out_path), crop)
 
+        # Write crop_name back into the annotation so seed_from_training_data
+        # can find the file without having to reconstruct the path.
+        relative = f'crops/{fname}'
+        ann.crop_name = relative
+        key = image_path.name
+        for d in self._annotations.get(key, []):
+            if d.get('ann_id') == ann.ann_id:
+                d['crop_name'] = relative
+                self._dirty = True
+                break
+
         # Update crop index
         self._crop_index[fname] = {
             "slot":   ann.slot,
@@ -400,9 +412,18 @@ class TrainingDataManager:
                         # We don't have its path here, so just mark as repaired
                         pass
                     repaired += 1
-        if repaired:
+
+                # Backfill crop_name into annotation dict if missing
+                if not d.get('crop_name'):
+                    crop_path = self._dir / self.CROPS_DIR / fname
+                    if crop_path.exists():
+                        d['crop_name'] = f'crops/{fname}'
+                        self._dirty = True
+
+        if repaired or self._dirty:
             self.save()
-            logger.info(f'repair_crop_index: fixed {repaired} entries')
+            if repaired:
+                logger.info(f'repair_crop_index: fixed {repaired} entries')
         return repaired
 
     def get_confirmed_crops(self) -> list[dict]:

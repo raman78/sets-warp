@@ -323,8 +323,6 @@ class _TrainProgressDialog(QWidget):
         size = self._settings.value(_KEY_TRAIN_DLG_SIZE, QSize(620, 500))
         self.resize(size)
         self._finished = False
-        import time as _time
-        self._start_time = _time.monotonic()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(8)
@@ -349,8 +347,8 @@ class _TrainProgressDialog(QWidget):
         self._btn_close.setFixedWidth(80)
         self._btn_close.setEnabled(False)
         self._btn_close.clicked.connect(self.close)
-        self._time_lbl = QLabel('Time: 0:00')
-        self._time_lbl.setStyleSheet('color:#888;font-size:10px;')
+        from warp.ui_helpers import time_spent_counter
+        self._time_lbl, self._clock = time_spent_counter(self)
         btn_row = QHBoxLayout()
         btn_row.addWidget(self._time_lbl)
         btn_row.addStretch()
@@ -361,16 +359,7 @@ class _TrainProgressDialog(QWidget):
         lay.addWidget(self._bar)
         lay.addWidget(self._log, 1)
         lay.addLayout(btn_row)
-        from PySide6.QtCore import QTimer as _QTimer
-        self._clock = _QTimer(self)
-        self._clock.timeout.connect(self._tick)
         self._clock.start(1000)
-
-    def _tick(self):
-        import time as _time
-        elapsed = int(_time.monotonic() - self._start_time)
-        m, s = divmod(elapsed, 60)
-        self._time_lbl.setText(f'Time: {m}:{s:02d}')
 
     def update_progress(self, pct: int, message: str):
         self._bar.setValue(pct)
@@ -385,7 +374,6 @@ class _TrainProgressDialog(QWidget):
         """Call when training is done — switches Cancel→Close, updates title."""
         self._finished = True
         self._clock.stop()
-        self._tick()  # final time update
         self._btn_cancel.setEnabled(False)
         self._btn_close.setEnabled(True)
         if success:
@@ -976,23 +964,14 @@ class WarpCoreWindow(QMainWindow):
 
     def _seed_matcher_from_confirmed(self, path: Path):
         """
-        Load all confirmed crops for this image into SETSIconMatcher session examples.
-        This lets Auto-Detect benefit from user confirmations as high-priority hints.
+        Prime SETSIconMatcher with confirmed training-data crops before Auto-Detect.
+        Delegates to seed_from_training_data (all confirmed crops, guarded against
+        re-seeding). New in-session confirmations are already added live via
+        add_session_example in _on_accept / _on_accept_all.
         """
         try:
-            import cv2
             from warp.recognition.icon_matcher import SETSIconMatcher
-            img = cv2.imread(str(path))
-            if img is None:
-                return
-            for ann in self._data_mgr.get_annotations(path):
-                if ann.state != AnnotationState.CONFIRMED or not ann.name:
-                    continue
-                x, y, w, h = ann.bbox
-                crop = img[y:y+h, x:x+w]
-                if crop.size > 0:
-                    SETSIconMatcher.add_session_example(crop, ann.name)
-                    log.debug(f'seed_matcher: {ann.name!r} from {path.name}')
+            SETSIconMatcher.seed_from_training_data(self._sets_root / 'warp' / 'training_data')
         except Exception as e:
             log.warning(f'seed_matcher_from_confirmed failed: {e}')
 
@@ -1497,7 +1476,7 @@ class WarpCoreWindow(QMainWindow):
             crop = img[y:y+h, x:x+w]
             if crop.size == 0:
                 return
-            name, conf, thumb = SETSIconMatcher(self._sets).match(crop)
+            name, conf, thumb, _used_sess = SETSIconMatcher(self._sets).match(crop)
             ri = self._recognition_items[row]
             ri.update({'name': name, 'conf': conf, 'thumb': thumb, 'crop_bgr': crop})
             self._name_edit.setText(name)
@@ -1523,7 +1502,7 @@ class WarpCoreWindow(QMainWindow):
             from warp.recognition.icon_matcher import SETSIconMatcher
             from src.setsdebug import log as _sl
             candidates = set(self._build_search_candidates(slot)) or None
-            name, conf, thumb = SETSIconMatcher(self._sets).match(crop_bgr, candidate_names=candidates)
+            name, conf, thumb, _used_sess = SETSIconMatcher(self._sets).match(crop_bgr, candidate_names=candidates)
             _sl.info(f'rematch_slot slot={slot!r} candidates={len(candidates) if candidates else "all"} → name={name!r} conf={conf:.2f}')
             # No global fallback — if slot-scoped search can't match, show unmatched.
             # A global fallback would return items from wrong categories.

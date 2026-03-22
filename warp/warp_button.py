@@ -32,27 +32,34 @@ def inject_warp_buttons(sets_app, menu_layout) -> None:
     warp_layout.setContentsMargins(0, 0, 0, 0)
 
     # ── WARP import button ────────────────────────────────────────────────
-    btn_warp = QPushButton("⚡ WARP")
+    btn_warp = QPushButton("  WARP")
     btn_warp.setToolTip(
         "Import a build from STO screenshots\n"
         "(Folder must contain screenshots of ONE build)"
     )
     btn_warp.setFixedHeight(28)
+    _warp_icon_path = Path(__file__).resolve().parent.parent / 'local' / 'warp.jpg'
+    if _warp_icon_path.exists():
+        _pix = QPixmap(str(_warp_icon_path)).scaled(
+            40, 24, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        btn_warp.setIcon(QIcon(_pix))
+        btn_warp.setIconSize(QSize(40, 24))
     _apply_warp_style(btn_warp, color='#7ec8e3', bg='#1a3a5c', border='#3a6a9c')
     btn_warp.clicked.connect(lambda: _open_warp_dialog(sets_app))
 
     # ── WARP CORE trainer button ──────────────────────────────────────────
-    btn_core = QPushButton(" WARP CORE")
+    btn_core = QPushButton("  WARP CORE")
     btn_core.setToolTip(
         "Open the WARP CORE ML Trainer\n"
         "Mycelial Harmonic Matter-Antimatter Core")
-    btn_core.setFixedHeight(32)
-    btn_core.setIconSize(QSize(24, 28))
+    btn_core.setFixedHeight(28)
+    btn_core.setIconSize(QSize(24, 24))
     # Load warp core icon from local/ folder (relative to SETS root)
     _icon_path = Path(__file__).resolve().parent.parent / 'local' / 'warp_core_icon.png'
     if _icon_path.exists():
         _pix = QPixmap(str(_icon_path)).scaled(
-            24, 28, Qt.AspectRatioMode.KeepAspectRatio,
+            24, 24, Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation)
         btn_core.setIcon(QIcon(_pix))
     _apply_warp_style(btn_core, color='#c8e87e', bg='#2a3a1a', border='#6a9c3a')
@@ -63,7 +70,7 @@ def inject_warp_buttons(sets_app, menu_layout) -> None:
 
     # Insert into column 3 (new column to the right of Settings / Export)
     menu_layout.addLayout(warp_layout, 0, 3,
-                          Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+                          Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     # Store refs to avoid GC
     sets_app.widgets.warp_btn      = btn_warp

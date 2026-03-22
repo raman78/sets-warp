@@ -2,32 +2,35 @@
 
 A build planning and screenshot recognition tool for Star Trek Online.
 
+> **Status:** v1.0b — prepared and tested on **Linux**. Windows support is included but not yet fully tested.
+
 ---
 
 ## What is this?
 
 **SETS-WARP** combines two tools:
 
-**SETS** *(STO Equipment and Trait Selector)* is a build planner for Star Trek Online. It lets you plan ship and ground loadouts, skill trees, and bridge officer assignments — without needing to own the items in-game. Builds can be shared as PNG or JSON files.
+**SETS** *(STO Equipment and Trait Selector)* is a build planner for Star Trek Online. It lets you plan ship and ground loadouts, skill trees, and bridge officer assignments — without needing to own the items in-game. Builds can be shared as PNG and JSON files.
+- ALL CREDITS to **Shinga https://github.com/STOCD/SETS project**.
 
 **WARP** *(Weaponry & Armament Recognition Platform)* is a recognition module built on top of SETS. It reads your in-game screenshots and automatically fills in your build — detecting equipment, traits, bridge officers, and ship information using computer vision and machine learning.
 
-**WARP CORE** is the trainer interface inside WARP. It lets you review and correct recognition results, confirm annotations, and train the local ML model on your own data to improve accuracy over time.
+**WARP CORE** is the trainer interface inside WARP. It lets you review and correct recognition results, confirm annotations, and train the  ML model on your own data to improve accuracy over time.
 
 ---
 
 ## How it works
 
-1. Take screenshots of your in-game build screens (equipment, traits, bridge officers — separately or as combined screenshots).
+1. Take screenshots of your in-game build screens (equipment, traits, bridge officers — separately or as combined screenshots) - ONE BUILD SCREENS.
 2. Open WARP, select the build type, point it at your screenshot folder.
-3. WARP detects your ship, reads slot counts, recognises each item, and fills your SETS build automatically.
+3. WARP detects your ship (in space build), reads slot counts, recognises each item, and fills your SETS build automatically.
 4. Use WARP CORE to review results, correct mistakes, and confirm items — building up a personal training dataset that improves recognition over time.
 
 ---
 
 ## Screenshot types supported
 
-WARP handles three ways players share their builds:
+WARP handles three ways players share their builds - ONE BUILD IN FOLDER:
 
 - **Separate screens** — one screenshot per game tab (equipment, traits, bridge officers, etc.), all placed in one folder.
 - **Mixed screen** — a single combined screenshot assembled from multiple tabs.
@@ -94,7 +97,14 @@ This means WARP works reasonably well out of the box, and gets noticeably better
 ---
 
 ## Contributing
+ALL CREDITS to Shinga https://github.com/STOCD/SETS project.
 
 Item data comes from the [official STO wiki](https://stowiki.net). If something is missing or wrong, update it there.
 
 For app bugs or suggestions: [STOBuilds Discord](https://discord.gg/kxwHxbsqzF) → `#sets-support`.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.

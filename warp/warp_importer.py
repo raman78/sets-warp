@@ -487,16 +487,18 @@ class WarpImporter:
         best: dict[tuple[str, int], RecognisedItem] = {}
 
         for i, fpath in enumerate(files):
-            pct = int(i / len(files) * 90)
+            base_pct = int(i / len(files) * 90)
+            end_pct  = int((i + 1) / len(files) * 90)
             if progress_cb:
                 progress_cb(i, len(files), fpath.name)
             if self._interrupt_check and self._interrupt_check():
                 break
             if self._progress_callback:
-                self._progress_callback(pct, fpath.name)
+                self._progress_callback(base_pct, f'Analysing {fpath.name}…')
             try:
                 img         = self._load_image(fpath)
-                file_result = self._process_image(img, str(fpath))
+                file_result = self._process_image(
+                    img, str(fpath), _base_pct=base_pct, _end_pct=end_pct)
                 if not result.ship_name and file_result.ship_name:
                     result.ship_name    = file_result.ship_name
                     result.ship_type    = file_result.ship_type
@@ -513,9 +515,12 @@ class WarpImporter:
                 log.exception(f'WarpImporter: {fpath}')
 
         result.items = list(best.values())
+        if self._progress_callback:
+            self._progress_callback(100, 'Done')
         return result
 
-    def _process_image(self, img: np.ndarray, source: str, profile_override: dict | None = None) -> ImportResult:
+    def _process_image(self, img: np.ndarray, source: str, profile_override: dict | None = None,
+                       _base_pct: int = 0, _end_pct: int = 90) -> ImportResult:
         _slog.info(f'WarpImporter._process_image: source={source} build_type={self._build_type}')
         # Step 1 — extract ship info via OCR.
         # build_type from caller sets the import mode but we always try OCR
@@ -626,6 +631,26 @@ class WarpImporter:
                                     if sd['name'] in confirmed_layout]
         else:
             slot_defs_to_process = SLOT_ORDER.get(build_type, [])
+
+        # Build per-slot candidate sets restricted by SLOT_VALID_TYPES.
+        # This prevents template matching from picking items of the wrong type
+        # (e.g. a shield icon matching the Warp Core slot at conf=1.00).
+        slot_candidates = self._build_slot_candidates(slot_defs_to_process)
+
+        # Count total bboxes upfront for granular progress reporting.
+        total_bboxes = sum(
+            len(layout.get(sd['name'], [])[:profile.get(sd['name'], 0)])
+            for sd in slot_defs_to_process
+            if profile.get(sd['name'], 0) > 0
+        )
+        processed_bboxes = 0
+
+        # Recognition stats counters (autodetect vs WARP CORE fallback)
+        _stat_auto_n    = 0   # items recognized by ML pipeline
+        _stat_core_n    = 0   # items recognized via WARP CORE session examples
+        _stat_auto_conf = 0.0
+        _stat_core_conf = 0.0
+
         for slot_def in slot_defs_to_process:
             slot_name = slot_def['name']
             max_count = profile.get(slot_name, 0)
@@ -635,13 +660,20 @@ class WarpImporter:
             bboxes = layout.get(slot_name, [])[:max_count]
             if not bboxes:
                 _slog.info(f'  [{slot_name}] no bboxes from layout (max_count={max_count})')
+            candidates = slot_candidates.get(slot_name)  # None = no type constraint
             for idx, bbox in enumerate(bboxes):
+                # Emit per-slot progress so the UI stays responsive
+                if self._progress_callback and total_bboxes > 0:
+                    pct = _base_pct + int(processed_bboxes / total_bboxes * (_end_pct - _base_pct))
+                    self._progress_callback(pct, f'{slot_name} {idx + 1}/{len(bboxes)}')
+                processed_bboxes += 1
                 crop = self._crop(img, bbox)
                 if crop is None or crop.size == 0:
                     _slog.info(f'  [{slot_name}][{idx}] bbox={bbox} — empty crop, skipped')
                     continue
-                name, conf, thumb = matcher.match(crop)
-                _slog.info(f'  [{slot_name}][{idx}] bbox={bbox} crop={crop.shape[1]}x{crop.shape[0]} → {name!r} conf={conf:.2f}')
+                name, conf, thumb, used_session = matcher.match(crop, candidate_names=candidates)
+                _tag = '[WARP CORE]' if used_session else '[Autodetect]'
+                _slog.info(f'  {_tag} [{slot_name}][{idx}] bbox={bbox} crop={crop.shape[1]}x{crop.shape[0]} → {name!r} conf={conf:.2f}')
                 if not name:
                     continue
                 # Reject low-confidence results — below threshold is a guess
@@ -656,6 +688,13 @@ class WarpImporter:
                 if slot_def['exp'] and not self._is_experimental(name):
                     _slog.info(f'  [{slot_name}][{idx}] SKIP — not experimental weapon: {name!r}')
                     continue
+                # Track recognition stats
+                if used_session:
+                    _stat_core_n    += 1
+                    _stat_core_conf += conf
+                else:
+                    _stat_auto_n    += 1
+                    _stat_auto_conf += conf
                 result.items.append(RecognisedItem(
                     slot        = slot_name,
                     slot_index  = idx,
@@ -671,7 +710,83 @@ class WarpImporter:
                     if sync is not None:
                         sync.contribute(crop, name, confirmed=False)
 
+        self._log_recognition_stats(
+            build_type  = build_type,
+            auto_n      = _stat_auto_n,
+            auto_conf   = _stat_auto_conf,
+            core_n      = _stat_core_n,
+            core_conf   = _stat_core_conf,
+        )
         return result
+
+    def _log_recognition_stats(
+        self,
+        build_type: str,
+        auto_n: int,
+        auto_conf: float,
+        core_n: int,
+        core_conf: float,
+    ) -> None:
+        """Log per-session recognition stats and compare to rolling average."""
+        import datetime, json as _json
+
+        total = auto_n + core_n
+        if total == 0:
+            return
+
+        auto_pct      = 100.0 * auto_n / total
+        avg_auto_conf = auto_conf / auto_n if auto_n else 0.0
+        avg_core_conf = core_conf / core_n if core_n else 0.0
+
+        # Load history
+        stats_path = Path(__file__).resolve().parent.parent / '.config' / 'recognition_stats.json'
+        try:
+            history: list[dict] = _json.loads(stats_path.read_text(encoding='utf-8'))
+        except Exception:
+            history = []
+
+        # Append current session (keep last 50)
+        entry = {
+            'ts':           datetime.datetime.now().isoformat(timespec='seconds'),
+            'build_type':   build_type,
+            'total':        total,
+            'auto_n':       auto_n,
+            'core_n':       core_n,
+            'auto_pct':     round(auto_pct, 1),
+            'avg_auto_conf': round(avg_auto_conf, 3),
+            'avg_core_conf': round(avg_core_conf, 3),
+        }
+        history.append(entry)
+        history = history[-50:]
+
+        try:
+            stats_path.parent.mkdir(parents=True, exist_ok=True)
+            stats_path.write_text(_json.dumps(history, indent=2), encoding='utf-8')
+        except Exception as e:
+            _slog.debug(f'WarpImporter: could not save recognition stats: {e}')
+
+        # Rolling average over previous sessions (same build_type, excluding current)
+        prev = [h for h in history[:-1] if h.get('build_type') == build_type]
+        if prev:
+            avg_auto_pct_hist  = sum(h['auto_pct']      for h in prev) / len(prev)
+            avg_auto_conf_hist = sum(h['avg_auto_conf']  for h in prev) / len(prev)
+            delta_pct  = auto_pct - avg_auto_pct_hist
+            delta_conf = avg_auto_conf - avg_auto_conf_hist
+            trend_pct  = '↑' if delta_pct  > 1.0 else ('↓' if delta_pct  < -1.0 else '→')
+            trend_conf = '↑' if delta_conf > 0.02 else ('↓' if delta_conf < -0.02 else '→')
+            hist_str = (f'  vs {len(prev)}-session avg: '
+                        f'Autodetect {avg_auto_pct_hist:.1f}% {trend_pct}  '
+                        f'conf {avg_auto_conf_hist:.2f} {trend_conf}')
+        else:
+            hist_str = '  (no history yet for comparison)'
+
+        _slog.info(
+            f'WarpImporter stats [{build_type}]: '
+            f'total={total}  '
+            f'Autodetect={auto_n} ({auto_pct:.1f}%) avg_conf={avg_auto_conf:.2f}  |  '
+            f'WARP CORE={core_n} ({100-auto_pct:.1f}%) avg_conf={avg_core_conf:.2f}'
+        )
+        _slog.info(hist_str)
 
     def _load_ship_info_from_annotations(self, source: str) -> dict:
         """Read Ship Name, Ship Type, Ship Tier from confirmed annotations on disk."""
@@ -790,6 +905,42 @@ class WarpImporter:
             _slog.debug(f'WarpImporter: _load_confirmed_profile error: {e}')
             return {}
 
+    def _build_slot_candidates(self, slot_defs: list) -> dict[str, set[str]]:
+        """
+        For each equipment slot, build the set of valid item names from the SETS
+        cache using the slot's build key (e.g. 'deflector', 'core', 'shield').
+
+        This prevents cross-category false positives — a trait icon matching the
+        Deflector slot, or a shield matching the Warp Core slot.
+
+        Slots without an equipment cache entry (traits, boffs) get no entry here,
+        so candidate_names=None is passed to match() → full index searched as before.
+
+        Console slots include universal consoles since they are accepted everywhere.
+        """
+        result: dict[str, set[str]] = {}
+        try:
+            eq_cache = self._app.cache.equipment
+        except Exception:
+            return result
+
+        # Universal consoles can go in any console slot
+        uni_names: set[str] = set(eq_cache.get('uni_consoles', {}).keys())
+
+        for sd in slot_defs:
+            slot_name = sd['name']
+            build_key = sd.get('key', '')
+            if not build_key or build_key not in eq_cache:
+                continue
+            names: set[str] = set(eq_cache[build_key].keys())
+            # Universal consoles are accepted in any dedicated console slot
+            if 'console' in build_key:
+                names |= uni_names
+            if names:
+                result[slot_name] = names
+
+        return result
+
     def _item_valid_for_slot(self, item_name: str, slot_name: str) -> bool:
         """Check that item type from cache matches what the slot expects.
         Returns True if no type constraint exists for this slot (permissive)."""
@@ -849,6 +1000,18 @@ class WarpImporter:
             from warp.recognition.icon_matcher import SETSIconMatcher
             self._matcher = SETSIconMatcher(self._app,
                                             sync_client=self._get_sync_client())
+            # Prime session examples with confirmed crops from training data so
+            # real in-game crops have higher priority than wiki-icon templates.
+            here = Path(__file__).resolve().parent
+            for _ in range(6):
+                td = here / 'warp' / 'training_data'
+                if td.exists():
+                    break
+                here = here.parent
+            else:
+                td = None
+            if td is not None:
+                SETSIconMatcher.seed_from_training_data(td)
         return self._matcher
 
     def _get_sync_client(self):

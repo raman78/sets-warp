@@ -67,12 +67,18 @@ class WARPSyncClient:
         )
     """
 
+    # Circuit breaker: after a 503/network error, stop contributing for this
+    # many seconds to avoid log spam when the backend is sleeping (Render cold-start
+    # takes ~50 s but we back off for longer to avoid hammering it).
+    _BACKOFF_SECONDS = 300   # 5 minutes
+
     def __init__(self, backend_url: str | None = None):
         self._url       = (backend_url or self._load_config_url()
                            or DEFAULT_BACKEND_URL).rstrip('/')
         self._install_id = self._get_or_create_install_id()
         self._knowledge: dict[str, str] = {}   # phash_hex → item_name
         self._knowledge_lock = threading.Lock()
+        self._backend_unavailable_until: float = 0.0   # epoch seconds
 
         # Start background knowledge download immediately
         threading.Thread(
@@ -110,6 +116,13 @@ class WARPSyncClient:
 
         if not self._check_rate_limit():
             log.debug('WARPSync: rate limit reached for today, skipping contribution')
+            if on_done:
+                on_done(False)
+            return
+
+        # Circuit breaker: skip if backend was recently unavailable
+        if time.time() < self._backend_unavailable_until:
+            log.debug('WARPSync: backend in backoff period, skipping contribution')
             if on_done:
                 on_done(False)
             return
@@ -267,7 +280,11 @@ class WARPSyncClient:
                 on_done(success)
 
         except Exception as e:
-            log.warning(f'WARPSync: contribution failed: {e}')
+            # Activate circuit breaker on any network/HTTP error so subsequent
+            # contributions are skipped silently instead of flooding the log.
+            self._backend_unavailable_until = time.time() + self._BACKOFF_SECONDS
+            log.debug(f'WARPSync: contribution failed ({e}) — backing off '
+                      f'{self._BACKOFF_SECONDS}s')
             if on_done:
                 on_done(False)
 
