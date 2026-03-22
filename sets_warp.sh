@@ -1,4 +1,3 @@
-
 #!/bin/sh
 # SETS.sh — entry point for SETS-WARP (Linux / macOS)
 
@@ -13,6 +12,15 @@ fi
 # Export SETS_DIR so bootstrap.py and main.py always know where they live,
 # regardless of Python's __file__ or .pyc cache pointing elsewhere
 export SETS_DIR="$SCRIPT_DIR"
+
+# ── Linux desktop integration (first run only) ─────────────────────────────────
+# Silently installs .desktop entry and app icon if not already present.
+# Safe to re-run; skipped on macOS and on subsequent runs.
+if [ "$(uname)" = "Linux" ] && [ ! -f "$HOME/.local/share/applications/sets-warp.desktop" ]; then
+    if [ -f "$SCRIPT_DIR/installer/install_desktop.sh" ]; then
+        bash "$SCRIPT_DIR/installer/install_desktop.sh" > /dev/null 2>&1 || true
+    fi
+fi
 
 # Prevent Python from using stale .pyc cache from a previous location
 export PYTHONDONTWRITEBYTECODE=1

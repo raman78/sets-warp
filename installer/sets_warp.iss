@@ -40,6 +40,8 @@ OutputBaseFilename=sets-warp-{#AppVersion}-setup
 ; Require 64-bit Windows
 ArchitecturesInstallIn64BitMode=x64compatible
 
+SetupIconFile=..\local\icon.ico
+UninstallDisplayIcon={app}\local\icon.ico
 WizardStyle=modern
 
 [Languages]
@@ -54,9 +56,9 @@ Source: "..\*";             DestDir: "{app}"; Flags: ignoreversion recursesubdir
 Source: "..\installer\*";   DestDir: "{app}\installer"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#AppName}";          Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"
+Name: "{group}\{#AppName}";          Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\local\icon.ico"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#AppName}";  Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{commondesktop}\{#AppName}";  Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\local\icon.ico"; Tasks: desktopicon
 
 [Run]
 ; Offer to launch the app after installation

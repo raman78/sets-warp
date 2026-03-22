@@ -32,9 +32,24 @@ from .widgets import (
 from signal import signal, SIGINT, SIG_DFL
 
 # WARP — Screenshot-to-Build importer (optional; gracefully disabled if deps missing)
+_MODE_FILE = Path(__file__).parent.parent / '.config' / 'install_mode.txt'
+
+def _get_install_mode() -> str:
+    try:
+        return _MODE_FILE.read_text().strip()
+    except Exception:
+        return 'sets_warp'
+
+def _save_install_mode(mode: str) -> None:
+    try:
+        _MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _MODE_FILE.write_text(mode)
+    except Exception:
+        pass
+
 try:
     from warp.warp_button import inject_warp_buttons
-    _WARP_AVAILABLE = True
+    _WARP_AVAILABLE = _get_install_mode() != 'sets'
 except ImportError:
     _WARP_AVAILABLE = False
 signal(SIGINT, SIG_DFL)
@@ -284,6 +299,8 @@ class SETS():
         :return: QApplication, QWidget
         """
         app = QApplication(argv)
+        app.setApplicationName('sets-warp')
+        app.setOrganizationName('SETS-WARP')
         font_database = QFontDatabase()
         font_database.addApplicationFont(
                 get_asset_path('Overpass-VariableFont_wght.ttf', self.app_dir))
@@ -1254,14 +1271,15 @@ class SETS():
         picker_rel_combo.currentIndexChanged.connect(
                 lambda new_i: self.settings.setValue('picker_relative', new_i))
         sec_1.addWidget(picker_rel_combo, 3, 2, alignment=ALEFT | AVCENTER)
-        picker_rel_label = self.create_label('Default Save Format')
-        sec_1.addWidget(picker_rel_label, 4, 0, alignment=ALEFT)
-        picker_rel_combo = self.create_combo_box(style_override={'font': '@small_text'})
-        picker_rel_combo.addItems(('JSON', 'PNG'))
-        picker_rel_combo.setCurrentText(self.settings.value('default_save_format'))
-        picker_rel_combo.currentTextChanged.connect(
-                lambda new_t: self.settings.setValue('default_save_format', new_t))
-        sec_1.addWidget(picker_rel_combo, 4, 2, alignment=ALEFT | AVCENTER)
+        # Default Save Format — removed; both JSON and PNG are always saved together
+        # picker_rel_label = self.create_label('Default Save Format')
+        # sec_1.addWidget(picker_rel_label, 4, 0, alignment=ALEFT)
+        # picker_rel_combo = self.create_combo_box(style_override={'font': '@small_text'})
+        # picker_rel_combo.addItems(('JSON', 'PNG'))
+        # picker_rel_combo.setCurrentText(self.settings.value('default_save_format'))
+        # picker_rel_combo.currentTextChanged.connect(
+        #         lambda new_t: self.settings.setValue('default_save_format', new_t))
+        # sec_1.addWidget(picker_rel_combo, 4, 2, alignment=ALEFT | AVCENTER)
         backup_label = self.create_label('Preferred Backup')
         sec_1.addWidget(backup_label, 5, 0, alignment=ALEFT)
         backup_combo = self.create_combo_box(style_override={'font': '@small_text'})
@@ -1300,6 +1318,72 @@ class SETS():
             scroll_layout.addLayout(sec_wu)
         except Exception:
             pass
+
+        # Installation section
+        sep_inst = self.create_frame()
+        sep_inst.setFixedHeight(isp)
+        scroll_layout.addWidget(sep_inst)
+        inst_header = self.create_label('Installation:', 'label_heading')
+        scroll_layout.addWidget(inst_header, alignment=ALEFT)
+        sec_inst = GridLayout(spacing=isp)
+        sec_inst.setColumnMinimumWidth(1, 3 * isp)
+        sec_inst.setColumnStretch(3, 1)
+        warp_inst_label = self.create_label('SETS + WARP (screenshot recognition & ML training)')
+        sec_inst.addWidget(warp_inst_label, 0, 0, alignment=ALEFT)
+        warp_inst_cb = self.create_checkbox()
+        warp_inst_cb.setChecked(_get_install_mode() == 'sets_warp')
+        warp_inst_hint = self.create_label(
+            'Adds ~2 GB of ML dependencies. Uncheck to switch to SETS-only (~500 MB). '
+            'Requires restart — the installer runs automatically on next launch.',
+            'hint_label')
+        warp_inst_hint.setWordWrap(True)
+        sec_inst.addWidget(warp_inst_cb, 0, 2, alignment=ALEFT | AVCENTER)
+        sec_inst.addWidget(warp_inst_hint, 1, 0, 1, 3, alignment=ALEFT)
+
+        def _on_warp_install_toggle(state):
+            from PySide6.QtWidgets import QMessageBox
+            import subprocess
+            new_mode = 'sets_warp' if warp_inst_cb.isChecked() else 'sets'
+            current_mode = _get_install_mode()
+            if new_mode == current_mode:
+                return
+            if new_mode == 'sets_warp':
+                title = 'Install SETS + WARP?'
+                msg = (
+                    'This will switch to the full SETS + WARP installation.\n\n'
+                    'On restart the installer will download ~2 GB of ML dependencies '
+                    '(PyTorch, EasyOCR, OpenCV).\n\n'
+                    'Continue and restart now?'
+                )
+            else:
+                title = 'Switch to SETS-only?'
+                msg = (
+                    'This will switch to SETS-only mode.\n\n'
+                    'WARP buttons will be hidden. The ML packages remain on disk '
+                    '(disk space is not reclaimed automatically).\n\n'
+                    'Continue and restart now?'
+                )
+            reply = QMessageBox.question(
+                self.window, title, msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                # revert checkbox without re-triggering signal
+                warp_inst_cb.blockSignals(True)
+                warp_inst_cb.setChecked(current_mode == 'sets_warp')
+                warp_inst_cb.blockSignals(False)
+                return
+            _save_install_mode(new_mode)
+            # restart
+            if sys.platform == 'win32':
+                subprocess.Popen([sys.executable] + sys.argv)
+                sys.exit(0)
+            else:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        warp_inst_cb.checkStateChanged.connect(_on_warp_install_toggle)
+        scroll_layout.addLayout(sec_inst)
 
         # second section
         sep = self.create_frame()

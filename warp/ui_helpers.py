@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QLabel
 def time_spent_counter(
     parent,
     prefix: str = 'Time: ',
-    style: str = 'color:#888;font-size:10px;',
+    style: str = 'color:#bbbbbb;font-size:10px;',
 ) -> tuple[QLabel, QTimer]:
     """
     Create a self-updating elapsed-time label and QTimer pair.

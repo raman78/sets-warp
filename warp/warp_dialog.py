@@ -24,6 +24,10 @@ from PySide6.QtCore import Qt, QThread, Signal, QSettings
 from PySide6.QtGui import QFont, QPixmap, QImage
 
 from warp.warp_importer import WarpImporter, ImportResult, RecognisedItem
+from warp.style import (
+    apply_dark_style, primary_btn_style, secondary_btn_style,
+    ACCENT, FG, MFG, BG, MBG, LBG, BC, C_WARNING,
+)
 
 log = logging.getLogger(__name__)
 try:
@@ -142,12 +146,13 @@ class WarpDialog(QDialog):
         self.setMinimumWidth(580)
         self.setMinimumHeight(420)
         self.setModal(True)
+        apply_dark_style(self)
         self._build_ui()
         if self._folder:
             self._folder_label.setText(str(self._folder))
             self._folder_label.setStyleSheet(
-                'color:#eee;background:#111;border:1px solid #3a6a9c;'
-                'border-radius:3px;padding:3px 7px;')
+                f'color:{FG};background:{MBG};border:1px solid {ACCENT};'
+                f'border-radius:3px;padding:3px 7px;')
 
     # ── UI construction ────────────────────────────────────────────────────
 
@@ -158,12 +163,12 @@ class WarpDialog(QDialog):
 
         title = QLabel('⚡  WARP — Build Importer')
         title.setFont(QFont('', 13, QFont.Weight.Bold))
-        title.setStyleSheet('color: #7ec8e3;')
+        title.setStyleSheet(f'color:{ACCENT};')
         root.addWidget(title)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet('color: #3a6a9c;')
+        sep.setStyleSheet(f'color:{BC};')
         root.addWidget(sep)
 
         self._stack = QStackedWidget()
@@ -176,10 +181,7 @@ class WarpDialog(QDialog):
         footer = QHBoxLayout()
         self._btn_next   = QPushButton('Analyse & Import →')
         self._btn_cancel = QPushButton('Cancel')
-        self._btn_next.setStyleSheet(
-            'QPushButton {background:#1a5c3a;color:#7effc8;'
-            'border:1px solid #3aac6a;border-radius:3px;padding:5px 14px;font-weight:bold;}'
-            'QPushButton:hover{background:#2a8c5a;}')
+        self._btn_next.setStyleSheet(primary_btn_style())
         footer.addStretch()
         footer.addWidget(self._btn_cancel)
         footer.addWidget(self._btn_next)
@@ -214,14 +216,14 @@ class WarpDialog(QDialog):
             '⚠  The folder should contain screenshots of ONE build only.\n'
             '   Multiple builds in the same folder will produce incorrect results.')
         notice.setWordWrap(True)
-        notice.setStyleSheet('color:#e8c060;font-size:11px;')
+        notice.setStyleSheet(f'color:{C_WARNING};font-size:11px;')
         g2_lay.addWidget(notice)
 
         row = QHBoxLayout()
         self._folder_label = QLabel('No folder selected')
         self._folder_label.setStyleSheet(
-            'color:#aaa;background:#111;border:1px solid #333;'
-            'border-radius:3px;padding:3px 7px;')
+            f'color:{MFG};background:{BG};border:1px solid {BC};'
+            f'border-radius:3px;padding:3px 7px;')
         self._folder_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         btn_browse = QPushButton('Browse…')
@@ -698,6 +700,6 @@ class WarpDialog(QDialog):
                 self._folder = Path(files[0])
                 self._folder_label.setText(str(self._folder))
                 self._folder_label.setStyleSheet(
-                    'color:#eee;background:#111;border:1px solid #3a6a9c;'
-                    'border-radius:3px;padding:3px 7px;')
+                    f'color:{FG};background:{MBG};border:1px solid {ACCENT};'
+                    f'border-radius:3px;padding:3px 7px;')
                 self._settings.setValue(_SETTINGS_KEY_LAST_DIR, str(self._folder))

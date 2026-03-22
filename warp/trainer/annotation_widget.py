@@ -98,7 +98,7 @@ class AnnotationWidget(QWidget):
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(400, 300)
-        self.setStyleSheet("background: #111;")
+        self.setStyleSheet("background: #1a1a1a;")
 
     # ---------------------------------------------------------------- public API
 
@@ -173,7 +173,7 @@ class AnnotationWidget(QWidget):
             zh = int(self._pixmap.height() * self._scale)
             painter.drawPixmap(self._offset_x, self._offset_y, zw, zh, self._pixmap)
         else:
-            painter.fillRect(self.rect(), QColor("#111")); painter.setPen(QColor("#555")); painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No image loaded\nOpen a folder to start")
+            painter.fillRect(self.rect(), QColor("#1a1a1a")); painter.setPen(QColor("#888888")); painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No image loaded\nOpen a folder to start")
             return
 
         # Z-ORDER DRAWING:

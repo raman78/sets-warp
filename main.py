@@ -256,17 +256,16 @@ class Launcher():
                 'border-style': 'solid',
                 'border-width': '@bw',
                 'border-color': '@bc',
+                'border-radius': '@br',
                 'background-color': '@lbg',
             },
             '::indicator:hover': {
                 'border-color': '@sets'
             },
             '::indicator:checked': {
-                'image': 'url(local/check.svg)'
+                'background-color': '@sets',
+                'border-color': '@sets',
             },
-            '::indicator:unchecked': {
-                'image': 'url(local/uncheck.svg)',
-            }
         },
         # holds sub-pages
         'tabber': {

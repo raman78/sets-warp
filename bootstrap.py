@@ -35,6 +35,45 @@ VENV_DIR    = ROOT / ".venv"
 PYTHON_DIR  = ROOT / ".python"
 PYPROJECT   = ROOT / "pyproject.toml"
 SETUP_LOG   = ROOT / "sets_warp_setup.log"
+MODE_FILE   = ROOT / ".config" / "install_mode.txt"
+
+# ── install mode ───────────────────────────────────────────────────────────────
+# "sets"      — SETS build planner only  (~500 MB)
+# "sets_warp" — full install with WARP   (~2.5 GB)
+
+_WARP_ONLY_PKGS = {
+    'opencv-python-headless', 'easyocr', 'python-bidi', 'pyclipper',
+    'shapely', 'scikit-image', 'scipy', 'onnxruntime', 'huggingface-hub',
+    'torch', 'torchvision', 'onnx', 'onnxscript', 'onnx-ir', 'ml-dtypes',
+    'sympy', 'fsspec', 'networkx', 'pyyaml',
+}
+
+
+def _is_warp_pkg(dep: str) -> bool:
+    name = re.split(r'[><=!\[]', dep)[0].strip().lower()
+    return name in _WARP_ONLY_PKGS
+
+
+def _get_install_mode() -> str:
+    try:
+        return MODE_FILE.read_text().strip()
+    except Exception:
+        return 'sets_warp'
+
+
+def _save_install_mode(mode: str) -> None:
+    try:
+        MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        MODE_FILE.write_text(mode)
+    except Exception:
+        pass
+
+
+def _deps_for_mode(mode: str) -> list[str]:
+    all_deps = parse_pyproject()
+    if mode == 'sets':
+        return [d for d in all_deps if not _is_warp_pkg(d)]
+    return all_deps
 
 IS_WINDOWS  = sys.platform == "win32"
 IS_MAC      = sys.platform == "darwin"
@@ -412,7 +451,135 @@ def relaunch_in_venv():
 
 # ── install orchestration ──────────────────────────────────────────────────────
 
-def run_install(on_line, on_done, on_error, repair_only: bool = False):
+def _check_disk_space(on_line, mode: str = 'sets_warp') -> bool:
+    """
+    Warn if free disk space is below the required threshold.
+    Returns True if OK, False if potentially insufficient (warning only — does not block).
+    SETS-only footprint: ~500 MB.  Full SETS+WARP footprint: ~2.5 GB, peak ~4 GB.
+    """
+    import shutil
+    REQUIRED_GB = 1.5 if mode == 'sets' else 4.0
+    try:
+        usage = shutil.disk_usage(str(ROOT))
+        free_gb = usage.free / 1024 ** 3
+        total_gb = usage.total / 1024 ** 3
+        on_line(f"  Disk space: {free_gb:.1f} GB free / {total_gb:.0f} GB total")
+        if free_gb < REQUIRED_GB:
+            on_line(f"")
+            on_line(f"  *** WARNING: Low disk space! ***")
+            on_line(f"  This installation requires approximately {REQUIRED_GB:.1f} GB of free space.")
+            on_line(f"  Currently available: {free_gb:.1f} GB")
+            on_line(f"  The installation may fail or be incomplete.")
+            on_line(f"  Please free up disk space and try again.")
+            on_line(f"")
+            return False
+        return True
+    except Exception as e:
+        on_line(f"  WARN disk space check failed: {e}")
+        return True  # don't block install if the check itself fails
+
+
+def _download_community_model_bootstrap(on_line):
+    """
+    Download the latest centrally-trained icon classifier from HF during first-run setup.
+    Uses only stdlib (urllib) — no huggingface_hub or venv required.
+    Skipped on subsequent runs (model_version_remote_cache.json already exists).
+    Skipped silently on network errors so setup always completes.
+    """
+    import json, time, urllib.request
+
+    models_dir  = ROOT / 'warp' / 'models'
+    cache_file  = models_dir / 'model_version_remote_cache.json'
+
+    # Not a fresh install — the background ModelUpdater handles ongoing updates.
+    if cache_file.exists():
+        on_line("  Community model: previously synced — skipping (background updater handles this)")
+        return
+
+    on_line("  Querying community model server...")
+    try:
+        req = urllib.request.Request(
+            'https://sets-warp-backend.onrender.com/model/version',
+            headers={'User-Agent': 'WARP-Bootstrap/1.0'},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            remote = json.loads(resp.read().decode())
+    except Exception as e:
+        on_line(f"  Server not reachable ({type(e).__name__}) — using bundled model")
+        return
+
+    if not remote or not remote.get('available'):
+        on_line("  No community model published yet — using bundled model")
+        # Save cache so we don't retry on every subsequent run
+        try:
+            models_dir.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps({'last_check': time.time()}))
+        except Exception:
+            pass
+        return
+
+    n_classes  = remote.get('n_classes', '?')
+    val_acc    = remote.get('val_acc', 0)
+    trained_at = (remote.get('trained_at') or '')[:10]
+    on_line(f"  Community model: {n_classes} classes, accuracy {val_acc:.1%}, trained {trained_at}")
+
+    HF_BASE = 'https://huggingface.co/datasets/sets-sto/warp-knowledge/resolve/main'
+    files = [
+        ('models/icon_classifier.pt',       'icon_classifier.pt',       True),
+        ('models/label_map.json',            'label_map.json',           True),
+        ('models/icon_classifier_meta.json', 'icon_classifier_meta.json',False),
+        ('models/model_version.json',        'model_version.json',       False),
+    ]
+
+    models_dir.mkdir(parents=True, exist_ok=True)
+    downloaded: list[str] = []
+
+    for hf_path, local_name, required in files:
+        url = f'{HF_BASE}/{hf_path}'
+        tmp = models_dir / f'{local_name}.tmp'
+        dst = models_dir / local_name
+        last_pct = [-1]
+
+        def _progress(count, block, total, _name=local_name, _last=last_pct):
+            if total > 0:
+                pct = min(100, count * block * 100 // total)
+                bucket = pct // 10
+                if bucket != _last[0] // 10:
+                    _last[0] = pct
+                    on_line(f"    Downloading {_name}: {pct}%", replace_last=True)
+
+        try:
+            urllib.request.urlretrieve(url, str(tmp), reporthook=_progress)
+            if IS_WINDOWS and dst.exists():
+                dst.unlink()
+            tmp.rename(dst)
+            downloaded.append(local_name)
+        except Exception as e:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            if required:
+                on_line(f"  Download failed ({local_name}: {e}) — using bundled model")
+                for f in downloaded:
+                    try:
+                        (models_dir / f).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                return
+            # Optional file missing — continue
+
+    # Record that we've synced so ModelUpdater skips the next check for 24 h
+    try:
+        cache_file.write_text(json.dumps({'last_check': time.time()}))
+    except Exception:
+        pass
+
+    on_line(f"  Community model installed: {n_classes} classes, accuracy {val_acc:.1%}")
+
+
+def run_install(on_line, on_done, on_error, repair_only: bool = False,
+                install_mode: str = 'sets_warp'):
     """Full install flow, runs in background thread.
     If repair_only=True, skips portable Python download and venv creation,
     only fixes broken dependencies."""
@@ -433,8 +600,19 @@ def run_install(on_line, on_done, on_error, repair_only: bool = False):
             on_done()
             return
 
-        on_line(f"=== SETS-WARP First-Time Setup ===")
+        is_warp = install_mode != 'sets'
+        app_name    = "SETS-WARP" if is_warp else "SETS"
+        total_steps = 5 if is_warp else 3
+        disk_req    = "~4 GB" if is_warp else "~1.5 GB"
+        dep_size    = "~2 GB" if is_warp else "~500 MB"
+
+        on_line(f"=== {app_name} First-Time Setup ===")
         on_line(f"ROOT: {ROOT}")
+        on_line("")
+
+        # Step 0 — disk space
+        on_line(f"Checking disk space ({disk_req} required)...")
+        _check_disk_space(on_line, install_mode)
         on_line("")
 
         # Step 1 — portable Python
@@ -443,31 +621,40 @@ def run_install(on_line, on_done, on_error, repair_only: bool = False):
             on_line(f"OK Portable Python already present: {exe}\n")
             python_exe = str(exe)
         else:
-            on_line("Step 1/3  Downloading portable Python (~65 MB, one-time)...")
+            on_line(f"Step 1/{total_steps}  Downloading portable Python (~65 MB, one-time)...")
             python_exe = download_portable_python(on_line)
             on_line("")
 
         # Step 2 — venv
-        on_line("Step 2/3  Creating virtual environment...")
+        on_line(f"Step 2/{total_steps}  Creating virtual environment...")
         create_venv(python_exe, on_line)
         on_line("")
 
         # Step 3 — dependencies
-        on_line("Step 3/4  Installing dependencies...")
+        deps = _deps_for_mode(install_mode)
+        on_line(f"Step 3/{total_steps}  Installing dependencies ({dep_size}, one-time)...")
         on_line("  Removing obsolete packages...")
         _uninstall_obsolete_packages(on_line)
         on_line("  Cleaning stale .venv cache...")
         _cleanup_venv_pycache(on_line)
-        install_dependencies(on_line)
+        install_dependencies(on_line, deps=deps)
         on_line("")
 
-        # Step 4 — WARP data
-        on_line("Step 4/4  Preparing WARP data...")
-        _setup_warp_dirs(on_line)
-        _run_warp_scraper(on_line)
-        on_line("")
+        if is_warp:
+            # Step 4 — WARP item database
+            on_line("Step 4/5  Preparing WARP item database...")
+            _setup_warp_dirs(on_line)
+            _run_warp_scraper(on_line)
+            on_line("")
 
-        on_line("Setup complete!  Starting SETS-WARP...\n")
+            # Step 5 — community ML model
+            on_line("Step 5/5  Downloading community ML model...")
+            _download_community_model_bootstrap(on_line)
+            on_line("")
+        else:
+            _setup_warp_dirs(on_line)
+
+        on_line(f"Setup complete!  Starting {app_name}...\n")
         on_done()
 
     except Exception as exc:
@@ -502,6 +689,7 @@ def run_with_tkinter_gui():
     import tkinter as tk
 
     BG, FG, ACCENT = "#1a1a1a", "#eeeeee", "#c59129"
+    CARD_BG, CARD_BORDER, DIM = "#242424", "#404040", "#888888"
 
     root = tk.Tk()
     root.title("SETS-WARP — Setup")
@@ -514,26 +702,26 @@ def run_with_tkinter_gui():
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     root.geometry(f"{W}x{H}+{(sw-W)//2}+{(sh-H)//2}")
 
-    # ── top: logo (fixed height) ──────────────────────────────────────────────
+    # ── top: logo (shared, always visible) ───────────────────────────────────
     top = tk.Frame(root, bg=BG)
     top.pack(side=tk.TOP, fill=tk.X)
 
     try:
         img = tk.PhotoImage(file=str(ROOT / "local" / "sets_loading.png"))
-        # Scale image down if it's too tall (PhotoImage supports subsample)
-        # Limit to 160px height
         orig_h = img.height()
-        if orig_h > 160:
-            factor = max(1, orig_h // 160)
+        if orig_h > 140:
+            factor = max(1, orig_h // 140)
             img = img.subsample(factor, factor)
-        tk.Label(top, image=img, bg=BG).pack(pady=(12, 4))
+        tk.Label(top, image=img, bg=BG).pack(pady=(10, 4))
         top._img = img  # prevent GC
     except Exception:
         tk.Label(top, text="SETS", bg=BG, fg=ACCENT,
                  font=("Helvetica", 22, "bold")).pack(pady=12)
 
-    # ── middle: log text (expands) ────────────────────────────────────────────
-    mid = tk.Frame(root, bg=BG)
+    # ── install pane (log area) ───────────────────────────────────────────────
+    install_frame = tk.Frame(root, bg=BG)
+
+    mid = tk.Frame(install_frame, bg=BG)
     mid.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=16, pady=(0, 4))
 
     sb = tk.Scrollbar(mid)
@@ -545,9 +733,8 @@ def run_with_tkinter_gui():
     log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     sb.config(command=log.yview)
 
-    # ── bottom: status label ──────────────────────────────────────────────────
     status_var = tk.StringVar(value="Starting setup...")
-    tk.Label(root, textvariable=status_var, bg=BG, fg=ACCENT,
+    tk.Label(install_frame, textvariable=status_var, bg=BG, fg=ACCENT,
              font=("Helvetica", 10)).pack(side=tk.BOTTOM, pady=(0, 10))
 
     _prev_was_replace = [False]
@@ -561,7 +748,6 @@ def run_with_tkinter_gui():
         log.see(tk.END)
         log.config(state=tk.DISABLED)
         _prev_was_replace[0] = replace_last
-        # Also show last meaningful line in status bar
         if msg.strip():
             status_var.set(msg.strip()[:80])
 
@@ -577,14 +763,85 @@ def run_with_tkinter_gui():
             _append(f"\nERROR: {msg}\n")
             _append("Please install Python 3.13+ manually: https://www.python.org/downloads/")
             status_var.set("Setup failed — see error above")
-            tk.Button(root, text="Close", bg=ACCENT, fg=BG,
+            tk.Button(install_frame, text="Close", bg=ACCENT, fg=BG,
                       font=("Helvetica", 11, "bold"), relief=tk.FLAT,
                       command=root.destroy).pack(pady=8)
         root.after(0, _show)
 
-    # Start install thread AFTER mainloop is about to run, via after()
-    root.after(100, lambda: threading.Thread(
-        target=run_install, args=(on_line, on_done, on_error), daemon=True).start())
+    def _start_install(mode: str):
+        _save_install_mode(mode)
+        if 'choice_frame' in root.__dict__:
+            root.choice_frame.pack_forget()
+        install_frame.pack(fill=tk.BOTH, expand=True)
+        threading.Thread(
+            target=run_install,
+            args=(on_line, on_done, on_error),
+            kwargs={'install_mode': mode},
+            daemon=True,
+        ).start()
+
+    # ── If mode already chosen (re-install / repair), skip choice screen ─────
+    if MODE_FILE.exists():
+        _start_install(_get_install_mode())
+        root.mainloop()
+        return
+
+    # ── Choice screen ─────────────────────────────────────────────────────────
+    choice_frame = tk.Frame(root, bg=BG)
+    root.choice_frame = choice_frame  # allow _start_install to find it
+    choice_frame.pack(fill=tk.BOTH, expand=True)
+
+    tk.Label(choice_frame, text="Choose installation type:",
+             bg=BG, fg=FG, font=("Helvetica", 12, "bold")).pack(pady=(14, 10))
+
+    cards_row = tk.Frame(choice_frame, bg=BG)
+    cards_row.pack(pady=4)
+
+    def _make_card(parent, mode, title, size, features):
+        outer = tk.Frame(parent, bg=CARD_BORDER, padx=1, pady=1)
+        outer.pack(side=tk.LEFT, padx=16)
+        card = tk.Frame(outer, bg=CARD_BG, width=270, height=230)
+        card.pack_propagate(False)
+        card.pack()
+
+        tk.Label(card, text=title, bg=CARD_BG, fg=ACCENT,
+                 font=("Helvetica", 13, "bold")).pack(pady=(14, 2))
+        tk.Label(card, text=size, bg=CARD_BG, fg=FG,
+                 font=("Helvetica", 11)).pack(pady=(0, 8))
+
+        feat_frame = tk.Frame(card, bg=CARD_BG)
+        feat_frame.pack(fill=tk.X, padx=18)
+        for feat in features:
+            tk.Label(feat_frame, text=f"\u2022 {feat}", bg=CARD_BG, fg=DIM,
+                     font=("Helvetica", 9), justify=tk.LEFT,
+                     anchor='w').pack(fill=tk.X, pady=1)
+
+        btn = tk.Button(card, text="Install", bg=ACCENT, fg=BG,
+                        font=("Helvetica", 11, "bold"), relief=tk.FLAT,
+                        padx=12, pady=4, cursor="hand2",
+                        command=lambda m=mode: _start_install(m))
+        btn.pack(side=tk.BOTTOM, pady=14)
+
+        def _highlight(e):
+            outer.config(bg=ACCENT)
+        def _unhighlight(e):
+            outer.config(bg=CARD_BORDER)
+        for w in (outer, card, btn):
+            w.bind('<Enter>', _highlight)
+            w.bind('<Leave>', _unhighlight)
+        for child in card.winfo_children():
+            child.bind('<Enter>', _highlight)
+            child.bind('<Leave>', _unhighlight)
+
+    _make_card(cards_row, 'sets',
+               'SETS only', '~500 MB',
+               ['Build planner', 'Ship / equipment database',
+                'No screenshot recognition'])
+    _make_card(cards_row, 'sets_warp',
+               'SETS + WARP', '~2.5 GB',
+               ['Build planner', 'Ship / equipment database',
+                'Screenshot recognition (WARP)',
+                'ML model training (WARP CORE)'])
 
     root.mainloop()
 
@@ -605,6 +862,24 @@ def run_plain_text():
             print(msg, flush=True)
         _last[0] = msg
 
+    # Ask for install mode if not already saved
+    if MODE_FILE.exists():
+        install_mode = _get_install_mode()
+    else:
+        print("")
+        print("  Choose installation type:")
+        print("    [1] SETS only      — build planner (~500 MB)")
+        print("    [2] SETS + WARP    — build planner + screenshot recognition (~2.5 GB)  [default]")
+        print("")
+        try:
+            choice = input("  Enter choice [1/2, default=2]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            choice = ''
+        install_mode = 'sets' if choice == '1' else 'sets_warp'
+        _save_install_mode(install_mode)
+        print(f"  Installing: {'SETS only' if install_mode == 'sets' else 'SETS + WARP'}")
+        print("")
+
     done = threading.Event()
     errors = []
 
@@ -612,7 +887,11 @@ def run_plain_text():
     def on_error(m): errors.append(m); done.set()
 
     threading.Thread(
-        target=run_install, args=(on_line, on_done, on_error), daemon=True).start()
+        target=run_install,
+        args=(on_line, on_done, on_error),
+        kwargs={'install_mode': install_mode},
+        daemon=True,
+    ).start()
     done.wait()
 
     if errors:
@@ -855,14 +1134,16 @@ def _quick_check_venv() -> list[str]:
     """
     import json
     py = str(venv_python())
+    mode = _get_install_mode()
+    expected_deps = _deps_for_mode(mode)
 
     # Is venv Python executable?
     try:
         r = subprocess.run([py, '--version'], capture_output=True, timeout=10)
         if r.returncode != 0:
-            return parse_pyproject()
+            return expected_deps
     except Exception:
-        return parse_pyproject()
+        return expected_deps
 
     # Get installed packages from pip metadata
     try:
@@ -874,17 +1155,17 @@ def _quick_check_venv() -> list[str]:
             for pkg in json.loads(r.stdout)
         }
     except Exception:
-        return parse_pyproject()
+        return expected_deps
 
     broken = []
-    for dep in parse_pyproject():
+    for dep in expected_deps:
         name, specs = _parse_specifier(dep)
         ver = installed.get(name)
         if ver is None or not _satisfies(ver, specs):
             broken.append(dep)
 
-    # If torch is installed but NOT from CPU index, force reinstall
-    if not broken and 'torch' in installed and not _torch_cpu_sentinel().exists():
+    # If torch is installed but NOT from CPU index, force reinstall (WARP mode only)
+    if mode != 'sets' and not broken and 'torch' in installed and not _torch_cpu_sentinel().exists():
         broken += ['torch>=2.1', 'torchvision>=0.16']
 
     # If CPU sentinel exists but triton reappeared (e.g. installed as a dep),
@@ -1257,7 +1538,7 @@ def _repair_worker(on_line, on_done, on_error, broken: list[str]):
         if wiped:
             on_line(f"  Removed: {', '.join(wiped)}")
         # run_install performs a full fresh setup; on_error is called only if this also fails
-        run_install(on_line, on_done, on_error)
+        run_install(on_line, on_done, on_error, install_mode=_get_install_mode())
 
 
 def main():

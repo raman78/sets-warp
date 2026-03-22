@@ -45,7 +45,7 @@ def inject_warp_buttons(sets_app, menu_layout) -> None:
             Qt.TransformationMode.SmoothTransformation)
         btn_warp.setIcon(QIcon(_pix))
         btn_warp.setIconSize(QSize(40, 24))
-    _apply_warp_style(btn_warp, color='#7ec8e3', bg='#1a3a5c', border='#3a6a9c')
+    _apply_warp_style(btn_warp, color='#eeeeee', bg='#242424', border='#c59129')
     btn_warp.clicked.connect(lambda: _open_warp_dialog(sets_app))
 
     # ── WARP CORE trainer button ──────────────────────────────────────────
@@ -62,7 +62,7 @@ def inject_warp_buttons(sets_app, menu_layout) -> None:
             24, 24, Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation)
         btn_core.setIcon(QIcon(_pix))
-    _apply_warp_style(btn_core, color='#c8e87e', bg='#2a3a1a', border='#6a9c3a')
+    _apply_warp_style(btn_core, color='#eeeeee', bg='#242424', border='#a07820')
     btn_core.clicked.connect(lambda: _open_warp_core(sets_app))
 
     warp_layout.addWidget(btn_warp)

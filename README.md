@@ -2,73 +2,88 @@
 
 A build planning and screenshot recognition tool for Star Trek Online.
 
-> **Status:** v1.0b — prepared and tested on **Linux**. Windows support is included but not yet fully tested.
+> **Status:** v1.1b — tested on **Linux** and **Windows**. macOS support is present but untested.
 
 ---
 
 ## What is this?
 
-**SETS-WARP** combines two tools:
+**SETS-WARP** combines three tools in one package:
 
-**SETS** *(STO Equipment and Trait Selector)* is a build planner for Star Trek Online. It lets you plan ship and ground loadouts, skill trees, and bridge officer assignments — without needing to own the items in-game. Builds can be shared as PNG and JSON files.
-- ALL CREDITS to **Shinga https://github.com/STOCD/SETS project**.
+**SETS** *(STO Equipment and Trait Selector)* — build planner for Star Trek Online. Plan ship and ground loadouts, skill trees, and bridge officer assignments without owning the items in-game. Builds can be shared as PNG and JSON files.
+> All credits for SETS to **Shinga** — [STOCD/SETS](https://github.com/STOCD/SETS).
 
-**WARP** *(Weaponry & Armament Recognition Platform)* is a recognition module built on top of SETS. It reads your in-game screenshots and automatically fills in your build — detecting equipment, traits, bridge officers, and ship information using computer vision and machine learning.
+**WARP** *(Weaponry & Armament Recognition Platform)* — reads your in-game screenshots and automatically fills in your SETS build. Detects equipment, traits, bridge officers, and ship information using computer vision and machine learning.
 
-**WARP CORE** is the trainer interface inside WARP. It lets you review and correct recognition results, confirm annotations, and train the  ML model on your own data to improve accuracy over time.
+**WARP CORE** — trainer interface built into WARP. Review and correct recognition results, confirm annotations, and retrain the local ML model on your own data to improve accuracy over time.
 
----
-
-## How it works
-
-1. Take screenshots of your in-game build screens (equipment, traits, bridge officers — separately or as combined screenshots) - ONE BUILD SCREENS.
-2. Open WARP, select the build type, point it at your screenshot folder.
-3. WARP detects your ship (in space build), reads slot counts, recognises each item, and fills your SETS build automatically.
-4. Use WARP CORE to review results, correct mistakes, and confirm items — building up a personal training dataset that improves recognition over time.
-
----
-
-## Screenshot types supported
-
-WARP handles three ways players share their builds - ONE BUILD IN FOLDER:
-
-- **Separate screens** — one screenshot per game tab (equipment, traits, bridge officers, etc.), all placed in one folder.
-- **Mixed screen** — a single combined screenshot assembled from multiple tabs.
-- **Partial** — only some screens provided (e.g. equipment only, or traits only).
-
-The build type selector in the WARP import dialog tells WARP what to expect.
+→ See **[WARP_GUIDE.md](WARP_GUIDE.md)** for a full usage guide with step-by-step instructions for WARP and WARP CORE.
 
 ---
 
 ## Installation
 
-No installer — the app manages its own Python environment automatically via `bootstrap.py`. You need Python 3.11+ already installed on your system.
+### Windows — Installer (recommended)
 
-### Linux / macOS
+Download **`sets-warp-vX.Y-setup.exe`** from the [Releases page](https://github.com/raman78/sets-warp/releases) and run it.
 
-```bash
-git clone https://github.com/STOCD/SETS.git
-cd SETS
-./sets_warp.sh
-```
+- Installs to `%LOCALAPPDATA%\SETS-WARP` — **no administrator rights required**
+- Creates Start Menu and optional Desktop shortcut
+- On first launch, chooses between **SETS only** (~500 MB) or **SETS + WARP** (~2.5 GB) and downloads all dependencies automatically
+- Post-install wizard warns if Python 3.11+ is missing from PATH
 
-On first run `sets_warp.sh` creates a local `.venv`, downloads a portable Python runtime, and installs all dependencies automatically. Subsequent launches are fast.
+### Windows — Git (advanced)
 
-If tkinter is missing (required only for the first-run installer window), the script will print the exact install command for your Linux distribution.
-
-### Windows
-
-```
-git clone https://github.com/STOCD/SETS.git
-cd SETS
+```bat
+git clone https://github.com/raman78/sets-warp.git
+cd sets-warp
 sets_warp.bat
 ```
 
-`sets_warp.bat` finds your Python 3 installation and runs `bootstrap.py`, which sets up the environment on first launch.
+### Linux
 
-### Images library
+```bash
+git clone https://github.com/raman78/sets-warp.git
+cd sets-warp
+./sets_warp.sh
+```
 
-On first launch, SETS downloads item icons automatically. To speed this up, download the latest image archive from the [releases page](https://github.com/STOCD/SETS/releases) and extract it to `.config/images/`.
+On first run a graphical setup window appears asking you to choose:
+
+| Option | Disk space | What's included |
+|--------|-----------|-----------------|
+| **SETS only** | ~500 MB | Build planner, ship/equipment database |
+| **SETS + WARP** | ~2.5 GB | Everything above + screenshot recognition, ML training |
+
+The installer then downloads a portable Python runtime and all required packages automatically. Subsequent launches complete in under a second.
+
+**Desktop integration** is set up automatically on first run — SETS-WARP appears in your application launcher with its own icon.
+
+**tkinter requirement (first run only):** tkinter is needed to display the setup window. If it's missing, the script prints the exact install command for your distro (apt / dnf / pacman / zypper / apk).
+
+### macOS
+
+```bash
+git clone https://github.com/raman78/sets-warp.git
+cd sets-warp
+./sets_warp.sh
+```
+
+Same automatic setup as Linux. No desktop integration step on macOS.
+
+---
+
+## First-run setup details
+
+The setup window walks through these steps automatically:
+
+1. Download portable Python 3.13 (~65 MB, one-time)
+2. Create isolated virtual environment (`.venv/`)
+3. Install Python packages from PyPI (~500 MB SETS-only / ~2 GB SETS+WARP, one-time)
+4. *(SETS+WARP only)* Build WARP item database from STO cargo data
+5. *(SETS+WARP only)* Download community ML model — so WARP works immediately without manual training
+
+The choice between SETS-only and SETS+WARP is saved. If you later want to switch, delete `.config/install_mode.txt` and relaunch — the setup will appear again.
 
 ---
 
@@ -77,31 +92,41 @@ On first launch, SETS downloads item icons automatically. To speed this up, down
 ```bash
 git pull
 ./sets_warp.sh     # Linux / macOS
-sets_warp.bat      # Windows
+sets_warp.bat      # Windows (git install)
 ```
 
-`bootstrap.py` automatically detects and installs any new dependencies on launch.
+SETS-WARP checks for updates automatically 8 seconds after launch and shows a dialog when a new version is available. The update can also be triggered manually from **Settings → SETS-WARP Updates**.
+
+`bootstrap.py` detects and installs new dependencies on every launch — no manual `pip install` needed.
+
+---
+
+## How WARP works (quick summary)
+
+1. Take screenshots of your in-game build screens (equipment, traits, bridge officers — separately or as one combined screenshot). **One build per folder.**
+2. Click the **⚡ WARP** button, select the screenshot folder.
+3. WARP detects your ship, reads slot counts, recognises each item, and fills your build automatically.
+4. Use **WARP CORE** to review results, correct mistakes, and confirm items — building up training data that improves recognition over time.
+
+→ Full instructions: **[WARP_GUIDE.md](WARP_GUIDE.md)**
 
 ---
 
 ## WARP gets smarter over time
 
-Every time you confirm an item in WARP CORE, two things happen in the background:
+**Local model:** Confirmed items in WARP CORE are saved as training data. After confirming enough items, click **Train Model** to retrain the icon classifier on your corrections.
 
-**Your local model improves.** Confirmed items are saved as training data. Periodically WARP retrains the icon recognition model on your corrections — so items it got wrong today, it gets right next time.
-
-**The community knowledge base grows.** Each confirmed item is also sent (anonymously) to a shared knowledge base. When enough players confirm the same item, it's merged into the community database that all WARP users benefit from — no training required, just downloading the latest knowledge at startup.
-
-This means WARP works reasonably well out of the box, and gets noticeably better the more you use WARP CORE to correct mistakes.
+**Community model:** Confirmed items are sent anonymously to a shared knowledge base. The central model is retrained hourly from community contributions and downloaded at the next startup. Fresh installs get the latest community model automatically during setup.
 
 ---
 
 ## Contributing
-ALL CREDITS to Shinga https://github.com/STOCD/SETS project.
 
-Item data comes from the [official STO wiki](https://stowiki.net). If something is missing or wrong, update it there.
+All credits for SETS to Shinga — [STOCD/SETS](https://github.com/STOCD/SETS).
 
-For app bugs or suggestions: [STOBuilds Discord](https://discord.gg/kxwHxbsqzF) → `#sets-support`.
+Item data from the [official STO wiki](https://stowiki.net). If something is missing or wrong, update it there.
+
+Bug reports and suggestions: [GitHub Issues](https://github.com/raman78/sets-warp/issues) or [STOBuilds Discord](https://discord.gg/kxwHxbsqzF) → `#sets-support`.
 
 ---
 
