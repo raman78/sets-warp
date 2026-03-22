@@ -193,17 +193,32 @@ class LocalTrainWorker(QThread):
         model  = models.efficientnet_b0(
             weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
 
-        # Check if we have a previous model to continue from
-        existing = self._sets_root / 'warp' / 'models' / 'icon_classifier.onnx'
-        if existing.exists():
-            self.progress.emit(20, 'Previous model found -- fine-tuning...')
-        else:
-            self.progress.emit(20, 'No previous model -- training from ImageNet weights...')
-
-        # Replace classifier head
+        # Replace classifier head (must happen before weight loading so strict=False
+        # only skips the head mismatch, not the backbone)
         in_features = model.classifier[1].in_features
         model.classifier[1] = torch.nn.Linear(in_features, n_classes)
         model = model.to(device)
+
+        # Load backbone weights from existing .pt model if available.
+        # strict=False: backbone layers are restored; the classifier head is
+        # skipped when its size differs (different n_classes) and stays as
+        # the randomly-initialised head above.
+        existing_pt = self._sets_root / 'warp' / 'models' / 'icon_classifier.pt'
+        if existing_pt.exists():
+            try:
+                state = torch.load(str(existing_pt), map_location=device)
+                missing, unexpected = model.load_state_dict(state, strict=False)
+                # Only backbone layers should be missing/unexpected (classifier head)
+                head_keys = {k for k in (missing + unexpected) if 'classifier' in k}
+                non_head  = [k for k in (missing + unexpected) if 'classifier' not in k]
+                if non_head:
+                    self.progress.emit(20, f'Previous model: {len(non_head)} unexpected keys — using ImageNet backbone')
+                else:
+                    self.progress.emit(20, f'Previous model found — fine-tuning backbone ({len(head_keys)} head keys re-initialised)')
+            except Exception as e:
+                self.progress.emit(20, f'Previous model load failed ({e}) — using ImageNet weights')
+        else:
+            self.progress.emit(20, 'No previous model — training from ImageNet weights')
 
         # Freeze backbone for first half of training if we have few samples
         if len(crops) < 50:
