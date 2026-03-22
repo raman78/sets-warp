@@ -262,12 +262,14 @@ class ScreenTypeTrainerWorker:
         if existing_pt.exists():
             try:
                 state = torch.load(str(existing_pt), map_location=device)
-                missing, unexpected = model.load_state_dict(state, strict=False)
+                backbone_state = {k: v for k, v in state.items()
+                                  if not k.startswith('classifier')}
+                missing, unexpected = model.load_state_dict(backbone_state, strict=False)
                 non_head = [k for k in (missing + unexpected) if 'classifier' not in k]
                 if not non_head:
                     prog(16, 'Previous screen model found — fine-tuning backbone')
                 else:
-                    prog(16, f'Previous screen model: {len(non_head)} unexpected keys — using ImageNet')
+                    prog(16, f'Previous screen model: {len(non_head)} unexpected backbone keys — using ImageNet')
             except Exception as e:
                 prog(16, f'Previous screen model load failed ({e}) — using ImageNet')
 

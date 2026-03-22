@@ -207,14 +207,18 @@ class LocalTrainWorker(QThread):
         if existing_pt.exists():
             try:
                 state = torch.load(str(existing_pt), map_location=device)
-                missing, unexpected = model.load_state_dict(state, strict=False)
-                # Only backbone layers should be missing/unexpected (classifier head)
-                head_keys = {k for k in (missing + unexpected) if 'classifier' in k}
-                non_head  = [k for k in (missing + unexpected) if 'classifier' not in k]
+                # Strip classifier keys — strict=False skips missing/unexpected keys
+                # but still raises on size mismatch (same key, different shape).
+                # Removing classifier keys lets backbone load cleanly regardless of
+                # how many classes the previous model had.
+                backbone_state = {k: v for k, v in state.items()
+                                  if not k.startswith('classifier')}
+                missing, unexpected = model.load_state_dict(backbone_state, strict=False)
+                non_head = [k for k in (missing + unexpected) if 'classifier' not in k]
                 if non_head:
-                    self.progress.emit(20, f'Previous model: {len(non_head)} unexpected keys — using ImageNet backbone')
+                    self.progress.emit(20, f'Previous model: {len(non_head)} unexpected backbone keys — using ImageNet')
                 else:
-                    self.progress.emit(20, f'Previous model found — fine-tuning backbone ({len(head_keys)} head keys re-initialised)')
+                    self.progress.emit(20, f'Previous model found — fine-tuning backbone')
             except Exception as e:
                 self.progress.emit(20, f'Previous model load failed ({e}) — using ImageNet weights')
         else:
