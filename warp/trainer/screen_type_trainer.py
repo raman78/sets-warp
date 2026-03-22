@@ -256,6 +256,21 @@ class ScreenTypeTrainerWorker:
         model.classifier[-1] = nn.Linear(in_features, n_classes)
         model = model.to(device)
 
+        # Load backbone weights from existing screen_classifier.pt if available.
+        # strict=False: backbone layers restored; head skipped on size mismatch.
+        existing_pt = self._models_dir / 'screen_classifier.pt'
+        if existing_pt.exists():
+            try:
+                state = torch.load(str(existing_pt), map_location=device)
+                missing, unexpected = model.load_state_dict(state, strict=False)
+                non_head = [k for k in (missing + unexpected) if 'classifier' not in k]
+                if not non_head:
+                    prog(16, 'Previous screen model found — fine-tuning backbone')
+                else:
+                    prog(16, f'Previous screen model: {len(non_head)} unexpected keys — using ImageNet')
+            except Exception as e:
+                prog(16, f'Previous screen model load failed ({e}) — using ImageNet')
+
         # Phase 1: freeze backbone, train only classifier head (warmup)
         for param in model.features.parameters():
             param.requires_grad = False
