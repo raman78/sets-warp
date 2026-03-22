@@ -21,13 +21,16 @@ import sys
 import threading
 from pathlib import Path
 
-log = logging.getLogger(__name__)
+try:
+    from src.setsdebug import log
+except Exception:
+    log = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 WARP_VERSION = '1.0b'
 GITHUB_REPO  = 'raman78/sets-warp'
 API_URL      = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
-TIMEOUT      = 8   # seconds for the API request
+TIMEOUT      = 3   # seconds for the API request
 
 
 # ── Public entry point ─────────────────────────────────────────────────────────
@@ -75,12 +78,15 @@ def _check_worker(sets_app) -> None:
 
         log.info(f'WARP updater: new release v{tag} available (current v{WARP_VERSION})')
 
-        # Schedule dialog on the Qt main thread
+        # Schedule dialog on the Qt main thread — pass QApplication as context
+        # so the lambda is guaranteed to run in the main thread's event loop
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: _show_update_dialog(sets_app, tag, notes))
+        from PySide6.QtWidgets import QApplication
+        QTimer.singleShot(0, QApplication.instance(),
+                          lambda: _show_update_dialog(sets_app, tag, notes))
 
     except Exception as e:
-        log.debug(f'WARP updater: check failed ({e})')
+        log.warning(f'WARP updater: check failed ({e})')
 
 
 # ── Dialog ─────────────────────────────────────────────────────────────────────
