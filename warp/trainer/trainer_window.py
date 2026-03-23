@@ -724,10 +724,12 @@ class WarpCoreWindow(QMainWindow):
         dlg = QFileDialog(self)
         dlg.setWindowTitle('Open Screenshots Folder')
         dlg.setFileMode(QFileDialog.FileMode.Directory)
-        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
         dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
         if last and Path(last).is_dir():
             dlg.setDirectory(last)
+        from PySide6.QtWidgets import QListView, QTreeView
+        for view in dlg.findChildren(QListView) + dlg.findChildren(QTreeView):
+            view.setSelectionMode(view.SelectionMode.NoSelection)
         if not dlg.exec():
             return
         folder = Path(dlg.selectedFiles()[0])
