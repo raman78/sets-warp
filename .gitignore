@@ -4,6 +4,8 @@ images/
 __pycache__/
 *.py[cod]
 .sets_warp_settings.ini
+.SETS_settings.ini
+*.ini
 .venv/
 .python/
 *.log
