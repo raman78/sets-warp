@@ -238,6 +238,25 @@ def populate_cache(self, threaded_worker: ThreadObject):
     store_to_cache(self, self.images.failed_images, 'images_failed.json')
     log.info('populate_cache: calling load_base_images')
     load_base_images(self, threaded_worker)
+
+    # If model_version.json is absent (e.g. first run after SETS→SETS+WARP upgrade),
+    # download the community ML model synchronously here — we're already in a background
+    # thread, so this won't block the UI.  The startup dialog reads model_version.json
+    # and will show correct info because it runs only after populate_cache finishes.
+    try:
+        models_dir = Path(self.app_dir) / 'warp' / 'models'
+        if models_dir.is_dir() and not (models_dir / 'model_version.json').exists():
+            log.info('populate_cache: model_version.json missing — running ModelUpdater')
+            def _model_progress(text, current, total):
+                _splash_state.update({
+                    'text': text, 'current': current, 'total': total, 'hidden': False,
+                })
+            from warp.trainer.model_updater import ModelUpdater
+            ModelUpdater()._bg_check(Path(self.app_dir), None, on_progress=_model_progress)
+            log.info('populate_cache: ModelUpdater done')
+    except Exception as _e:
+        log.warning(f'populate_cache: ModelUpdater failed: {_e}')
+
     log.info('populate_cache: DONE')
 
 

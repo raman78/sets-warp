@@ -182,12 +182,12 @@ class ScreenTypeClassifier:
             # Load metadata
             n_classes = 7  # default
             if meta_path.exists():
-                with open(meta_path) as f:
+                with open(meta_path, encoding='utf-8') as f:
                     meta = json.load(f)
                 n_classes = meta.get('n_classes', 7)
             # Load label map
             if labels_path.exists():
-                with open(labels_path) as f:
+                with open(labels_path, encoding='utf-8') as f:
                     raw = json.load(f)
                 self._label_map = {int(k): v for k, v in raw.items()}
             else:

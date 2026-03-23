@@ -279,7 +279,7 @@ class SyncWorker(QThread):
                 repo_type=HF_REPO_TYPE,
                 token=self._token,
             )
-            with open(local) as f:
+            with open(local, encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
                     if line:

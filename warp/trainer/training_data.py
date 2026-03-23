@@ -252,7 +252,7 @@ class TrainingDataManager:
         ann_path = self._dir / self.ANNOTATIONS_FILE
         if ann_path.exists():
             try:
-                with open(ann_path) as f:
+                with open(ann_path, encoding='utf-8') as f:
                     self._annotations = json.load(f)
             except Exception as e:
                 logger.warning(f"Could not load annotations: {e}")
@@ -260,7 +260,7 @@ class TrainingDataManager:
         idx_path = self._dir / self.CROP_INDEX_FILE
         if idx_path.exists():
             try:
-                with open(idx_path) as f:
+                with open(idx_path, encoding='utf-8') as f:
                     self._crop_index = json.load(f)
             except Exception:
                 pass
@@ -268,7 +268,7 @@ class TrainingDataManager:
         st_path = self._dir / self.SCREEN_TYPES_FILE
         if st_path.exists():
             try:
-                with open(st_path) as f:
+                with open(st_path, encoding='utf-8') as f:
                     self._screen_types = json.load(f)
             except Exception:
                 pass

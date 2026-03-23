@@ -5,6 +5,15 @@ print('[SETS] main.py: Python started', flush=True)
 # Log goes next to sets_warp.sh — find it by walking up from __file__ or using env var
 _script_dir = os.environ.get('SETS_DIR') or os.path.dirname(os.path.abspath(__file__))
 _early_log_path = os.path.join(_script_dir, 'sets_warp_early.log')
+# Rotate: keep one previous session as .bak
+try:
+    _bak = _early_log_path + '.bak'
+    if os.path.exists(_early_log_path):
+        if os.path.exists(_bak):
+            os.unlink(_bak)
+        os.rename(_early_log_path, _bak)
+except Exception:
+    pass
 _early_log = open(_early_log_path, 'w', buffering=1)
 def _elog(msg):
     import time

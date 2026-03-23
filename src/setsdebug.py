@@ -14,6 +14,15 @@ _log_path = Path(_os.environ.get('SETS_DIR') or Path(__file__).parent.parent) / 
 _lock = threading.Lock()
 
 try:
+    # Rotate: rename existing log to .bak (1 session backup) before opening fresh
+    _bak_path = _log_path.with_suffix('.log.bak')
+    if _log_path.exists():
+        try:
+            if _bak_path.exists():
+                _bak_path.unlink()
+            _log_path.rename(_bak_path)
+        except Exception:
+            pass
     _fh = open(_log_path, 'w', buffering=1)
     _file_ok = True
 except Exception as e:

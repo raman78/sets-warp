@@ -436,10 +436,15 @@ def install_dependencies(on_line, deps: list | None = None, force: bool = False)
                   'nvidia-cufile-cu12', 'nvidia-cusparselt-cu12', 'nvidia-nvshmem-cu12'],
                  on_line, 'remove GPU packages', ignore_exit=True)
 
-    # Install everything else in one shot (pip resolves transitive deps)
+    # Install everything else in one shot (pip resolves transitive deps).
+    # Pass --extra-index-url (not --index-url) so pip can still find the CPU-only
+    # torch wheel when resolving transitive deps of easyocr/torchvision instead of
+    # pulling the CUDA-enabled torch from PyPI and overwriting the one just installed.
+    extra_index_args = (["--extra-index-url", TORCH_CPU_INDEX]
+                        if torch_deps else [])
     _install_batch(
         other_deps,
-        [],
+        extra_index_args,
         f"{len(other_deps)} package(s)"
     )
 
@@ -684,10 +689,25 @@ def run_install(on_line, on_done, on_error, repair_only: bool = False,
 
 # ── tkinter GUI ────────────────────────────────────────────────────────────────
 
+_setup_log_rotated = False  # rotate only once per bootstrap process
+
+
 def _setup_log_writer():
     """Returns a callable that appends a timestamped line to sets_warp_setup.log."""
     import datetime
+    global _setup_log_rotated
     try:
+        # Rotate once per process: rename existing log to .bak (1 session backup)
+        if not _setup_log_rotated:
+            _setup_log_rotated = True
+            bak = SETUP_LOG.with_suffix('.log.bak')
+            if SETUP_LOG.exists():
+                try:
+                    if bak.exists():
+                        bak.unlink()
+                    SETUP_LOG.rename(bak)
+                except Exception:
+                    pass
         log_file = open(SETUP_LOG, 'a', encoding='utf-8', buffering=1)
         log_file.write(f"\n{'='*60}\n")
         log_file.write(f"SETS Setup  {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -1142,6 +1162,17 @@ def _warp_scraper_needed() -> bool:
     return False
 
 
+def _model_download_needed() -> bool:
+    """True if the WARP ML model files have never been downloaded."""
+    if _get_install_mode() == 'sets':
+        return False
+    # Check for model_version.json — the file the startup dialog reads.
+    # Do NOT rely on model_version_remote_cache.json: that file is written even when
+    # the backend reports "no model published yet", which would cause this check to
+    # return False even though model_version.json is still absent.
+    return not (ROOT / 'warp' / 'models' / 'model_version.json').exists()
+
+
 def _torch_cpu_sentinel() -> Path:
     return VENV_DIR / 'torch_cpu_only.flag'
 
@@ -1539,6 +1570,11 @@ def _repair_worker(on_line, on_done, on_error, broken: list[str]):
             on_line("")
             on_line("Refreshing WARP item database...")
             _run_warp_scraper(on_line)
+        # Download community ML model if this repair added WARP packages for the first time
+        if _get_install_mode() != 'sets':
+            on_line("")
+            on_line("Checking community ML model...")
+            _download_community_model_bootstrap(on_line)
         on_line("Starting SETS-WARP...")
         on_done()
     except Exception as exc:
@@ -1594,6 +1630,14 @@ def main():
 
     # Already running inside our venv → health-check then run
     if running_in_our_venv():
+        # Set Windows taskbar AppUserModelID as early as possible — before any Qt window
+        # is created — so the taskbar shows the correct SETS icon for this process.
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('SETS.WARP.1')
+            except Exception:
+                pass
         # Check for missing/outdated packages (e.g. after pyproject.toml update)
         broken = _quick_check_venv()
         if broken:
@@ -1622,6 +1666,13 @@ def main():
                 args=(lambda msg, **_: print(f"[warp] {msg}", flush=True),),
                 daemon=True,
             ).start()
+        # Download community ML model synchronously if model_version.json is absent
+        # (e.g. after a SETS→SETS+WARP upgrade).  Done before launching main.py so the
+        # startup dialog shows correct model info on the very first run after upgrade.
+        # ModelUpdater._bg_check() contains the authoritative download logic and
+        # correctly handles the "no local model → download from HF" case.
+        if _model_download_needed():
+            print("[bootstrap] ML model missing — will download during startup (populate_cache)", flush=True)
         import importlib.util
         spec = importlib.util.spec_from_file_location("__main__", ROOT / "main.py")
         mod  = importlib.util.module_from_spec(spec)

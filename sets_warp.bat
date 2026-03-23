@@ -1,6 +1,5 @@
 @echo off
-:: SETS.bat — single entry point for SETS (Windows)
-:: bootstrap.py handles venv creation, dependency installation and launch.
+:: sets_warp.bat — Windows entry point for SETS-WARP
 
 cd /d "%~dp0"
 if errorlevel 1 (
@@ -8,24 +7,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
+set SETS_DIR=%~dp0
 set PYTHON=
 
-:: Prefer Python 3.13 via Windows py launcher
 py -3.13 --version >nul 2>&1
 if not errorlevel 1 ( set PYTHON=py -3.13 & goto :found )
 
-:: Try py launcher with other versions
 py -3.14 --version >nul 2>&1
 if not errorlevel 1 ( set PYTHON=py -3.14 & goto :found )
 
 py -3.12 --version >nul 2>&1
 if not errorlevel 1 ( set PYTHON=py -3.12 & goto :found )
 
-:: Try generic py launcher
 py --version >nul 2>&1
 if not errorlevel 1 ( set PYTHON=py & goto :found )
 
-:: Try direct executables
 python3.13 --version >nul 2>&1
 if not errorlevel 1 ( set PYTHON=python3.13 & goto :found )
 

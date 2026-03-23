@@ -64,28 +64,40 @@ class ModelUpdater:
         self,
         sets_root: Path,
         on_updated: Callable[[], None] | None = None,
+        on_progress: Callable[[str, int, int], None] | None = None,
     ) -> None:
         """
         Check for a newer centrally-trained model and download it if available.
         Non-blocking — returns immediately; the check runs in a daemon thread.
+
+        on_progress(text, current, total) — optional splash/progress callback.
         """
         threading.Thread(
             target=self._bg_check,
-            args=(Path(sets_root), on_updated),
+            args=(Path(sets_root), on_updated, on_progress),
             daemon=True,
             name='warp-model-update',
         ).start()
 
     # ── background worker ─────────────────────────────────────────────────────
 
-    def _bg_check(self, sets_root: Path, on_updated: Callable | None) -> None:
+    def _bg_check(
+        self,
+        sets_root: Path,
+        on_updated: Callable | None,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> None:
         try:
             models_dir = sets_root / 'warp' / 'models'
 
             # Always ensure screen_classifier is present (static, not version-managed)
             self._ensure_screen_classifier(models_dir)
 
-            if not self._due_for_check(sets_root):
+            # If model_version.json is absent the model was never downloaded — force a
+            # check regardless of the rate-limit cache (the cache may exist from a prior
+            # attempt that returned "no model published yet").
+            model_missing = not (models_dir / 'model_version.json').exists()
+            if not model_missing and not self._due_for_check(sets_root):
                 return
 
             log.info('ModelUpdater: checking for remote model update...')
@@ -112,7 +124,21 @@ class ModelUpdater:
                 f'— downloading...'
             )
 
-            if self._download_model(models_dir, remote):
+            if self._download_model(models_dir, remote, on_progress=on_progress):
+                # Ensure model_version.json exists — it may be absent from the HF repo.
+                # Write it from the backend metadata so the startup dialog shows info.
+                ver_path = models_dir / 'model_version.json'
+                if not ver_path.exists():
+                    try:
+                        ver_path.write_text(json.dumps({
+                            'trained_at': remote.get('trained_at', ''),
+                            'n_classes':  remote.get('n_classes', 0),
+                            'val_acc':    remote.get('val_acc', 0),
+                            'source':     remote.get('source', 'community'),
+                        }, indent=2), encoding='utf-8')
+                    except Exception as e:
+                        log.warning(f'ModelUpdater: could not write model_version.json: {e}')
+
                 log.info(
                     f'ModelUpdater: model updated — '
                     f'{remote.get("n_classes")} classes, '
@@ -153,11 +179,21 @@ class ModelUpdater:
             log.debug(f'ModelUpdater: /model/version fetch failed: {e}')
             return None
 
-    def _download_model(self, models_dir: Path, remote_meta: dict) -> bool:
+    def _download_model(
+        self,
+        models_dir: Path,
+        remote_meta: dict,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> bool:
         """
         Download model files from HF knowledge repo directly.
         Uses hf_hub_download — no token needed for public repo.
+        on_progress(text, current, total) is called for each file.
         """
+        import os, shutil
+        # Suppress the Windows symlinks warning — we don't need symlinks.
+        os.environ.setdefault('HF_HUB_DISABLE_SYMLINKS_WARNING', '1')
+
         try:
             from huggingface_hub import hf_hub_download
         except ImportError:
@@ -172,7 +208,15 @@ class ModelUpdater:
         # and gets higher rate limits. Falls back to anonymous (public repo).
         token = self._read_hub_token(models_dir.parent)
 
-        for hf_path, local_name in _MODEL_FILES:
+        total = len(_MODEL_FILES)
+        n_classes = remote_meta.get('n_classes', '?')
+        for idx, (hf_path, local_name) in enumerate(_MODEL_FILES):
+            if on_progress:
+                on_progress(
+                    f'Downloading ML model ({n_classes} classes): {local_name}',
+                    idx, total,
+                )
+            log.info(f'ModelUpdater: downloading {local_name} ({idx + 1}/{total})...')
             final_path = models_dir / local_name
             try:
                 downloaded = hf_hub_download(
@@ -189,11 +233,16 @@ class ModelUpdater:
                     return False
                 log.debug(f'ModelUpdater: optional file {hf_path} unavailable: {e}')
 
+        if on_progress:
+            on_progress(f'Installing ML model ({n_classes} classes)…', total - 1, total)
+
         # Copy all files atomically (only after all required files downloaded OK)
-        import shutil
         for src, dst in tmp_files:
             shutil.copy2(src, dst)
             log.debug(f'ModelUpdater: installed {dst.name}')
+
+        if on_progress:
+            on_progress(f'ML model ready  ({n_classes} classes)', total, total)
 
         return True
 

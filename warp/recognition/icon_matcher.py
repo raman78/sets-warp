@@ -345,7 +345,7 @@ class SETSIconMatcher:
                 import torch
                 from torchvision.models import efficientnet_b0
                 import torch.nn as nn
-                with open(label_path) as f:
+                with open(label_path, encoding='utf-8') as f:
                     raw = json.load(f)
                 self._label_map = {int(k): v for k, v in raw.items()}
                 n_classes = len(self._label_map)
@@ -370,7 +370,7 @@ class SETSIconMatcher:
             try:
                 import onnxruntime as ort
                 self._ml_session = ort.InferenceSession(str(model_path))
-                with open(hf_label) as f:
+                with open(hf_label, encoding='utf-8') as f:
                     raw = json.load(f)
                     self._label_map = {int(k): v for k, v in raw.items()}
                 log.info('WARP: HuggingFace ONNX icon classifier loaded')
@@ -405,7 +405,7 @@ class SETSIconMatcher:
         try:
             import onnxruntime as ort
             self._ml_session = ort.InferenceSession(str(model_path))
-            with open(hf_label) as f:
+            with open(hf_label, encoding='utf-8') as f:
                 raw = json.load(f)
                 self._label_map = {int(k): v for k, v in raw.items()}
             log.info('WARP: HuggingFace ONNX icon classifier loaded')

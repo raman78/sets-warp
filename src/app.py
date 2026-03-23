@@ -183,8 +183,25 @@ class SETS():
         log.info('SETS.__init__: context_menu OK')
         self.window.show()
         log.info('SETS.__init__: window.show() OK')
+        if sys.platform == 'win32':
+            self._set_win32_taskbar_icon()
         self.init_backend()
         log.info('SETS.__init__: init_backend launched')
+
+    def _set_win32_taskbar_icon(self):
+        try:
+            import ctypes
+            ico = get_asset_path('icon.ico', self.app_dir)
+            if not ico:
+                return
+            hwnd = int(self.window.winId())
+            hicon = ctypes.windll.user32.LoadImageW(
+                None, ico, 1, 0, 0, 0x10 | 0x40)  # IMAGE_ICON, LR_LOADFROMFILE | LR_DEFAULTSIZE
+            if hicon:
+                ctypes.windll.user32.SendMessageW(hwnd, 0x80, 1, hicon)  # WM_SETICON ICON_BIG
+                ctypes.windll.user32.SendMessageW(hwnd, 0x80, 0, hicon)  # WM_SETICON ICON_SMALL
+        except Exception:
+            pass
 
     def run(self) -> int:
         """
@@ -339,7 +356,11 @@ class SETS():
                 return _QSize(MIN_W, MIN_H)
 
         window = _MainWindow()
-        window.setWindowIcon(load_icon('SETS_icon_small.png', self.app_dir))
+        # Use .ico on Windows for correct taskbar rendering; fall back to PNG elsewhere.
+        _win_icon = load_icon('icon.ico', self.app_dir)
+        if _win_icon.isNull():
+            _win_icon = load_icon('SETS_icon_small.png', self.app_dir)
+        window.setWindowIcon(_win_icon)
         window.setWindowTitle('STO Equipment and Trait Selector')
         window.setMinimumSize(MIN_W, MIN_H)
         # Restore saved geometry — discard any save that's smaller than minimum
