@@ -403,7 +403,6 @@ class LocalTrainWorker(QThread):
                 continue
             crops.append(cv2.resize(crop, (IMG_SIZE, IMG_SIZE)))
             labels.append(name)
-            _slog.info(f'LocalTrainer:   [index] {name!r}')
 
         if crops:
             _slog.info(f'LocalTrainer: {len(crops)} crops from index')
