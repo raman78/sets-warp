@@ -30,6 +30,7 @@ AppUpdatesURL={#AppURL}/releases
 DefaultDirName={localappdata}\{#AppName}
 DefaultGroupName={#AppName}
 PrivilegesRequired=lowest
+DisableDirPage=no
 AllowNoIcons=yes
 
 Compression=lzma2/ultra
