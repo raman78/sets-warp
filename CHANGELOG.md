@@ -1,5 +1,38 @@
 # CHANGELOG
 
+## v1.3b (2026-03-23)
+
+### Bug fixes
+
+- **WARP CORE add bbox**: fixed crash "too many values to unpack" — `match()` returns 4 values, not 3
+- **Local trainer — backbone loading**: `icon_classifier.pt` backbone was never actually loaded; code checked for `.onnx` (doesn't exist) and even that check was cosmetic only (no weights applied). Now loads `.pt` with classifier keys stripped so shape mismatch on head doesn't block backbone restore
+- **Local trainer — stratified split**: flat random split caused classes with 1 sample to land in val only → `val_acc = 0%` → early stop at epoch 5. Fixed with per-class split: classes with ≥ 2 samples contribute 1 to val, rest to train; single-sample classes go to train only
+- **Screen type trainer**: same backbone loading and stratified split fixes as local trainer
+- **`strict=False` shape mismatch**: `strict=False` ignores missing/unexpected keys but still raises on shape mismatch (same key, different `n_classes`). Fixed by stripping `classifier.*` keys from state dict before loading in all four trainers (local icon, local screen, central icon, central screen)
+- **Updater loop**: update dialog appeared on every launch after updating — `_repo_root()` returned `.parent.parent` (wrong directory), `git describe` failed, version fell back to stale constant `1.2b` which never matched remote `1.3b`. Fixed path + updated fallback constant
+- **`.gitignore`**: `.SETS_settings.ini` and `*.ini` user settings files added to ignore list
+
+### Community ML pipeline
+
+- **ModelUpdater at app startup**: background model update check (once per 24 h) now fires 15 s after launch regardless of whether WARP CORE is ever opened; previously only triggered when WARP CORE window was opened
+- **Central trainer — fine-tuning**: `admin_train.py` downloads previous `icon_classifier.pt` and `screen_classifier.pt` from HF before training and loads backbone weights (warm start, LR × 0.3); previously always retrained from ImageNet
+- **Central trainer — `MIN_NEW_CROPS = 10`**: `--skip-if-unchanged` now also skips when fewer than 10 new crops arrived since last run
+- **Central trainer — screen type cap**: per screen-type, if ≥ 30 samples exist, dataset randomly capped to 150; prevents bloat for stable UI screens
+- **Central trainer — bulk download**: replaced per-file `hf_hub_download` (one HEAD+GET per crop) with `snapshot_download` per install_id; suppressed httpx INFO spam
+- **Central trainer — stratified split**: same fix as local trainer applied to both `train()` and `train_screen_classifier()`
+
+### Desktop integration
+
+- **Per-path `.desktop` entries**: each installation path gets its own `.desktop` file keyed by an 8-char sha256 hash of `SCRIPT_DIR`; multiple installations coexist without overwriting each other
+- **Legacy migration**: existing `sets-warp.desktop` is migrated automatically to the hashed name on first run if it belongs to the current install path
+- **Uninstall SETS-WARP**: new button in Settings → writes a `/tmp` shell script that removes the `.desktop` entry and deletes the entire install directory after the app exits
+
+### WARP CORE
+
+- **Auto-accept defaults to ON**
+
+---
+
 ## v1.2b (2026-03-22)
 
 ### Installation
