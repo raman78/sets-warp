@@ -337,89 +337,93 @@ class WarpDialog(QDialog):
         # Set ship info if recognised
         # Set ship name, ship selection and tier from recognised result
         _slog.info(f'WARP: _apply_to_sets ship_name={r.ship_name!r} ship_type={r.ship_type!r} ship_tier={r.ship_tier!r}')
-        if r.ship_name or r.ship_type or r.ship_tier:
-            try:
-                build   = self._sets.build['space']
-                widgets = self._sets.widgets
-                # Set free-text ship name (U.S.S. Barbarossa)
-                if r.ship_name and not build.get('ship_name'):
-                    build['ship_name'] = r.ship_name
-                    widgets.ship['name'].setText(r.ship_name)
-                # Try to select ship class from cache using ship_type string
-                # cache.ships is keyed by wiki Page name
-                if r.ship_type and build.get('ship', '<Pick Ship>') in ('<Pick Ship>', '', None):
-                    from difflib import get_close_matches
-                    ships = getattr(self._sets.cache, 'ships', {})
-                    candidates = list(ships.keys())
-                    # Try exact then fuzzy match
-                    match = None
-                    if r.ship_type in ships:
-                        match = r.ship_type
+        try:
+            from src.buildupdater import clear_ship
+            build   = self._sets.build['space']
+            widgets = self._sets.widgets
+            # Always update free-text ship name from detection
+            if r.ship_name:
+                build['ship_name'] = r.ship_name
+                widgets.ship['name'].setText(r.ship_name)
+            # Always select ship class from detection; clear if not recognized
+            if r.ship_type:
+                from difflib import get_close_matches
+                ships = getattr(self._sets.cache, 'ships', {})
+                candidates = list(ships.keys())
+                # Try exact then fuzzy match
+                match = None
+                if r.ship_type in ships:
+                    match = r.ship_type
+                else:
+                    # Word-subset: OCR may omit subtype words (e.g. 'Nautilus')
+                    ocr_words = set(r.ship_type.lower().split())
+                    subset_hits = [c for c in candidates
+                                   if ocr_words.issubset(set(c.lower().split()))]
+                    if len(subset_hits) == 1:
+                        match = subset_hits[0]
+                    elif len(subset_hits) > 1:
+                        # Pick fewest extra words
+                        match = min(subset_hits,
+                                    key=lambda c: len(set(c.lower().split()) - ocr_words))
                     else:
-                        # Word-subset: OCR may omit subtype words (e.g. 'Nautilus')
-                        ocr_words = set(r.ship_type.lower().split())
-                        subset_hits = [c for c in candidates
-                                       if ocr_words.issubset(set(c.lower().split()))]
-                        if len(subset_hits) == 1:
-                            match = subset_hits[0]
-                        elif len(subset_hits) > 1:
-                            # Pick fewest extra words
-                            match = min(subset_hits,
-                                        key=lambda c: len(set(c.lower().split()) - ocr_words))
+                        hits = get_close_matches(r.ship_type, candidates, n=1, cutoff=0.68)
+                        if hits:
+                            match = hits[0]
+                if match:
+                    _slog.info(f'WARP: auto-selecting ship {match!r} from {r.ship_type!r}')
+                    # Use select_ship logic directly — handles image, tier, slots
+                    try:
+                        from src.callbacks import (
+                            _save_session_slots, _restore_session_slots,
+                            align_space_frame)
+                        from src.widgets import exec_in_thread
+                        sets = self._sets
+                        ship_data = ships[match]
+                        _ship_data = ship_data  # capture for boff writing below
+                        sets.building = True
+                        widgets.ship['button'].setText(match)
+                        # Load image
+                        image_filename = ship_data['image'][5:]
+                        def _on_ship_image(img, _w=widgets):
+                            ship_img = img[0]
+                            _w.ship['image'].set_image(ship_img)
+                        exec_in_thread(sets, sets.images.get_ship_image,
+                                       image_filename, result=_on_ship_image)
+                        # Tier combo
+                        tier = ship_data['tier']
+                        widgets.ship['tier'].clear()
+                        if tier == 6:
+                            widgets.ship['tier'].addItems(('T6', 'T6-X', 'T6-X2'))
+                        elif tier == 5:
+                            widgets.ship['tier'].addItems(('T5', 'T5-U', 'T5-X', 'T5-X2'))
                         else:
-                            hits = get_close_matches(r.ship_type, candidates, n=1, cutoff=0.68)
-                            if hits:
-                                match = hits[0]
-                    if match:
-                        _slog.info(f'WARP: auto-selecting ship {match!r} from {r.ship_type!r}')
-                        # Use select_ship logic directly — handles image, tier, slots
-                        try:
-                            from src.callbacks import (
-                                _save_session_slots, _restore_session_slots,
-                                align_space_frame)
-                            from src.widgets import exec_in_thread
-                            sets = self._sets
-                            ship_data = ships[match]
-                            _ship_data = ship_data  # capture for boff writing below
-                            sets.building = True
-                            widgets.ship['button'].setText(match)
-                            # Load image
-                            image_filename = ship_data['image'][5:]
-                            def _on_ship_image(img, _w=widgets):
-                                ship_img = img[0]
-                                _w.ship['image'].set_image(ship_img)
-                            exec_in_thread(sets, sets.images.get_ship_image,
-                                           image_filename, result=_on_ship_image)
-                            # Tier combo
-                            tier = ship_data['tier']
-                            widgets.ship['tier'].clear()
-                            if tier == 6:
-                                widgets.ship['tier'].addItems(('T6', 'T6-X', 'T6-X2'))
-                            elif tier == 5:
-                                widgets.ship['tier'].addItems(('T5', 'T5-U', 'T5-X', 'T5-X2'))
-                            else:
-                                widgets.ship['tier'].addItem(f'T{tier}')
-                            # Set tier from recognised result (e.g. T6-X2)
-                            ship_tier = r.ship_tier or f'T{tier}'
-                            idx = widgets.ship['tier'].findText(ship_tier)
-                            if idx >= 0:
-                                widgets.ship['tier'].setCurrentIndex(idx)
-                            sets.build['space']['ship'] = match
-                            sets.build['space']['tier'] = ship_tier
-                            if ship_data.get('equipcannons') == 'yes':
-                                widgets.ship['dc'].show()
-                            else:
-                                widgets.ship['dc'].hide()
-                            _save_session_slots(sets)
-                            align_space_frame(sets, ship_data, clear=False)
-                            _restore_session_slots(sets)
-                            sets.building = False
-                        except Exception as _se:
-                            _slog.warning(f'WARP: ship select failed: {_se}')
-                    else:
-                        _slog.info(f'WARP: ship {r.ship_type!r} not found in cache')
-            except Exception as _e:
-                _slog.warning(f'WARP: ship info widget update failed: {_e}')
+                            widgets.ship['tier'].addItem(f'T{tier}')
+                        # Set tier from recognised result (e.g. T6-X2)
+                        ship_tier = r.ship_tier or f'T{tier}'
+                        idx = widgets.ship['tier'].findText(ship_tier)
+                        if idx >= 0:
+                            widgets.ship['tier'].setCurrentIndex(idx)
+                        sets.build['space']['ship'] = match
+                        sets.build['space']['tier'] = ship_tier
+                        if ship_data.get('equipcannons') == 'yes':
+                            widgets.ship['dc'].show()
+                        else:
+                            widgets.ship['dc'].hide()
+                        _save_session_slots(sets)
+                        align_space_frame(sets, ship_data, clear=False)
+                        _restore_session_slots(sets)
+                        sets.building = False
+                    except Exception as _se:
+                        _slog.warning(f'WARP: ship select failed: {_se}')
+                else:
+                    _slog.info(f'WARP: ship {r.ship_type!r} not found in cache — clearing ship')
+                    clear_ship(self._sets)
+            else:
+                # No ship type detected — clear ship selection
+                _slog.info('WARP: no ship type detected — clearing ship selection')
+                clear_ship(self._sets)
+        except Exception as _e:
+            _slog.warning(f'WARP: ship info widget update failed: {_e}')
 
         boff_items = []
         for ri in r.items:

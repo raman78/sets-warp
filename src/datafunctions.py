@@ -51,6 +51,8 @@ def init_backend(self):
         exec_in_thread(self, load_images, self)
         log.info('finish_backend_init: exit_splash')
         exit_splash(self)
+        if self.settings.value('show_startup_summary', True, type=bool):
+            _show_startup_dialog(self)
         log.info('finish_backend_init: DONE')
 
     log.info('init_backend: enter_splash')
@@ -60,6 +62,96 @@ def init_backend(self):
     log.info('init_backend: launching populate_cache thread')
     exec_in_thread(
             self, populate_cache, self, finished=finish_backend_init)
+
+
+def _show_startup_dialog(self):
+    """Show startup summary dialog. Persists 'don't show again' to QSettings."""
+    import json
+    from PySide6.QtWidgets import (
+        QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QFrame)
+
+    sync = getattr(self, '_startup_sync_report', {})
+    BG, FG, ACCENT, DIM = '#1a1a1a', '#eeeeee', '#c59129', '#888888'
+
+    dlg = QDialog(self.window)
+    dlg.setWindowTitle('SETS-WARP — Startup Summary')
+    dlg.setModal(True)
+    dlg.setFixedWidth(380)
+    dlg.setStyleSheet(
+        f'QDialog{{background:{BG};}} '
+        f'QLabel{{color:{FG};font-size:11px;background:transparent;}} '
+        f'QPushButton{{background:{ACCENT};color:{BG};border:none;'
+        f'padding:4px 16px;font-size:11px;font-weight:bold;border-radius:3px;}} '
+        f'QPushButton:hover{{background:#d4a030;}} '
+        f'QCheckBox{{color:{DIM};font-size:10px;}} '
+        f'QCheckBox::indicator{{width:14px;height:14px;border:1px solid {DIM};'
+        f'border-radius:2px;background:#242424;}} '
+        f'QCheckBox::indicator:checked{{background:{ACCENT};border-color:{ACCENT};}}')
+
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(20, 20, 20, 16)
+    lay.setSpacing(8)
+
+    title = QLabel('Startup Summary')
+    title.setStyleSheet(f'color:{ACCENT};font-size:13px;font-weight:bold;')
+    lay.addWidget(title)
+
+    sep = QFrame()
+    sep.setFrameShape(QFrame.Shape.HLine)
+    sep.setStyleSheet('background:#404040;border:none;')
+    sep.setFixedHeight(1)
+    lay.addWidget(sep)
+    lay.addSpacing(4)
+
+    updated = sync.get('updated', 0)
+    failed  = sync.get('failed', 0)
+    checked = sync.get('checked', 0)
+    cargo_updated = sync.get('cargo_updated', False)
+
+    if checked == 0:
+        assets_txt = 'Assets: offline (no update check)'
+    elif updated == 0 and failed == 0:
+        assets_txt = f'Assets: all up to date  ({checked} files checked)'
+    else:
+        parts = ([f'{updated} updated'] if updated else []) + ([f'{failed} failed'] if failed else [])
+        assets_txt = f'Assets: {", ".join(parts)}  ({checked} checked)'
+
+    cargo_txt = 'Cargo data: updated from wiki' if cargo_updated else 'Cargo data: up to date'
+    for txt in (assets_txt, cargo_txt):
+        lay.addWidget(QLabel(txt))
+
+    # WARP model info — only if warp/models/ directory exists (WARP installed)
+    try:
+        models_dir = Path(self.app_dir) / 'warp' / 'models'
+        if models_dir.is_dir():
+            ver_file = models_dir / 'model_version.json'
+            if ver_file.exists():
+                ver = json.loads(ver_file.read_text(encoding='utf-8'))
+                trained = ver.get('trained_at', '?')[:10]
+                n_cls = ver.get('n_classes', '?')
+                src = ver.get('source', 'community')
+                model_txt = f'ML Model: {n_cls} item classes  •  trained {trained}  ({src})'
+            else:
+                model_txt = 'ML Model: not downloaded yet'
+            lay.addWidget(QLabel(model_txt))
+    except Exception:
+        pass
+
+    lay.addSpacing(10)
+    bot = QHBoxLayout()
+    cb = QCheckBox("Don't show again")
+    bot.addWidget(cb)
+    bot.addStretch()
+    ok_btn = QPushButton('OK')
+    ok_btn.setFixedWidth(72)
+    ok_btn.clicked.connect(dlg.accept)
+    ok_btn.setDefault(True)
+    bot.addWidget(ok_btn)
+    lay.addLayout(bot)
+
+    dlg.exec()
+    if cb.isChecked():
+        self.settings.setValue('show_startup_summary', False)
 
 
 def insert_cargo_data(self):
@@ -124,6 +216,7 @@ def populate_cache(self, threaded_worker: ThreadObject):
         _splash_state.update({'text': text, 'current': current, 'total': total, 'hidden': False})
     sync_report = sync.run(on_progress=_sync_progress)
     log.info(f'populate_cache: sync done — {sync_report}')
+    self._startup_sync_report = sync_report
     # Przekaż SyncManager do ImageManager (on-demand downloads + wiki groups)
     self.images.set_sync_manager(sync)
     # If cargo JSON files were updated, reload the in-memory cache

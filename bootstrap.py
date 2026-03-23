@@ -1322,12 +1322,12 @@ def _run_repair_qt(broken: list[str]):
     # ── Worker thread ─────────────────────────────────────────────────────────
     done_flag   = [False]
     error_flag  = [None]
+    _write_log  = _setup_log_writer()
 
     def on_line(msg, replace_last=False):
         # Append to log widget (called from worker thread → must be thread-safe)
         import sys as _sys
         print(msg, flush=True)
-        _write_log = _setup_log_writer()
         _write_log(msg)
         # Schedule UI update on main thread
         QMetaObject.invokeMethod(

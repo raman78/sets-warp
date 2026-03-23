@@ -298,9 +298,21 @@ class SETS():
 
         :return: QApplication, QWidget
         """
+        import sys as _sys
+        if _sys.platform == 'win32':
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('SETS.WARP.1')
+            except Exception:
+                pass
         app = QApplication(argv)
         app.setApplicationName('sets-warp')
         app.setOrganizationName('SETS-WARP')
+        _icon = load_icon('icon.ico', self.app_dir)
+        if _icon.isNull():
+            _icon = load_icon('SETS_icon_small.png', self.app_dir)
+        if not _icon.isNull():
+            app.setWindowIcon(_icon)
         font_database = QFontDatabase()
         font_database.addApplicationFont(
                 get_asset_path('Overpass-VariableFont_wght.ttf', self.app_dir))
@@ -1288,6 +1300,15 @@ class SETS():
         backup_combo.currentIndexChanged.connect(
                 lambda new_i: self.settings.setValue('pref_backup', new_i))
         sec_1.addWidget(backup_combo, 5, 2, alignment=ALEFT | AVCENTER)
+        startup_sum_label = self.create_label('Show Startup Summary')
+        sec_1.addWidget(startup_sum_label, 6, 0, alignment=ALEFT)
+        startup_sum_cb = self.create_checkbox()
+        startup_sum_cb.setChecked(bool(self.settings.value('show_startup_summary', True, type=bool)))
+        startup_sum_cb.checkStateChanged.connect(
+                lambda state: self.settings.setValue(
+                    'show_startup_summary',
+                    state == startup_sum_cb.checkState().Checked))
+        sec_1.addWidget(startup_sum_cb, 6, 2, alignment=ALEFT | AVCENTER)
         scroll_layout.addLayout(sec_1)
 
         # WARP Updates section

@@ -153,7 +153,7 @@ def main():
 
     # 6 ── save
     db = out_dir / 'item_db.json'
-    db.write_text(json.dumps(item_db, indent=2, ensure_ascii=False, sort_keys=True))
+    db.write_text(json.dumps(item_db, indent=2, ensure_ascii=False, sort_keys=True), encoding='utf-8')
     log.info(f'Saved {len(item_db)} items → {db}')
     log.info(f'Icons: {len(list(icon_dir.glob("*.png")))} PNGs in {icon_dir}')
     _print_summary(item_db)
