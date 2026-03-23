@@ -32,7 +32,7 @@ except Exception:
     log = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-VERSION     = '1.3b'           # fallback for zip installs / no git
+VERSION     = '1.4b'           # fallback for zip installs / no git
 GITHUB_REPO = 'raman78/sets-warp'
 API_URL      = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
 TIMEOUT      = 8               # seconds for the API request
@@ -142,7 +142,7 @@ def _check_worker(sets_app) -> None:
 def _show_update_dialog(sets_app, current: str, new_tag: str, notes: str) -> None:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import (
-        QCheckBox, QDialog, QDialogButtonBox, QLabel, QTextEdit, QVBoxLayout)
+        QDialog, QDialogButtonBox, QLabel, QTextEdit, QVBoxLayout)
 
     parent = getattr(sets_app, 'window', None)
     dlg = QDialog(parent)
@@ -171,9 +171,6 @@ def _show_update_dialog(sets_app, current: str, new_tag: str, notes: str) -> Non
                 'then the app will restart.')
     layout.addWidget(QLabel(hint))
 
-    snooze_cb = QCheckBox(f"Don't remind me for v{new_tag}")
-    layout.addWidget(snooze_cb)
-
     bb = QDialogButtonBox(
         QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
     bb.button(QDialogButtonBox.StandardButton.Ok).setText('Update now')
@@ -185,12 +182,12 @@ def _show_update_dialog(sets_app, current: str, new_tag: str, notes: str) -> Non
     accepted = dlg.exec() == QDialog.DialogCode.Accepted
 
     if not accepted:
-        if snooze_cb.isChecked():
-            try:
-                sets_app.settings.setValue('warp_update/snoozed_version', new_tag)
-                log.info(f'WARP updater: snoozed notifications for v{new_tag}')
-            except Exception:
-                pass
+        # "Later" always snoozes this version — re-prompt only on the next release.
+        try:
+            sets_app.settings.setValue('warp_update/snoozed_version', new_tag)
+            log.info(f'WARP updater: snoozed notifications for v{new_tag}')
+        except Exception:
+            pass
         return
 
     if _is_git_install():
