@@ -724,6 +724,7 @@ class WarpCoreWindow(QMainWindow):
         dlg = QFileDialog(self)
         dlg.setWindowTitle('Open Screenshots Folder')
         dlg.setFileMode(QFileDialog.FileMode.Directory)
+        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
         dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
         if last and Path(last).is_dir():
             dlg.setDirectory(last)
