@@ -522,6 +522,7 @@ class WarpCoreWindow(QMainWindow):
         lbl.setFont(QFont('', 10, QFont.Weight.Bold))
         ll.addWidget(lbl)
         self._file_list = QListWidget()
+        self._file_list.setItemDelegate(_ColorPreservingDelegate(self._file_list))
         self._file_list.currentRowChanged.connect(self._load_screenshot)
         self._file_list.itemChanged.connect(self._on_file_item_changed)
         self._file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
