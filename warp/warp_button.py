@@ -78,9 +78,9 @@ def inject_warp_buttons(sets_app, menu_layout) -> None:
 
     log.info('WARP buttons injected into menu bar')
 
-    # Schedule background update check — fires 8 s after app is ready
+    # Schedule background update check — fires 3 s after app is ready
     from updater import schedule_update_check
-    QTimer.singleShot(8000, lambda: schedule_update_check(sets_app))
+    QTimer.singleShot(3000, lambda: schedule_update_check(sets_app))
 
     # Background ML model update check (once per 24 h) — runs regardless of
     # whether the user ever opens WARP CORE

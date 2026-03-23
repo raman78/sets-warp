@@ -42,7 +42,7 @@ TIMEOUT      = 8               # seconds for the API request
 
 def schedule_update_check(sets_app) -> None:
     """
-    Start a background update check 8 s after app launch.
+    Start a background update check 3 s after app launch.
     Skips silently if autoupdate is disabled in Settings.
     """
     if not is_autoupdate_enabled(sets_app):

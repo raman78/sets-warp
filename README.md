@@ -84,7 +84,12 @@ The setup window walks through these steps automatically:
 4. *(SETS+WARP only)* Build WARP item database from STO cargo data
 5. *(SETS+WARP only)* Download community ML model — so WARP works immediately without manual training
 
-The choice between SETS-only and SETS+WARP is saved. You can switch at any time via **Settings → Install SETS + WARP** — the installer or cleanup runs automatically on restart.
+The choice between SETS-only and SETS+WARP is saved and can be changed at any time:
+
+- **Settings → Installation → SETS + WARP** checkbox
+  - **Check** (switch to SETS + WARP): on the next launch, `bootstrap.py` downloads and installs ~10 GB of ML dependencies (PyTorch, EasyOCR, OpenCV, HuggingFace libs).
+  - **Uncheck** (switch to SETS-only): on the next launch, WARP packages (~7 GB) are automatically removed from the virtual environment.
+  - A confirmation dialog appears before the change is committed. The switch takes effect after the app restarts.
 
 ---
 
@@ -96,9 +101,27 @@ git pull
 sets_warp.bat      # Windows (git install)
 ```
 
-SETS-WARP checks for updates automatically 8 seconds after launch and shows a dialog when a new version is available. The update can also be triggered manually from **Settings → SETS-WARP Updates**.
+### App update
 
-`bootstrap.py` detects and installs new dependencies on every launch — no manual `pip install` needed.
+SETS-WARP checks GitHub Releases for a new version 3 seconds after launch (background thread, non-blocking). When a newer release is found, an update dialog appears:
+
+- **Update now** — pulls the update and restarts automatically:
+  - **Git install** (`git clone`): runs `git pull` then restarts
+  - **Zip / installer install**: downloads the release zip from GitHub, extracts it in-place, then restarts
+- **Later** — dismisses the dialog; the check runs again on the next launch
+- **Don't remind me for vX.Y** — snoozes notifications for that specific release; the check still runs, but that version is silently skipped
+
+To disable automatic update checks entirely, go to **Settings → SETS-WARP Updates** and uncheck **Check for updates automatically**. The installed version is shown there as well. There is no manual "check now" button — to force an immediate check, restart the app.
+
+`bootstrap.py` detects and installs new or updated Python dependencies on every launch — no manual `pip install` needed after `git pull`.
+
+### ML model update
+
+The community-trained icon recognition model is updated separately from the app. 15 seconds after launch, a background check contacts the backend to compare model timestamps. If the remote model is newer than the locally installed one, it is downloaded silently from HuggingFace (`sets-sto/warp-knowledge`) and loaded automatically — no restart needed.
+
+- Rate-limited to at most once per 24 hours
+- A locally retrained model (via **WARP CORE → Train Model**) always takes priority — if you trained more recently than the remote, no download occurs
+- `screen_classifier.pt` is also downloaded automatically if it is missing
 
 ---
 
@@ -112,6 +135,7 @@ SETS-WARP checks for updates automatically 8 seconds after launch and shows a di
 → Full instructions: **[WARP_GUIDE.md](WARP_GUIDE.md)**
 → ML pipeline details: **[ML_PIPELINE.md](ML_PIPELINE.md)**
 
+
 ---
 
 ## WARP gets smarter over time
@@ -121,6 +145,17 @@ SETS-WARP checks for updates automatically 8 seconds after launch and shows a di
 **Community model:** Confirmed items are sent anonymously to a shared knowledge base. The central model is retrained hourly from community contributions and downloaded at the next startup. Fresh installs get the latest community model automatically during setup.
 
 → Full technical details: **[ML_PIPELINE.md](ML_PIPELINE.md)**
+
+---
+
+## Uninstalling
+
+Go to **Settings → Uninstall → Uninstall SETS-WARP**. After confirmation the app exits and a cleanup script runs in the background that:
+
+- removes the installation folder (including `.venv/` and all downloaded data)
+- removes the desktop entry (Linux)
+
+This is permanent and cannot be undone. On Windows (installer), use the standard Add/Remove Programs entry instead.
 
 ---
 
