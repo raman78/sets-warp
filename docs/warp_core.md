@@ -1,7 +1,7 @@
 # WARP CORE — Developer Reference
 
 > **User guide** (how to use WARP CORE, train models, review recognition):
-> see **[WARP_GUIDE.md](../WARP_GUIDE.md)** in the project root.
+> see **[WARP_GUIDE.md](WARP_GUIDE.md)**.
 
 ---
 

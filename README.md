@@ -17,8 +17,8 @@ A build planning and screenshot recognition tool for Star Trek Online.
 
 **WARP CORE** — trainer interface built into WARP. Review and correct recognition results, confirm annotations, and retrain the local ML model on your own data to improve accuracy over time.
 
-→ See **[WARP_GUIDE.md](WARP_GUIDE.md)** for a full usage guide with step-by-step instructions for WARP and WARP CORE.
-→ See **[SETS_GUIDE.md](SETS_GUIDE.md)** for SETS build planner documentation.
+→ See **[WARP_GUIDE.md](docs/WARP_GUIDE.md)** for a full usage guide with step-by-step instructions for WARP and WARP CORE.
+→ See **[SETS_GUIDE.md](docs/SETS_GUIDE.md)** for SETS build planner documentation.
 
 ---
 
@@ -132,8 +132,8 @@ The community-trained icon recognition model is updated separately from the app.
 3. WARP detects your ship, reads slot counts, recognises each item, and fills your build automatically.
 4. Use **WARP CORE** to review results, correct mistakes, and confirm items — building up training data that improves recognition over time.
 
-→ Full instructions: **[WARP_GUIDE.md](WARP_GUIDE.md)**
-→ ML pipeline details: **[ML_PIPELINE.md](ML_PIPELINE.md)**
+→ Full instructions: **[WARP_GUIDE.md](docs/WARP_GUIDE.md)**
+→ ML pipeline details: **[ML_PIPELINE.md](docs/ML_PIPELINE.md)**
 
 
 ---
@@ -144,7 +144,7 @@ The community-trained icon recognition model is updated separately from the app.
 
 **Community model:** Confirmed items are sent anonymously to a shared knowledge base. The central model is retrained hourly from community contributions and downloaded at the next startup. Fresh installs get the latest community model automatically during setup.
 
-→ Full technical details: **[ML_PIPELINE.md](ML_PIPELINE.md)**
+→ Full technical details: **[ML_PIPELINE.md](docs/ML_PIPELINE.md)**
 
 ---
 
@@ -173,7 +173,7 @@ Bug reports and suggestions: [GitHub Issues](https://github.com/raman78/sets-war
 
 | File | Contents |
 |------|----------|
-| [WARP_GUIDE.md](WARP_GUIDE.md) | WARP and WARP CORE user guide |
-| [SETS_GUIDE.md](SETS_GUIDE.md) | SETS build planner guide |
-| [ML_PIPELINE.md](ML_PIPELINE.md) | ML pipeline technical reference |
+| [WARP_GUIDE.md](docs/WARP_GUIDE.md) | WARP and WARP CORE user guide |
+| [SETS_GUIDE.md](docs/SETS_GUIDE.md) | SETS build planner guide |
+| [ML_PIPELINE.md](docs/ML_PIPELINE.md) | ML pipeline technical reference |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
