@@ -550,6 +550,7 @@ class WarpCoreWindow(QMainWindow):
         self._ann_widget.annotation_added.connect(self._on_bbox_drawn)
         self._ann_widget.item_selected.connect(self._on_item_selected)
         self._ann_widget.item_deselected.connect(self._on_canvas_deselected)
+        self._ann_widget.bbox_changed.connect(self._on_bbox_changed)
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidget(self._ann_widget)
         self._scroll_area.setWidgetResizable(False)
@@ -1553,6 +1554,21 @@ class WarpCoreWindow(QMainWindow):
         self._review_list.blockSignals(False)
         self._set_review_buttons_enabled(False)
         self._ann_widget.clear_highlight()
+
+    def _on_bbox_changed(self, row: int, new_bbox: tuple):
+        """Shift+LMB move/resize finished — persist the new bbox."""
+        if row < 0 or row >= len(self._recognition_items): return
+        ri = self._recognition_items[row]
+        ri['bbox'] = new_bbox
+        ann_id = ri.get('ann_id', '')
+        if ann_id and self._current_idx >= 0:
+            path = self._screenshots[self._current_idx]
+            for ann in self._data_mgr.get_annotations(path):
+                if ann.ann_id == ann_id:
+                    self._data_mgr.update_annotation(path, ann, bbox=new_bbox)
+                    self._data_mgr.save()
+                    break
+        self._ann_widget.set_review_items(self._recognition_items)
 
     def _on_item_selected(self, ann: dict):
         """Canvas bbox clicked → sync review list selection + fill slot/name fields."""
