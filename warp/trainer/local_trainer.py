@@ -26,6 +26,7 @@ import math
 import os
 import time
 from pathlib import Path
+from typing import Any, Callable, Optional
 
 import numpy as np
 from PySide6.QtCore import QThread, Signal
@@ -65,14 +66,29 @@ class LocalTrainWorker(QThread):
 
     def run(self):
         try:
-            self._train()
+            # Phase 1: Icon Classifier
+            icon_msg = self._train_icons()
+            
+            # Phase 2: Layout Regressor (P4)
+            layout_msg = self._train_layout()
+            
+            summary = icon_msg or ""
+            if layout_msg:
+                summary += "\n\n" + layout_msg
+            
+            if not summary:
+                summary = "Training skipped: not enough confirmed data."
+                
+            self.finished.emit(True, summary)
         except Exception as e:
             log.exception('LocalTrainWorker error')
             self.finished.emit(False, f'Training failed: {e}')
 
     # ── main pipeline ─────────────────────────────────────────────────────────
 
-    def _train(self):
+    # ── Phase 1: Icon Classifier ──────────────────────────────────────────────
+
+    def _train_icons(self) -> Optional[str]:
         from src.setsdebug import log as _slog
         from pathlib import Path
         self.progress.emit(2, 'Loading confirmed annotations...')
@@ -84,11 +100,7 @@ class LocalTrainWorker(QThread):
 
         if len(crops) < MIN_SAMPLES:
             _slog.info('LocalTrainer: no confirmed crops found — skipping icon training')
-            self.finished.emit(
-                True,
-                f'No confirmed icon annotations yet — icon classifier skipped.\n'
-                f'Confirm items in Recognition Review to train icon recognition.')
-            return
+            return 'No confirmed icon annotations yet — icon classifier skipped.'
 
         self.progress.emit(8, f'Loaded {len(crops)} crops, {n_classes} classes.')
 
@@ -97,11 +109,9 @@ class LocalTrainWorker(QThread):
             import torch
             import torchvision
         except ImportError:
-            self.finished.emit(
-                False,
+            raise ImportError(
                 'PyTorch not found in SETS environment.\n'
                 'Run:  pip install torch torchvision onnx  inside the SETS .venv')
-            return
 
         self.progress.emit(12, 'Building dataset...')
 
@@ -365,15 +375,91 @@ class LocalTrainWorker(QThread):
         except Exception as e:
             log.warning(f'Matcher reload failed: {e}')
 
-        self.progress.emit(100,
-            f'Training complete!  {n_classes} classes  '
-            f'best val acc: {best_val_acc:.1%}')
-        self.finished.emit(
-            True,
-            f'Model trained successfully.\n'
-            f'{len(crops)} crops  |  {n_classes} item types  |  '
-            f'val accuracy: {best_val_acc:.1%}\n\n'
-            f'Saved to: {pt_path}')
+        self.progress.emit(90, 'Icon training complete.')
+        
+        return (f'Icon Classifier trained successfully.\n'
+                f'{len(crops)} crops | {n_classes} classes | '
+                f'accuracy: {best_val_acc:.1%}')
+
+    # ── Phase 2: Layout Regressor (P4) ────────────────────────────────────────
+
+    def _train_layout(self) -> Optional[str]:
+        """Trains the CNN layout regressor (P4) on confirmed UI structures."""
+        from src.setsdebug import log as _slog
+        import torch
+        import torch.nn as nn
+        import cv2
+        from warp.trainer.layout_dataset_builder import LayoutDatasetBuilder
+        from warp.trainer.layout_trainer import LayoutRegressor, REGRESSOR_SLOTS, NUM_SLOTS, OUTPUT_SIZE
+
+        self.progress.emit(91, 'Loading confirmed layouts for P4...')
+        builder = LayoutDatasetBuilder(self._sets_root)
+        samples = builder.build()
+        
+        if len(samples) < 5:
+            _slog.info('LocalTrainer: not enough confirmed layouts for P4 training (min 5)')
+            return
+
+        self.progress.emit(92, f'Training Layout CNN on {len(samples)} samples...')
+        
+        # Hyper-parameters for layout
+        LAYOUT_EPOCHS = 20
+        LAYOUT_LR     = 5e-4
+        LAYOUT_BATCH  = 4 # Layout images are large-ish
+
+        # Build training tensors
+        x_train, y_train = [], []
+        for s in samples:
+            img = cv2.imread(str(s['image_path']), cv2.IMREAD_GRAYSCALE)
+            if img is None: continue
+            # Resize to model input size (224x224)
+            img_resized = cv2.resize(img, (224, 224))
+            x_train.append(img_resized[np.newaxis, :, :].astype(np.float32) / 255.0)
+            
+            # Label vector (normalized coords for REGRESSOR_SLOTS)
+            vec = np.zeros(NUM_SLOTS * 4, dtype=np.float32)
+            for i, slot_name in enumerate(REGRESSOR_SLOTS):
+                if slot_name in s['labels']:
+                    bbox = s['labels'][slot_name] # [nx, ny, nw, nh]
+                    vec[i*4 : i*4+4] = bbox
+            y_train.append(vec)
+
+        if not x_train: return
+        
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = LayoutRegressor().to(device)
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=LAYOUT_LR)
+
+        x_t = torch.from_numpy(np.array(x_train)).to(device)
+        y_t = torch.from_numpy(np.array(y_train)).to(device)
+
+        model.train()
+        for epoch in range(LAYOUT_EPOCHS):
+            # Simple batching (not ideal for large datasets but ok for P4 alpha)
+            optimizer.zero_grad()
+            pred = model(x_t)
+            loss = criterion(pred, y_t)
+            loss.backward()
+            optimizer.step()
+            
+            if (epoch + 1) % 5 == 0:
+                self.progress.emit(92 + int(epoch/LAYOUT_EPOCHS*5), 
+                                   f'Layout Epoch {epoch+1}/{LAYOUT_EPOCHS} loss={loss.item():.4f}')
+
+        # Save P4 model
+        models_dir = self._sets_root / 'warp' / 'models'
+        models_dir.mkdir(parents=True, exist_ok=True)
+        pt_path = models_dir / 'layout_regressor.pt'
+        
+        model.eval().to('cpu')
+        torch.save(model.state_dict(), str(pt_path))
+        _slog.info(f'LocalTrainer: P4 Layout Regressor saved to {pt_path.name}')
+        self.progress.emit(100, 'Layout training complete.')
+        
+        return (f'Layout Regressor (P4) trained successfully.\n'
+                f'{len(samples)} layouts | Loss: {loss.item():.4f}\n'
+                f'Saved to: {pt_path.name}')
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _collect_crops(self) -> tuple[list, list]:

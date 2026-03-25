@@ -29,6 +29,7 @@ OCR_CONF_THRESHOLD = 0.40
 LABEL_FUZZY_CUTOFF = 0.68
 # Calibration file is stored in training_data
 CALIBRATION_FILE   = Path('warp') / 'training_data' / 'anchors.json'
+LAYOUT_MODEL_PATH  = Path('warp') / 'models' / 'layout_regressor.pt'
 
 # Slot order for space builds
 # Slot names must match warp_importer.py SPACE_SLOT_ORDER exactly
@@ -82,6 +83,12 @@ class LayoutDetector:
             return self._detect_boffs(img)
         if build_type == 'SPEC':
             return self._detect_spec(img)
+
+        # ── Strategy 0: CNN Layout Regression (P4) ────────────────────────────
+        cnn_layout = self._detect_via_cnn(img, build_type)
+        if cnn_layout:
+            _slog.info(f'LayoutDetector: Strategy 0 (CNN) found {len(cnn_layout)} slot groups')
+            return cnn_layout
 
         profile = ship_profile or {}
         if build_type == 'GROUND':
@@ -209,40 +216,99 @@ class LayoutDetector:
                 return
 
         self._calibration['learned'].append(entry)
+
+        # P3: LRU cap — keep at most 200 entries, evict oldest
+        MAX_LEARNED = 200
+        if len(self._calibration['learned']) > MAX_LEARNED:
+            self._calibration['learned'] = self._calibration['learned'][-MAX_LEARNED:]
+            _slog.info(f'LayoutDetector: LRU eviction — trimmed to {MAX_LEARNED} entries')
+
         self._save_calibration()
         _slog.info(
             f'LayoutDetector: saved layout [{screen_type}] {w}x{h} '
-            f'({len(slot_map)} slots, total={total + 1})'
+            f'({len(slot_map)} slots, total={len(self._calibration["learned"])})'
         )
 
     def _detect_via_learned_layouts(self, img, build_type, slot_order, profile):
-        """Find the best matching learned layout signature."""
+        """Find the best matching learned layout by scoring pixel brightness.
+
+        P3 improvement: instead of blindly picking the most recent layout,
+        score each candidate by checking whether bright pixels (icons) exist
+        at the predicted slot positions.  The layout whose predicted positions
+        best match actual icon regions in the image wins.
+        """
         if not self._calibration or 'learned' not in self._calibration:
             return None
-        
+
         h, w = img.shape[:2]
         aspect = round(w / h, 3)
-        
-        # Filter by screen type and similar aspect ratio
-        candidates = [e for e in self._calibration['learned'] 
-                     if e['type'] == build_type and abs(e['aspect'] - aspect) < 0.05]
-        
-        if not candidates: return None
 
-        # Pick the most recent matching entry
-        best = candidates[-1]
-        _slog.info(f'LayoutDetector: Strategy 1 (learned) — found {len(candidates)} matching layouts '
-                   f'for [{build_type}] aspect={aspect}, using latest ({best["res"]})')
-        
+        # Filter by screen type and similar aspect ratio
+        candidates = [e for e in self._calibration['learned']
+                      if e['type'] == build_type and abs(e['aspect'] - aspect) < 0.05]
+
+        if not candidates:
+            return None
+
+        # ── Score each candidate by pixel brightness at predicted Y rows ─────
+        # Convert to grayscale once for fast brightness sampling
+        import cv2
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        best_score = -1
+        best_entry = None
+
+        for entry in candidates:
+            score = 0
+            checked = 0
+            for slot_name, geo in entry['slots'].items():
+                if isinstance(geo, (int, float)):
+                    continue  # old-format entry
+                # Predicted center Y and X region for this slot
+                cy = int(geo['y_rel'] * h)
+                x0 = int(geo['x0_rel'] * w)
+                bw = max(1, int(geo['w_rel'] * w))
+                bh = max(1, int(geo['h_rel'] * h))
+                step = max(bw, int(geo['step_rel'] * w))
+                count = geo.get('count', 1)
+
+                # Sample a small horizontal strip at predicted Y
+                y1 = max(0, cy - bh // 4)
+                y2 = min(h, cy + bh // 4)
+                for j in range(min(count, 8)):  # max 8 icons
+                    ix = x0 + j * step
+                    ix2 = min(w, ix + bw)
+                    if ix >= w or y1 >= y2:
+                        continue
+                    patch = gray[y1:y2, ix:ix2]
+                    if patch.size == 0:
+                        continue
+                    checked += 1
+                    avg_brightness = float(patch.mean())
+                    if avg_brightness > 40:  # icon region (brighter than dark BG)
+                        score += 1
+
+            # Normalise: fraction of predicted positions that have bright pixels
+            norm_score = score / max(checked, 1)
+            if norm_score > best_score or (norm_score == best_score and
+                    entry.get('timestamp', 0) > (best_entry or {}).get('timestamp', 0)):
+                best_score = norm_score
+                best_entry = entry
+
+        if best_entry is None:
+            return None
+
+        _slog.info(f'LayoutDetector: Strategy 1 (learned) — scored {len(candidates)} layouts '
+                   f'for [{build_type}] aspect={aspect}, best score={best_score:.2f} '
+                   f'({best_entry["res"]})')
+
+        # ── Build result from best layout ────────────────────────────────────
         result = {}
         for slot_name in slot_order:
-            geo = best['slots'].get(slot_name)
+            geo = best_entry['slots'].get(slot_name)
             if geo is None:
                 continue
-
-            # Backward compatibility: old entries stored a plain float (y_rel only)
             if isinstance(geo, (int, float)):
-                _slog.debug(f'LayoutDetector: slot {slot_name} has old-format entry, skipping')
                 continue
 
             n_icons = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
@@ -690,3 +756,68 @@ class LayoutDetector:
         if cfile:
             cfile.parent.mkdir(parents=True, exist_ok=True)
             cfile.write_text(json.dumps(self._calibration, indent=2))
+    def _detect_via_cnn(
+        self,
+        img: np.ndarray,
+        build_type: str
+    ) -> dict[str, list[tuple[int, int, int, int]]] | None:
+        """
+        P4 Strategy: Use the MobileNetV3-Small regressor to predict all slots at once.
+        Requires layout_regressor.pt and torch.
+        """
+        if not LAYOUT_MODEL_PATH.exists():
+            return None
+
+        try:
+            import torch
+            import cv2
+            from warp.trainer.layout_trainer import LayoutRegressor, REGRESSOR_SLOTS, NUM_SLOTS
+            
+            # Load model (cached if possible in a real app, but for now we load)
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            model = LayoutRegressor()
+            model.load_state_dict(torch.load(str(LAYOUT_MODEL_PATH), map_location=device, weights_only=True))
+            model.to(device).eval()
+            
+            # Preprocess
+            h, w = img.shape[:2]
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            blob = cv2.resize(gray, (224, 224)).astype(np.float32) / 255.0
+            t_inp = torch.from_numpy(blob).unsqueeze(0).unsqueeze(0).to(device)
+            
+            # Inference
+            with torch.no_grad():
+                pred = model(t_inp).squeeze(0).cpu().numpy() # [56]
+            
+            # Post-process: denormalize and filter by build_type
+            active_slots = GROUND_SLOT_ORDER if build_type == 'GROUND' else SPACE_SLOT_ORDER_CARRIER
+            result = {}
+            
+            for i, slot_name in enumerate(REGRESSOR_SLOTS):
+                if slot_name not in active_slots:
+                    continue
+                
+                # Get [nx, ny, nw, nh]
+                nx, ny, nw, nh = pred[i*4 : i*4+4]
+                
+                # Minimum confidence check: if coords are [0,0,0,0], skip
+                if nw < 0.01 or nh < 0.01:
+                    continue
+                
+                # Denormalize to pixel coordinates
+                px = int(nx * w)
+                py = int(ny * h)
+                pw = int(nw * w)
+                ph = int(nh * h)
+                
+                # Simple validation: must be within image
+                if px < 0 or py < 0 or px + pw > w or py + ph > h:
+                    continue
+                    
+                result[slot_name] = [(px, py, pw, ph)]
+            
+            return result if result else None
+            
+        except Exception as e:
+            log.warning(f"Strategy 0 (CNN) failed: {e}")
+            return None

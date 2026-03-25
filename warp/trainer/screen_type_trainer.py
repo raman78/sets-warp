@@ -379,7 +379,7 @@ class ScreenTypeTrainerWorker:
         meta_path   = self._models_dir / 'screen_classifier_meta.json'
         try:
             torch.save(model.state_dict(), str(pt_path))
-            _slog.info(f'ScreenTypeTrainer: model saved to {pt_path}')
+            log.info(f'ScreenTypeTrainer: model saved to {pt_path}')
         except Exception as e:
             done(False, f'Model save failed: {e}')
             return

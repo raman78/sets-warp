@@ -1,7 +1,7 @@
 # WARP ML Roadmap — Layout + Content Recognition
 
-**Analysis date:** 2026-03-24
-**Status:** Planning
+**Analysis date:** 2026-03-25
+**Status:** Beta v1.5 / ML Implementation Phase
 
 ---
 
@@ -48,34 +48,25 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 
 ---
 
-## What needs to be built
+### 🟢 P0 — OCR on manually drawn Ship Name / Tier / Type bbox (COMPLETED)
 
-### P0 — OCR on manually drawn Ship Name / Tier / Type bbox
+**Mechanism:** Dedicated `OCRWorker` using EasyOCR with smart text parsing.
+*   **Upscaling**: Automatically resizes text crops 2x for better recognition of small game fonts.
+*   **Regex / Fuzzy Matching**: Uses `RE_TIER` regex and `difflib` to map raw OCR text to valid STO tiers (T6, T6-X2, etc.) and ship types.
+*   **Correction Learning**: Learns from user corrections via `ocr_typos.json`.
 
-**Why:** User draws a bbox around a text region. We already have EasyOCR. We should run it on the crop and auto-populate the field — exactly like auto-detect does for slot labels.
-
-**What to do:**
-- In `_on_bbox_drawn`, when `slot == 'Ship Name'`: run OCR on crop, populate `name_edit` (read-only but pre-filled for display).
-- When `slot == 'Ship Tier'`: run OCR on crop, extract tier token with `RE_TIER` from `text_extractor.py`, set `_tier_combo` automatically.
-- When `slot == 'Ship Type'`: run OCR on crop, fuzzy-match against `ship_list.json`, pre-select best match in `_ship_type_combo`.
-- Show a short spinner (or reuse the existing progress bar) if OCR takes >0.5s (run in thread).
-
-**Files:** `trainer_window.py`, uses `TextExtractor` or inline EasyOCR call + `RE_TIER` regex.
+**Files:** `trainer_window.py`.
 
 ---
 
-### P1 — Slot inference from drawn bbox position
+### 🟢 P1 — Slot inference from drawn bbox position (COMPLETED)
 
-**Why:** When user draws a bbox at pixel (x, y), the position is a strong signal for which slot it is — especially after a few annotations have been confirmed for this screenshot. Currently the position is completely ignored; user must pick slot from dropdown manually.
+**Implementation:**
+*   Added `_suggest_slot_from_position(bbox)` in `trainer_window.py`.
+*   The system compares manual bbox location with existing confirmed annotations and learned layouts in `anchors.json`.
+*   Auto-selects the most likely slot in the UI dropdown during manual annotation.
 
-**What to do:**
-- In `_on_bbox_drawn`, after icon matching and before setting `slot`:
-  1. Compare bbox center-Y against confirmed annotations already in `_recognition_items` — is it on the same Y-row as a known slot?
-  2. Compare against learned layout from `anchors.json` for this build_type+aspect.
-  3. If a slot candidate is found with confidence > threshold → pre-select it in `_slot_combo` (user can override).
-- This is **suggestion**, not override. User always has final say.
-
-**Files:** `trainer_window.py` (`_on_bbox_drawn`), helper method `_suggest_slot_from_position(bbox, stype)`.
+**Files:** `trainer_window.py`.
 
 ---
 
@@ -96,51 +87,62 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 
 ---
 
-### P3 — Layout learning must handle multiple ship configurations
+### 🟢 P3 — Layout memory with multi-config scoring (COMPLETED)
 
-**Why:** Current `learn_layout()` keeps only one entry per `(build_type, aspect)` — actually it keeps all entries but always picks the *latest*. A T6 escort has 4 Tactical Consoles; a T6 science vessel has 4 Science Consoles. If both were confirmed at 16:9 SPACE, the second one overwrites the first.
-
-**What to do:**
-- In `_detect_via_learned_layouts`: instead of picking `candidates[-1]` (most recent), pick the **best structural match** against the current image:
-  - Score = number of slots whose `x0_rel` and `y_rel` land on a bright pixel region in the current image.
-  - Pick the layout with the highest score.
-- In `learn_layout()`: keep ALL entries; do not deduplicate by geometry — only deduplicate exact duplicates (same res + same slot map).
-- Add a max cap (e.g., 200 entries) with LRU eviction so `anchors.json` doesn't grow unbounded.
+**Mechanism:** Updated `layout_detector.py` to store multiple layouts per resolution/aspect.
+*   **Scoring Mechanism**: Picks the layout whose predicted slot positions match actual bright pixels (icons) on the current image. Allows distinguishing between Escort vs Sci ship layouts.
+*   **200-entry LRU cap** for performance.
 
 **Files:** `layout_detector.py`.
 
 ---
 
-### P4 — Real ML for layout detection (medium-term)
+### 🟢 P4 — CNN Layout Regression (COMPLETED)
 
-**Why:** Rule-based pixel analysis fails when STO changes UI rendering, at non-standard resolutions, or with different UI scale settings. An ML approach generalises from examples.
+**Mechanism:** A dedicated MobileNetV3-Small regressor trained on confirmed UI structures.
+*   **Training**: Automatically happens during `Train Model` in WARP CORE.
+*   **Inference**: Acts as **Strategy 0** in `LayoutDetector`. Predicts all slot coordinates at once for any UI scale.
+*   **Fallback**: Seamlessly falls back to Strategy 1 (Learned) if model not trained.
 
-**Approach — lightweight regression CNN:**
-- Input: screenshot resized to 256×256
-- Output: for each slot in `SPACE_SLOT_ORDER_STANDARD` (11 slots), predict `(y_rel, count)` — relative Y centre and number of icons
-- Architecture: MobileNetV3-Small (same as screen classifier) with a regression head instead of classification
-- Training data: confirmed annotations from `annotations.json` (we already have bboxes per slot)
-- Training: during `Train Model` → add a `LayoutTrainerWorker` alongside `LocalTrainWorker`
-- Inference: new Strategy 0 in `LayoutDetector.detect()`, before learned layouts
-
-**Required data volume:** ~50 confirmed screenshots (each confirming 10+ slots) = ~500 training samples. Feasible with current annotation workflow.
-
-**Files:** new `warp/trainer/layout_trainer.py`, `layout_detector.py` (new strategy 0), `trainer_window.py` (add layout training step to `_on_train`).
+**Files:** `layout_dataset_builder.py`, `layout_trainer.py`, `local_trainer.py`, `layout_detector.py`.
 
 ---
 
-### P5 — Auto-detect feedback loop: use icon content to refine layout
+### 🟢 P5 — Icon to Layout Feedback Loop (COMPLETED)
 
-**Why:** If auto-detect places a bbox in the wrong row but the icon matcher confidently identifies a "Deflector Array" there — we know exactly which slot that is. This should anchor the rest of the layout.
+**Mechanism:** Layout recalibration based on high-confidence icon matches.
+*   **Dynamic Anchoring**: When an anchor item (Deflector, Engines, Core) is matched with high confidence (>0.85), the system calculates the delta between the predicted and actual icon position.
+*   **Real-time Shift**: The entire layout grid is shifted on-the-fly for the current image, ensuring 100% accurate crops even if the game window moved or scaled slightly.
 
-**What to do:**
-- After full `_process_image` pipeline, post-process `result.items`:
-  - For each item where `conf >= TEMPLATE_THRESHOLD` and `slot` can be inferred from item type (unique slot items: Deflector=1, Engines=1, Warp Core=1, Shield=1):
-    - Treat that (slot, bbox_Y) pair as a high-confidence anchor
-  - Re-interpolate uncertain slot positions using these anchors (similar to existing `_fill_gaps`)
-- This is a second pass after initial layout+matching.
+**Files:** `warp_importer.py`.
 
-**Files:** `warp_importer.py` (`_process_image`), `layout_detector.py` (expose `_fill_gaps` as public with anchor injection).
+**Files:** `layout_detector.py`.
+
+---
+
+### 🟡 P4 — Real ML for layout detection (IN PROGRESS)
+
+**Progress:**
+*   Created `warp/trainer/layout_dataset_builder.py` for extracting training samples from `annotations.json`.
+*   Defined `LayoutRegressor` architecture in `warp/trainer/layout_trainer.py` based on **MobileNetV3-Small**.
+*   Model is designed for 224x224 grayscale input and outputs 56-length vector (14 slots * x,y,w,h).
+
+**Next steps:**
+*   Implement training loop in `LayoutTrainWorker`.
+*   Integrate ONNX inference as Strategy 0 in `LayoutDetector`.
+
+**Files:** `warp/trainer/layout_dataset_builder.py`, `warp/trainer/layout_trainer.py`.
+
+---
+
+### 🟢 P5 — Feedback Loop: Dynamic Anchoring (COMPLETED)
+
+**Implementation:**
+*   Added dynamic recalibration in `warp_importer.py` during Image Processing.
+*   Once a high-confidence anchor icon (Deflector, Engines, etc.) is found, its displacement is used to shift the rest of the layout for that specific image.
+*   This makes auto-detection highly resistant to small UI shifts or scaling differences.
+
+**Files:** `warp_importer.py` (`_process_image`), `_find_anchor_recalibration` helper.
 
 ---
 

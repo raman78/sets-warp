@@ -31,6 +31,10 @@ TEMPLATE_CONF_THRESHOLD = 0.72
 # Minimum confidence to include a recognition result in output
 # Below this threshold the matcher is essentially guessing
 MIN_ACCEPT_CONF = 0.40
+# ── P5: Anchoring constants ──────────────────────────────────────────────────
+# Slots used as reference points for layout recalibration
+ANCHOR_SLOTS = frozenset({'Deflector', 'Engines', 'Warp Core', 'Shield'})
+RECALIBRATION_MIN_CONF = 0.85
 
 
 # ── Canonical slot order ────────────────────────────────────────────────────────
@@ -645,6 +649,11 @@ class WarpImporter:
         )
         processed_bboxes = 0
 
+        # P5: Dynamic anchoring state
+        current_dy = 0
+        found_anchor = False
+        _gear_type = build_type in ('SPACE', 'SPACE_MIXED')
+
         # Recognition stats counters (autodetect vs WARP CORE fallback)
         _stat_auto_n    = 0   # items recognized by ML pipeline
         _stat_core_n    = 0   # items recognized via WARP CORE session examples
@@ -667,13 +676,38 @@ class WarpImporter:
                     pct = _base_pct + int(processed_bboxes / total_bboxes * (_end_pct - _base_pct))
                     self._progress_callback(pct, f'{slot_name} {idx + 1}/{len(bboxes)}')
                 processed_bboxes += 1
-                crop = self._crop(img, bbox)
+                
+                # Apply current dynamic Y-offset (P5)
+                bx, by, bw, bh = bbox
+                crop = self._crop(img, (bx, by + current_dy, bw, bh))
+                
                 if crop is None or crop.size == 0:
                     _slog.info(f'  [{slot_name}][{idx}] bbox={bbox} — empty crop, skipped')
                     continue
                 name, conf, thumb, used_session = matcher.match(crop, candidate_names=candidates)
-                _tag = '[WARP CORE]' if used_session else '[Autodetect]'
-                _slog.info(f'  {_tag} [{slot_name}][{idx}] bbox={bbox} crop={crop.shape[1]}x{crop.shape[0]} → {name!r} conf={conf:.2f}')
+                
+                # ── P5: Icon-to-Layout Feedback Loop ──────────────────────────
+                # If we haven't anchored yet on this image, check if this is a good anchor
+                if (not confirmed_layout and _gear_type and 
+                    slot_name in ANCHOR_SLOTS and not found_anchor):
+                    
+                    if conf < RECALIBRATION_MIN_CONF:
+                        # Initial match poor? Scan vertically for a better anchor!
+                        dy_off, dy_conf, dy_name = self._find_anchor_recalibration(
+                            img, slot_name, bbox, candidates)
+                        if dy_conf > RECALIBRATION_MIN_CONF:
+                            current_dy = dy_off
+                            found_anchor = True
+                            name, conf, thumb, used_session = dy_name, dy_conf, None, False
+                            _slog.info(f"  [P5] Recalibrated layout Y-offset: {current_dy:+}px "
+                                       f"(via {slot_name!r} conf={conf:.2f})")
+                    elif conf > 0.92:
+                        # Already a solid match at current_dy=0, lock it as anchor!
+                        found_anchor = True
+                
+                _tag = '[P5 Anchored]' if found_anchor and current_dy != 0 else ('[WARP CORE]' if used_session else '[Autodetect]')
+                _slog.info(f'  {_tag} [{slot_name}][{idx}] dy={current_dy:+} bbox={bbox} crop={crop.shape[1]}x{crop.shape[0]} → {name!r} conf={conf:.2f}')
+                
                 if not name:
                     continue
                 # Reject low-confidence results — below threshold is a guess
@@ -1044,3 +1078,40 @@ class WarpImporter:
                 candidate = Path('.config') / 'cargo'
             self._shipdb = ShipDB(candidate)
         return self._shipdb
+
+    def _find_anchor_recalibration(
+        self,
+        img: np.ndarray,
+        slot_name: str,
+        bbox: tuple[int, int, int, int],
+        candidates: set[str] | None
+    ) -> tuple[int, float, str]:
+        """
+        P5 Helper: Scan vertically around the predicted bbox to find the best 
+        structural anchor match. Returns (dy, confidence, item_name).
+        """
+        best_dy = 0
+        best_conf = 0.0
+        best_name = ''
+        bx, by, bw, bh = bbox
+        matcher = self._get_matcher()
+        h, w = img.shape[:2]
+
+        # Scan +/- 40px in 4px steps
+        # This covers most UI shifts/scales in STO logs
+        for dy in range(-40, 41, 4):
+            # Safe crop region
+            y1 = max(0, by + dy)
+            y2 = min(h, y1 + bh)
+            if y2 <= y1:
+                continue
+            crop = img[y1:y2, bx:bx+bw]
+            name, conf, _, _ = matcher.match(crop, candidate_names=candidates)
+            if conf > best_conf:
+                best_conf = conf
+                best_dy = dy
+                best_name = name
+                if conf > 0.96: # Early exit for near-perfect match
+                    break
+        
+        return best_dy, best_conf, best_name

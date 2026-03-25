@@ -1591,6 +1591,13 @@ class WarpCoreWindow(QMainWindow):
                         crop_bgr = img[y:y+h, x:x+w].copy()
                         from src.setsdebug import log as _slog
                         _slog.info(f'add_bbox: crop {x},{y},{w},{h} px from {path.name}')
+                        # ── P1: suggest slot from bbox position ──────────────
+                        suggested = self._suggest_slot_from_position(bbox)
+                        if suggested:
+                            self._slot_combo.blockSignals(True)
+                            self._slot_combo.setCurrentText(suggested)
+                            self._slot_combo.blockSignals(False)
+                            _slog.info(f'add_bbox: P1 slot suggestion → {suggested!r}')
                         from warp.recognition.icon_matcher import SETSIconMatcher
                         _current_slot = self._slot_combo.currentText()
                         if _current_slot not in NON_ICON_SLOTS:
@@ -1805,6 +1812,100 @@ class WarpCoreWindow(QMainWindow):
                 self._on_accept()
         except:
             pass
+
+    def _suggest_slot_from_position(self, bbox: tuple) -> str:
+        """
+        P1 — Infer the most likely slot for a newly-drawn bbox based on its
+        Y-position, comparing against:
+          1. Already confirmed/pending annotations on this screenshot
+          2. Learned layouts from anchors.json
+
+        Returns the slot name or '' if no confident match.
+        """
+        bx, by, bw, bh = bbox
+        cy = by + bh // 2  # center Y of the drawn bbox
+
+        stype = 'UNKNOWN'
+        if self._current_idx >= 0:
+            stype = self._screen_types.get(
+                self._screenshots[self._current_idx].name, 'UNKNOWN')
+        group_key = SCREEN_TO_SLOT_GROUP.get(stype, 'ALL')
+        allowed = set(SLOT_GROUPS.get(group_key, ALL_SLOTS))
+
+        # ── Source 1: existing annotations on this screenshot ────────────────
+        # Build a map: slot → average center-Y from current recognition items
+        slot_y_map: dict[str, list[int]] = {}
+        for ri in self._recognition_items:
+            ri_bbox = ri.get('bbox')
+            ri_slot = ri.get('slot', '')
+            if ri_bbox and ri_slot and ri_slot in allowed:
+                ri_cy = ri_bbox[1] + ri_bbox[3] // 2
+                slot_y_map.setdefault(ri_slot, []).append(ri_cy)
+
+        if slot_y_map:
+            # Find the slot whose average Y is closest to our bbox
+            best_slot = ''
+            best_dist = float('inf')
+            for slot, ys in slot_y_map.items():
+                avg_y = sum(ys) / len(ys)
+                dist = abs(cy - avg_y)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_slot = slot
+            # Accept if within half an icon height (~30-40px typically)
+            threshold = bh * 0.6
+            if best_dist <= threshold:
+                from src.setsdebug import log as _sl
+                _sl.info(f'slot_suggest: bbox cy={cy} → {best_slot!r} (dist={best_dist:.0f}, '
+                         f'threshold={threshold:.0f}, source=annotations)')
+                return best_slot
+
+        # ── Source 2: learned layouts from anchors.json ───────────────────────
+        if self._current_idx >= 0:
+            try:
+                import cv2
+                from warp.recognition.layout_detector import LayoutDetector
+                build_type = self._STYPE_TO_BUILD.get(stype)
+                if build_type:
+                    img = cv2.imread(str(self._screenshots[self._current_idx]))
+                    if img is not None:
+                        h, w = img.shape[:2]
+                        detector = LayoutDetector()
+                        cal = detector._calibration
+                        if cal and 'learned' in cal:
+                            aspect = round(w / h, 3)
+                            candidates = [
+                                e for e in cal['learned']
+                                if e['type'] == build_type
+                                and abs(e['aspect'] - aspect) < 0.05
+                            ]
+                            if candidates:
+                                layout = candidates[-1]  # most recent
+                                best_slot = ''
+                                best_dist = float('inf')
+                                for slot_name, geo in layout['slots'].items():
+                                    if slot_name not in allowed:
+                                        continue
+                                    if isinstance(geo, (int, float)):
+                                        slot_cy = int(geo * h)
+                                    else:
+                                        slot_cy = int(geo['y_rel'] * h)
+                                    dist = abs(cy - slot_cy)
+                                    if dist < best_dist:
+                                        best_dist = dist
+                                        best_slot = slot_name
+                                threshold = bh * 0.8
+                                if best_slot and best_dist <= threshold:
+                                    from src.setsdebug import log as _sl
+                                    _sl.info(f'slot_suggest: bbox cy={cy} → {best_slot!r} '
+                                             f'(dist={best_dist:.0f}, threshold={threshold:.0f}, '
+                                             f'source=anchors.json)')
+                                    return best_slot
+            except Exception as e:
+                from src.setsdebug import log as _sl
+                _sl.debug(f'slot_suggest: anchors lookup failed: {e}')
+
+        return ''
 
     def _rematch_with_slot(self, row: int, slot: str, crop_bgr):
         """Re-run icon matching for an existing crop when the user changes the slot."""
@@ -2525,7 +2626,7 @@ class WarpCoreWindow(QMainWindow):
                 icon_worker.finished = _FakeSignal(lambda ok, msg: results.update({'ok': ok, 'msg': msg}))
                 # Override isInterruptionRequested to propagate from parent thread
                 icon_worker.isInterruptionRequested = self_.isInterruptionRequested
-                icon_worker._train()
+                icon_worker.run()
                 self_.finished.emit(results.get('ok', False), results.get('msg', 'Done'))
         self._train_worker = _CombinedTrainWorker(parent=self)
         self._train_worker.progress.connect(self._train_dlg.update_progress)
