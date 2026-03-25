@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import json
+import datetime
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
@@ -141,11 +143,27 @@ class ScreenTypeDetectorWorker(QThread):
         super().__init__(parent)
         self._paths = paths
         self._models_dir = models_dir
+        self._sets_root = self._find_sets_root() # Need sets_root for stats file
+        
+    def _find_sets_root(self) -> Path:
+        p = Path(__file__).resolve()
+        for _ in range(8):
+            if (p / 'pyproject.toml').exists():
+                return p
+            p = p.parent
+        return Path('.')
+
     def run(self):
         from src.setsdebug import log as _slog
         results: dict[str, str] = {}
         total = len(self._paths)
         classifier = None
+
+        # Statistics collection
+        stats_total_per_type = {st: 0 for st in SCREEN_TYPE_LABELS.keys()}
+        stats_correct_per_type = {st: 0 for st in SCREEN_TYPE_LABELS.keys()}
+        overall_correct = 0
+
         if self._models_dir is not None:
             try:
                 from warp.recognition.screen_classifier import ScreenTypeClassifier
@@ -163,25 +181,196 @@ class ScreenTypeDetectorWorker(QThread):
                 _slog.info('ScreenTypeDetector: interrupted')
                 break
             stype = 'UNKNOWN'
+            is_correct = False
             try:
                 img = cv2.imread(str(path))
                 if img is None:
                     _slog.warning(f'ScreenTypeDetector: cannot read {path.name}')
                 elif classifier is None:
-                    _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → UNKNOWN (no classifier)')
+                    # _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → UNKNOWN (no classifier)')
+                    pass # Suppress per-file log
                 else:
                     ml_stype, ml_conf = classifier.classify(img)
                     if ml_stype and ml_conf >= 0.70:
                         stype = ml_stype
-                        _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → {stype} (conf={ml_conf:.2f})')
+                        is_correct = True
+                        # _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → {stype} (conf={ml_conf:.2f})')
                     else:
-                        _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → UNKNOWN (best={ml_stype!r} conf={ml_conf:.2f} < 0.70)')
+                        # _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → UNKNOWN (best={ml_stype!r} conf={ml_conf:.2f} < 0.70)')
+                        pass # Suppress per-file log
             except Exception as e:
                 _slog.warning(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → error: {e}')
+            
             results[path.name] = stype
+            stats_total_per_type[stype] = stats_total_per_type.get(stype, 0) + 1
+            if is_correct:
+                stats_correct_per_type[stype] = stats_correct_per_type.get(stype, 0) + 1
+                overall_correct += 1
+
             self.progress.emit(idx + 1, total, path.name, stype)
+        
+        self._log_screen_type_stats(total, overall_correct, stats_total_per_type, stats_correct_per_type)
         _slog.info(f'ScreenTypeDetector: done — {len(results)} processed')
         self.finished.emit(results)
+
+    def _log_screen_type_stats(self, total_files: int, overall_correct: int, 
+                               stats_total_per_type: dict, stats_correct_per_type: dict):
+        import json
+        import datetime
+        from src.setsdebug import log as _slog
+
+        stats_path = self._sets_root / '.config' / 'screen_type_stats.json'
+        
+        # Load historical data
+        try:
+            history: list[dict] = json.loads(stats_path.read_text(encoding='utf-8'))
+        except (FileNotFoundError, json.JSONDecodeError):
+            history = []
+
+        current_session_stats = {
+            "timestamp": datetime.datetime.now().isoformat(timespec='seconds'),
+            "total_files": total_files,
+            "overall_accuracy": round(overall_correct / total_files, 2) if total_files > 0 else 0.0,
+            "types": {}
+        }
+
+        summary_lines = []
+        summary_lines.append(f'ScreenTypeDetector: Summary for {total_files} files:')
+        summary_lines.append(f'  Overall Accuracy: {current_session_stats["overall_accuracy"]:.0%}')
+
+        for stype_key in sorted(SCREEN_TYPE_LABELS.keys()):
+            if stype_key == 'UNKNOWN': continue # Skip UNKNOWN for detailed stats
+            total_for_type = stats_total_per_type.get(stype_key, 0)
+            correct_for_type = stats_correct_per_type.get(stype_key, 0)
+            
+            accuracy = round(correct_for_type / total_for_type, 2) if total_for_type > 0 else 0.0
+            current_session_stats["types"][stype_key] = {
+                "total": total_for_type,
+                "correct": correct_for_type,
+                "accuracy": accuracy
+            }
+
+            # Calculate trend
+            trend_icon = '→'
+            prev_accuracies = [
+                s["types"][stype_key]["accuracy"] for s in history 
+                if stype_key in s["types"] and s["types"][stype_key]["total"] > 0
+            ]
+            if prev_accuracies:
+                avg_prev_accuracy = sum(prev_accuracies) / len(prev_accuracies)
+                if accuracy > avg_prev_accuracy + 0.02: # 2% improvement threshold
+                    trend_icon = '↑'
+                elif accuracy < avg_prev_accuracy - 0.02: # 2% degradation threshold
+                    trend_icon = '↓'
+            
+            if total_for_type > 0:
+                summary_lines.append(
+                    f'  {SCREEN_TYPE_ICONS.get(stype_key, "?")} {SCREEN_TYPE_LABELS[stype_key]:<20}: '
+                    f'{correct_for_type}/{total_for_type} ({accuracy:.0%}) {trend_icon}'
+                )
+        
+        # Add UNKNOWN stats separately
+        unknown_total = stats_total_per_type.get('UNKNOWN', 0)
+        if unknown_total > 0:
+            summary_lines.append(f'  {SCREEN_TYPE_ICONS.get("UNKNOWN", "?")} UNKNOWN             : {unknown_total} files')
+            current_session_stats["types"]["UNKNOWN"] = {"total": unknown_total, "correct": 0, "accuracy": 0.0}
+
+
+        # Log the summary
+        for line in summary_lines:
+            _slog.info(line)
+
+        # Save current session stats to history (keep last 50 sessions)
+        history.append(current_session_stats)
+        history = history[-50:] # Keep only the last 50 sessions
+        try:
+            stats_path.parent.mkdir(parents=True, exist_ok=True)
+            stats_path.write_text(json.dumps(history, indent=2), encoding='utf-8')
+        except Exception as e:
+            _slog.warning(f'ScreenTypeDetector: Failed to save stats history: {e}')
+
+
+class OCRWorker(QThread):
+    finished = Signal(int, str, float, object, str)  # row, text, conf, crop_bgr, ocr_raw
+
+    def __init__(self, row: int, crop_bgr, slot: str, valid_tiers: list, valid_types: list, parent=None):
+        super().__init__(parent)
+        self.row = row
+        self.crop_bgr = crop_bgr
+        self.slot = slot
+        self.valid_tiers = valid_tiers
+        self.valid_types = valid_types
+
+    def run(self):
+        try:
+            from warp.recognition.text_extractor import TextExtractor, RE_TIER
+            import cv2
+            
+            # Upscale 2x for better small font recognition
+            crop_proc = cv2.resize(self.crop_bgr, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+            
+            extractor = TextExtractor()
+            result = extractor._get_ocr().readtext(crop_proc)
+            
+            if not result:
+                self.finished.emit(self.row, '', 0.0, self.crop_bgr, '')
+                return
+                
+            full_text = ' '.join([res[1] for res in result]).strip()
+            best_conf = max(res[2] for res in result)
+            ocr_raw = full_text
+            
+            # Typo correction (Learning)
+            from pathlib import Path
+            import json
+            typo_file = Path('warp') / 'training_data' / 'ocr_typos.json'
+            if typo_file.exists():
+                try:
+                    with open(typo_file, 'r') as f:
+                        typos = json.load(f)
+                    if full_text in typos:
+                        full_text = typos[full_text]
+                        best_conf = 1.0 # Force max conf since user previously corrected it
+                except: pass
+            
+            text = full_text
+            conf = best_conf
+            
+            if self.slot == 'Ship Tier':
+                import re
+                m = re.search(RE_TIER, full_text)
+                if m:
+                    extracted = m.group(1).upper()
+                    import difflib
+                    matches = difflib.get_close_matches(extracted, self.valid_tiers, n=1, cutoff=0.7)
+                    if matches:
+                        text = matches[0]
+                        conf = 1.0
+                    else:
+                        text = ''
+                        conf = 0.0
+                else:
+                    text = ''
+                    conf = 0.0
+            elif self.slot == 'Ship Type':
+                import difflib
+                matches = difflib.get_close_matches(full_text, self.valid_types, n=1, cutoff=0.6)
+                if matches:
+                    text = matches[0]
+                    conf = 1.0
+                else:
+                    text = ''
+                    conf = 0.0
+            
+            # Ship Name uses full_text directly
+            from src.setsdebug import log as _slog
+            _slog.info(f"ocr_worker slot={self.slot!r} raw={ocr_raw!r} → final={text!r} conf={conf:.2f}")
+            self.finished.emit(self.row, text, conf, self.crop_bgr, ocr_raw)
+        except Exception as e:
+            from src.setsdebug import log as _slog
+            _slog.warning(f'OCRWorker failed: {e}')
+            self.finished.emit(self.row, '', 0.0, self.crop_bgr, '')
+
 
 class RecognitionWorker(QThread):
     finished = Signal(list)
@@ -226,6 +415,19 @@ class RecognitionWorker(QThread):
             if result.errors:
                 for e in result.errors:
                     _slog.warning(f'RecognitionWorker: pipeline error: {e}')
+            
+            # Cross-check layout vs content
+            cross_check_failed_items = set()
+            try:
+                from warp.warp_importer import WarpImporter
+                importer = WarpImporter(sets_app=self._sets_app)
+                for item in result.items:
+                    if not importer._item_valid_for_slot(item.name, item.slot):
+                         _slog.info(f'RecognitionWorker: cross-check warning: {item.name!r} invalid for {item.slot!r}')
+                         cross_check_failed_items.add((item.slot, item.name))
+            except:
+                pass
+                
         except Exception as e:
             _slog.warning(f'RecognitionWorker: exception — {e}')
             self.error.emit(str(e))
@@ -245,9 +447,11 @@ class RecognitionWorker(QThread):
                 except:
                     pass
             _slog.info(f'RecognitionWorker:   slot={ri.slot!r:25} name={ri.name!r:40} conf={ri.confidence:.2f} bbox={ri.bbox}')
+            cross_check = (ri.slot, ri.name) in cross_check_failed_items
             items.append({'name': ri.name, 'slot': ri.slot, 'conf': ri.confidence, 'bbox': ri.bbox,
                           'state': 'pending', 'thumb': ri.thumbnail, 'crop_bgr': crop_bgr,
-                          'orig_name': ri.name, 'ship_name': result.ship_name})
+                          'orig_name': ri.name, 'ship_name': result.ship_name,
+                          'cross_check_failed': cross_check})
         _slog.info(f'RecognitionWorker: emitting {len(items)} items')
         self.finished.emit(items)
 
@@ -1095,7 +1299,7 @@ class WarpCoreWindow(QMainWindow):
         self._review_summary.setText('')
         self._set_review_buttons_enabled(False)
         for ri in self._recognition_items:
-            self._add_review_row(ri['name'], ri['slot'], ri.get('conf', 0.0), confirmed=(ri.get('state') == 'confirmed'))
+            self._add_review_row(ri['name'], ri['slot'], ri.get('conf', 0.0), confirmed=(ri.get('state') == 'confirmed'), cross_check_failed=ri.get('cross_check_failed', False))
         self._ann_widget.set_review_items(self._recognition_items)
         self._ann_widget.set_selected_row(-1)
         n = len(self._recognition_items)
@@ -1108,9 +1312,11 @@ class WarpCoreWindow(QMainWindow):
         if n > 0:
             self._review_list.setCurrentRow(0)
 
-    def _add_review_row(self, name: str, slot: str, conf: float, confirmed: bool = False):
+    def _add_review_row(self, name: str, slot: str, conf: float, confirmed: bool = False, cross_check_failed: bool = False):
         if confirmed:
             label = f'{slot}  ->  {name or "—"}  [confirmed]'
+        elif cross_check_failed:
+            label = f'⚠️ {slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
         else:
             label = f'{slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
         item = QListWidgetItem(label)
@@ -1125,11 +1331,15 @@ class WarpCoreWindow(QMainWindow):
                            f'ML recognition: unknown (previous session)')
         elif name:
             tooltip = f'Slot: {slot}\nItem: {name}\nConfidence: {conf:.1%}'
+            if cross_check_failed:
+                tooltip += '\n\n⚠️ WARNING: Item type does not match slot type!'
         else:
             tooltip = f'Slot: {slot}\nNo item recognised'
         item.setToolTip(tooltip)
         if confirmed:
             item.setForeground(QColor('#7effc8'))
+        elif cross_check_failed:
+            item.setForeground(QColor('#ffcc00')) # Orange/Gold warning
         elif not name:
             item.setForeground(QColor('#ff5555'))
         elif conf >= CONF_HIGH:
@@ -1138,6 +1348,7 @@ class WarpCoreWindow(QMainWindow):
             item.setForeground(QColor('#ff8888'))
         else:
             item.setForeground(QColor('#ff5555'))
+
         self._review_list.addItem(item)
 
     def _on_review_item_clicked(self, item: QListWidgetItem):
@@ -1382,29 +1593,30 @@ class WarpCoreWindow(QMainWindow):
                         _slog.info(f'add_bbox: crop {x},{y},{w},{h} px from {path.name}')
                         from warp.recognition.icon_matcher import SETSIconMatcher
                         _current_slot = self._slot_combo.currentText()
-                        _candidates = set(self._build_search_candidates(_current_slot)) or None
-                        # Pass 1: match with slot-restricted candidates
-                        name, conf, thumb, _ = SETSIconMatcher(self._sets).match(
-                            crop_bgr, candidate_names=_candidates)
-                        _slog.info(f'add_bbox: pass1 → name={name!r} conf={conf:.2f} '
-                                   f'(slot={_current_slot!r}, pool={len(_candidates) if _candidates else "all"})')
-                        # Pass 2: if low conf, retry without slot restriction
-                        if conf < 0.40 and _candidates:
-                            name2, conf2, thumb2, _ = SETSIconMatcher(self._sets).match(
-                                crop_bgr, candidate_names=None)
-                            _slog.info(f'add_bbox: pass2 (unrestricted) → name={name2!r} conf={conf2:.2f}')
-                            if conf2 > conf:
-                                name, conf, thumb = name2, conf2, thumb2
-                        # Discard low-confidence results — below threshold means 'no match'
-                        if conf < 0.40:
-                            _slog.info(f'add_bbox: conf {conf:.2f} < 0.40 — treating as unmatched')
+                        if _current_slot not in NON_ICON_SLOTS:
+                            _candidates = set(self._build_search_candidates(_current_slot)) or None
+                            # Pass 1: match with slot-restricted candidates
+                            name, conf, thumb, _ = SETSIconMatcher(self._sets).match(
+                                crop_bgr, candidate_names=_candidates)
+                            _slog.info(f'add_bbox: pass1 → name={name!r} conf={conf:.2f} '
+                                       f'(slot={_current_slot!r}, pool={len(_candidates) if _candidates else "all"})')
+                            # Pass 2: if low conf, retry without slot restriction
+                            if conf < 0.40 and _candidates:
+                                name2, conf2, thumb2, _ = SETSIconMatcher(self._sets).match(
+                                    crop_bgr, candidate_names=None)
+                                _slog.info(f'add_bbox: pass2 (unrestricted) → name={name2!r} conf={conf2:.2f}')
+                                if conf2 > conf:
+                                    name, conf, thumb = name2, conf2, thumb2
+                            # Discard low-confidence results — below threshold means 'no match'
+                            if conf < 0.40:
+                                _slog.info(f'add_bbox: conf {conf:.2f} < 0.40 — treating as unmatched')
+                                name, conf, thumb = '', 0.0, None
+                        else:
                             name, conf, thumb = '', 0.0, None
                 except Exception as _e:
                     from src.setsdebug import log as _slog
                     _slog.warning(f'add_bbox: matcher error: {_e}')
             slot = self._slot_combo.currentText()
-            if slot in NON_ICON_SLOTS:
-                name, conf, thumb, crop_bgr = '', 0.0, None, None
             # If matcher found a name, infer the correct slot from cache item type
             # Restrict to slots allowed by the current screen type
             if name:
@@ -1422,18 +1634,26 @@ class WarpCoreWindow(QMainWindow):
                     # for this screen type — discard to avoid wrong slot assignment
                     from src.setsdebug import log as _slog2
                     _slog2.info(f'add_bbox: discarding {name!r} — not valid for stype={stype}')
-                    name, conf, thumb, crop_bgr = '', 0.0, None, None
+                    name, conf, thumb = '', 0.0, None
             # NON_ICON_SLOTS (Ship Name/Type/Tier) — position only, always confirmed
             if slot in NON_ICON_SLOTS:
-                _auto = True
+                _auto = False
             else:
                 # Auto-accept before adding to list if conf >= threshold
                 _auto = (name and conf > 0
                          and getattr(self, '_chk_auto_accept', None)
                          and self._chk_auto_accept.isChecked()
                          and conf >= self._spin_auto_conf.value())
+            
+            _cross_check = False
+            try:
+                if name:
+                    from warp.warp_importer import WarpImporter
+                    _cross_check = not WarpImporter(sets_app=self._sets)._item_valid_for_slot(name, slot)
+            except: pass
+
             _state = 'confirmed' if _auto else 'pending'
-            new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': _state, 'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': ''}
+            new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': _state, 'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': '', 'cross_check_failed': _cross_check}
             self._recognition_items.append(new_item)
             if _auto and self._current_idx >= 0:
                 _path = self._screenshots[self._current_idx]
@@ -1445,7 +1665,7 @@ class WarpCoreWindow(QMainWindow):
                     from warp.recognition.icon_matcher import SETSIconMatcher
                     SETSIconMatcher.add_session_example(crop_bgr, name)
                 self._data_mgr.save()
-            self._add_review_row(name, slot, conf, confirmed=_auto)
+            self._add_review_row(name, slot, conf, confirmed=_auto, cross_check_failed=_cross_check)
             new_row = len(self._recognition_items) - 1
             self._review_list.setCurrentRow(new_row)
             self._set_review_buttons_enabled(True)
@@ -1453,6 +1673,17 @@ class WarpCoreWindow(QMainWindow):
                 fname = self._screenshots[self._current_idx].name
                 self._recognition_cache[fname] = list(self._recognition_items)
             self._ann_widget.clear_pending()
+            
+            if slot in NON_ICON_SLOTS and crop_bgr is not None:
+                if self._ship_type_combo.count() == 0:
+                    self._populate_ship_type_combo()
+                v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
+                v_types = [self._ship_type_combo.itemText(i) for i in range(self._ship_type_combo.count())]
+                worker = OCRWorker(new_row, crop_bgr, slot, v_tiers, v_types, parent=self)
+                worker.finished.connect(self._on_ocr_finished)
+                worker.start()
+                if not hasattr(self, '_ocr_workers'): self._ocr_workers = []
+                self._ocr_workers.append(worker)
             # Update slot combo to match inferred slot (suppressing textEdited on name field)
             if slot != self._slot_combo.currentText():
                 self._slot_combo.blockSignals(True)
@@ -1472,12 +1703,57 @@ class WarpCoreWindow(QMainWindow):
             self._name_edit.setFocus()
             self._name_edit.clear()
 
+    def _on_ocr_finished(self, row: int, text: str, conf: float, crop_bgr, ocr_raw: str = ''):
+        if row < 0 or row >= len(self._recognition_items): return
+        ri = self._recognition_items[row]
+        slot = ri['slot']
+        
+        ri['name'] = text
+        ri['conf'] = conf
+        ri['crop_bgr'] = crop_bgr
+        ri['ocr_raw'] = ocr_raw
+        
+        cross_check = False
+        try:
+            if text:
+                from warp.warp_importer import WarpImporter
+                cross_check = not WarpImporter(sets_app=self._sets)._item_valid_for_slot(text, slot)
+        except Exception:
+            pass
+        ri['cross_check_failed'] = cross_check
+        
+        litem = self._review_list.item(row)
+        if litem:
+            label = f'⚠️ {slot}  ->  {text or "— unmatched —"}  [{conf:.0%}]' if cross_check else f'{slot}  ->  {text or "— unmatched —"}  [{conf:.0%}]'
+            litem.setText(label)
+            if cross_check:
+                litem.setForeground(QColor('#ffcc00'))
+            elif not text:
+                litem.setForeground(QColor('#ff5555'))
+            elif conf >= 0.7:
+                litem.setForeground(QColor('#7effc8'))
+            elif conf >= 0.4:
+                litem.setForeground(QColor('#ff8888'))
+            else:
+                litem.setForeground(QColor('#ff5555'))
+
+        if self._review_list.currentRow() == row:
+            self._on_item_selected(ri)
+
+        if (text and conf >= 0.4
+            and getattr(self, '_chk_auto_accept', None)
+            and self._chk_auto_accept.isChecked()
+            and conf >= self._spin_auto_conf.value()):
+            if self._review_list.currentRow() != row:
+                self._review_list.setCurrentRow(row)
+            self._on_accept()
+
+
     def _rematch_current_item(self, row: int, bbox: tuple):  # noqa — kept for future use
         if row < 0 or self._current_idx < 0:
             return
         if 0 <= row < len(self._recognition_items):
-            if self._recognition_items[row].get('slot', '') in NON_ICON_SLOTS:
-                return
+            pass  # Removed early return for NON_ICON_SLOTS to allow OCR on edit
         try:
             import cv2
             from warp.recognition.icon_matcher import SETSIconMatcher
@@ -1490,13 +1766,34 @@ class WarpCoreWindow(QMainWindow):
             if crop.size == 0:
                 return
             name, conf, thumb, _used_sess = SETSIconMatcher(self._sets).match(crop)
+            
+            _cross_check = False
+            try:
+                if name:
+                    from warp.warp_importer import WarpImporter
+                    _cross_check = not WarpImporter(sets_app=self._sets)._item_valid_for_slot(name, slot)
+            except: pass
+
             ri = self._recognition_items[row]
-            ri.update({'name': name, 'conf': conf, 'thumb': thumb, 'crop_bgr': crop})
+            
+            if slot in NON_ICON_SLOTS:
+                if self._ship_type_combo.count() == 0: self._populate_ship_type_combo()
+                v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
+                v_types = [self._ship_type_combo.itemText(i) for i in range(self._ship_type_combo.count())]
+                worker = OCRWorker(row, crop, slot, v_tiers, v_types, parent=self)
+                worker.finished.connect(self._on_ocr_finished)
+                worker.start()
+                if not hasattr(self, '_ocr_workers'): self._ocr_workers = []
+                self._ocr_workers.append(worker)
+                return
+
+            ri.update({'name': name, 'conf': conf, 'thumb': thumb, 'crop_bgr': crop, 'cross_check_failed': _cross_check})
             self._name_edit.setText(name)
             litem = self._review_list.item(row)
             if litem:
-                colour = ('#7effc8' if conf >= CONF_HIGH else '#e8c060' if conf >= CONF_MEDIUM else '#ff7e7e')
-                litem.setText(f'{ri["slot"]}  ->  {name or "— unmatched —"}  [{conf:.0%}]')
+                colour = ('#ffcc00' if _cross_check else '#7effc8' if conf >= CONF_HIGH else '#e8c060' if conf >= CONF_MEDIUM else '#ff7e7e')
+                prefix = '⚠️ ' if _cross_check else ''
+                litem.setText(f'{prefix}{ri["slot"]}  ->  {name or "— unmatched —"}  [{conf:.0%}]')
                 litem.setForeground(QColor(colour))
             # Auto-accept if conf >= threshold and checkbox enabled
             if (name and conf > 0
@@ -1512,6 +1809,27 @@ class WarpCoreWindow(QMainWindow):
     def _rematch_with_slot(self, row: int, slot: str, crop_bgr):
         """Re-run icon matching for an existing crop when the user changes the slot."""
         try:
+            if slot in NON_ICON_SLOTS:
+                if self._ship_type_combo.count() == 0:
+                    self._populate_ship_type_combo()
+                v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
+                v_types = [self._ship_type_combo.itemText(i) for i in range(self._ship_type_combo.count())]
+                
+                ri = self._recognition_items[row]
+                ri['name'] = ''
+                ri['slot'] = slot
+                litem = self._review_list.item(row)
+                if litem:
+                    litem.setText(f'{slot}  ->  [Scanning...]')
+                    litem.setForeground(QColor('#aaaaaa'))
+                
+                worker = OCRWorker(row, crop_bgr, slot, v_tiers, v_types, parent=self)
+                worker.finished.connect(self._on_ocr_finished)
+                worker.start()
+                if not hasattr(self, '_ocr_workers'): self._ocr_workers = []
+                self._ocr_workers.append(worker)
+                return
+
             from warp.recognition.icon_matcher import SETSIconMatcher
             from src.setsdebug import log as _sl
             candidates = set(self._build_search_candidates(slot)) or None
@@ -1521,15 +1839,25 @@ class WarpCoreWindow(QMainWindow):
             # A global fallback would return items from wrong categories.
             if conf < 0.40:
                 name, conf, thumb = '', 0.0, None
+            _cross_check = False
+            try:
+                if name:
+                    from warp.warp_importer import WarpImporter
+                    _cross_check = not WarpImporter(sets_app=self._sets)._item_valid_for_slot(name, slot)
+            except: pass
+
             ri = self._recognition_items[row]
-            ri.update({'name': name, 'conf': conf, 'thumb': thumb})
+            ri.update({'name': name, 'conf': conf, 'thumb': thumb, 'slot': slot, 'cross_check_failed': _cross_check})
             self._name_edit.blockSignals(True)
             self._name_edit.setText(name)
             self._name_edit.blockSignals(False)
             litem = self._review_list.item(row)
             if litem:
-                litem.setText(f'{slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]')
-                if conf >= CONF_HIGH:
+                prefix = '⚠️ ' if _cross_check else ''
+                litem.setText(f'{prefix}{slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]')
+                if _cross_check:
+                    litem.setForeground(QColor('#ffcc00'))
+                elif conf >= CONF_HIGH:
                     litem.setForeground(QColor('#ffaaaa'))
                 elif conf >= CONF_MEDIUM:
                     litem.setForeground(QColor('#ff8888'))
@@ -1617,9 +1945,12 @@ class WarpCoreWindow(QMainWindow):
             self._tier_combo.setVisible(False)
             self._ship_type_combo.setVisible(False)
             self._name_edit.setVisible(True)
-            self._name_edit.setEnabled(False)
-            self._name_edit.setPlaceholderText('OCR only — bbox position saved')
+            self._name_edit.setEnabled(True)
+            self._name_edit.setPlaceholderText('Ship name (or leave blank)')
             self._name_label.setText('Ship Name:')
+            self._name_edit.blockSignals(True)
+            self._name_edit.setText(name)
+            self._name_edit.blockSignals(False)
         else:
             self._tier_combo.setVisible(False)
             self._ship_type_combo.setVisible(False)
@@ -1712,6 +2043,7 @@ class WarpCoreWindow(QMainWindow):
                         if ans != QMessageBox.StandardButton.Yes:
                             return
                         break
+            prev_name = ri.get('name', '')
             ri['name'] = name
             ri['slot'] = slot
             ri['state'] = 'confirmed'
@@ -1732,6 +2064,27 @@ class WarpCoreWindow(QMainWindow):
                 from warp.recognition.icon_matcher import SETSIconMatcher
                 SETSIconMatcher.add_session_example(ri['crop_bgr'], name)
                 self._contribute(ri, name)
+            elif name and slot in NON_ICON_SLOTS:
+                ocr_raw = ri.get('ocr_raw', '')
+                # Only log OCR typo if the user actually chose a name different from what OCR settled on
+                if ocr_raw and prev_name != name:
+                    from src.setsdebug import log as _slog
+                    _slog.info(f"Learned new OCR typo correction: {ocr_raw!r} -> {name!r}")
+                    from pathlib import Path
+                    import json
+                    typo_file = Path('warp') / 'training_data' / 'ocr_typos.json'
+                    try:
+                        typos = {}
+                        if typo_file.exists():
+                            with open(typo_file, 'r') as f:
+                                typos = json.load(f)
+                        if typos.get(ocr_raw) != name:
+                            typos[ocr_raw] = name
+                            with open(typo_file, 'w') as f:
+                                json.dump(typos, f, indent=2)
+                    except Exception as e:
+                        from src.setsdebug import log as _slog2
+                        _slog2.warning(f"Failed to save ocr_typos: {e}")
         else:
             self._ann_widget.confirm_current(slot=slot, name=name)
         # Keep name_edit showing the accepted value — don't clear after accept
@@ -2010,12 +2363,27 @@ class WarpCoreWindow(QMainWindow):
         # Pre-populate completer with new slot's candidates
         if not is_tier and not is_ship_type and slot not in NON_ICON_SLOTS:
             self._populate_name_completer(slot)
-        # Re-run icon matching with new slot's candidates (user-initiated change only)
-        if not self._loading_row and not is_tier and not is_ship_type and slot not in NON_ICON_SLOTS:
+        # Re-run icon matching or OCR with new slot's candidates (user-initiated change only)
+        if not self._loading_row:
             row = self._review_list.currentRow()
             if 0 <= row < len(self._recognition_items):
-                crop_bgr = self._recognition_items[row].get('crop_bgr')
+                ri = self._recognition_items[row]
+                crop_bgr = ri.get('crop_bgr')
+                
+                # If bbox was loaded from saved annotations, crop_bgr is initially None. Fetch it now.
+                if crop_bgr is None and self._current_idx >= 0:
+                    import cv2
+                    img = cv2.imread(str(self._screenshots[self._current_idx]))
+                    if img is not None:
+                        bbox = ri.get('bbox')
+                        if bbox:
+                            x, y, w, h = bbox
+                            crop_bgr = img[y:y+h, x:x+w].copy()
+                            ri['crop_bgr'] = crop_bgr
+                            
                 if crop_bgr is not None:
+                    if ri.get('state') == 'confirmed':
+                        ri['state'] = 'pending'
                     self._rematch_with_slot(row, slot, crop_bgr)
 
     def _populate_ship_type_combo(self):
@@ -2336,10 +2704,21 @@ class WarpCoreWindow(QMainWindow):
             QApplication.instance().removeEventFilter(self)
         except Exception:
             pass
-        self._sync_timer.stop()
-        if self._pending_sync:
-            # Fire one last upload before closing — non-blocking, best-effort
-            self._on_sync_timer()
-        if self._data_mgr:
+        if hasattr(self, '_sync_timer') and self._sync_timer:
+            self._sync_timer.stop()
+
+        # Stop sync worker if it's currently running to prevent "QThread destroyed" abort
+        if hasattr(self, '_sync_worker') and self._sync_worker and self._sync_worker.isRunning():
+            self._sync_worker.requestInterruption()
+            self._sync_worker.wait(1000)
+
+        # Stop active OCR workers
+        if hasattr(self, '_ocr_workers'):
+            for w in self._ocr_workers:
+                if w.isRunning():
+                    w.requestInterruption()
+                    w.wait(500)
+
+        if hasattr(self, '_data_mgr') and self._data_mgr:
             self._data_mgr.save()
         event.accept()
