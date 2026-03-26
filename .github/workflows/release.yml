@@ -2,20 +2,19 @@ name: Auto Release
 on:
   push:
     tags:
-      - 'v*' # Uruchamia się dla każdego taga zaczynającego się od 'v'
-
+      - 'v*'
+  workflow_dispatch: # <--- THIS IS THE KEY LINE
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: Release ${{ github.ref_name }}
           body: "Automated release for version ${{ github.ref_name }}"
-          prerelease: true # Zaznacza jako pre-release, bo używasz 'b'
+          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
