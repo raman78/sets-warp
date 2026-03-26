@@ -30,8 +30,9 @@ from pathlib import Path
 _elog('main: stdlib OK')
 _elog('main: importing src (will trigger PySide6 + all module imports)')
 try:
-    from src import SETS
-    _elog('main: src.SETS imported OK')
+    # Changed: Import WarpSETS from warp.app instead of original SETS from src
+    from warp.app import WarpSETS as SETS
+    _elog('main: warp.app.WarpSETS imported OK')
     from src.datafunctions import build_cache
     _elog('main: build_cache imported OK')
 except (ImportError, ModuleNotFoundError) as _import_err:

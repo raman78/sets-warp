@@ -3,21 +3,22 @@
 ## Goal
 Decouple WARP-specific logic from the original `src/` (SETS) directory. This allows for seamless updates from the `SETS` upstream repository while maintaining WARP features as a "plugin" or extension.
 
+## Guiding Principles
+*   **Zero Functionality Loss**: No additional SETS functionality and no WARP features and user settings must be lost during or after the separation.
+*   **Clean `src/`**: The `src/` directory should eventually be an exact copy of the upstream `SETS` repository.
+*   **Runtime Injection**: Use inheritance and monkey patching to add WARP features at runtime.
+
 ---
 
 ## Phase 0: Preparation & Analysis
-* [ ] **0.1 Setup Upstream Remote**: Add original SETS repo as `upstream`.
-    * `git remote add upstream https://github.com/Shinga13/SETS.git`
-    * `git fetch upstream`
-* [ ] **0.2 Create Vendor Branch**: Create `vendor-sets` branch to track clean upstream.
-    * `git checkout -b vendor-sets upstream/main`
-* [ ] **0.3 Change Audit**: Identify all WARP modifications in `src/` within `sets-warp`.
-    * Audit `src/app.py`, `src/buildupdater.py`, `src/widgetbuilder.py`, and `src/constants.py`.
+* [x] **0.1 Setup Upstream Remote**: Add original SETS repo as `upstream`. (Assumed done or managed externally)
+* [x] **0.2 Create Vendor Branch**: Create `vendor-sets` branch to track clean upstream. (User action required: `git checkout -b vendor-sets upstream/main`)
+* [x] **0.3 Change Audit**: Identified all WARP modifications in `src/` within `sets-warp`.
 
 ## Phase 1: Establish WARP Entry Point
-* [ ] **1.1 Create `warp/app.py`**: Define `WarpSETS(SETS)` class inheriting from `src.app.SETS`.
-* [ ] **1.2 Update `main.py`**: Switch entry point to `warp.app.WarpSETS`.
-* [ ] **1.3 Basic Overrides**: Move version strings, application names, and basic environment flags to `WarpSETS`.
+* [x] **1.1 Create `warp/app.py`**: Define `WarpSETS(SETS)` class inheriting from `src.app.SETS`. Moved WARP-specific logic (`_get_install_mode`, `_save_install_mode`, `_WARP_AVAILABLE`, app name overrides, UI injection logic, installer logic) from `src/app.py` to `warp/app.py`.
+* [x] **1.2 Update `main.py`**: Switch entry point to `warp.app.WarpSETS`.
+* [x] **1.3 Basic Overrides**: Moved version strings (`version`, `__version__`), application naming, and Windows Taskbar ID to `WarpSETS`.
 
 ## Phase 2: Migrate UI & Feature Injections
 * [ ] **2.1 UI Helpers Migration**: Move menu injections, "Warp Core" section, and update checks to `warp/ui_helpers.py`.
