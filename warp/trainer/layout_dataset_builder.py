@@ -16,13 +16,14 @@ class LayoutDatasetBuilder:
         self.training_dir = sets_root / 'warp' / 'training_data'
         self.annotations_path = self.training_dir / 'annotations.json'
 
-    def build(self, build_type: str = 'SPACE') -> list[dict]:
+    def build(self) -> list[dict]:
         """
         Returns a list of samples: {
             'image_path': Path,
             'labels': dict[slot_name, bbox_normalized]
         }
         """
+        from warp.trainer.layout_trainer import REGRESSOR_SLOTS
         if not self.annotations_path.exists():
             log.warning(f"Annotations not found at {self.annotations_path}")
             return []
@@ -32,14 +33,28 @@ class LayoutDatasetBuilder:
 
         samples = []
         for filename, annotations in data.items():
+            # Find the image — it could be in training_data/ directly, 
+            # or already moved to a screen_type/ subfolder if classified.
             img_path = self.training_dir / filename
             if not img_path.exists():
-                continue
+                # Search in screen_types subdirs
+                screen_types_dir = self.training_dir / 'screen_types'
+                found = False
+                if screen_types_dir.exists():
+                    for stype_dir in screen_types_dir.iterdir():
+                        if stype_dir.is_dir():
+                            potential = stype_dir / filename
+                            if potential.exists():
+                                img_path = potential
+                                found = True
+                                break
+                if not found:
+                    continue
 
             # We only want screenshots that have a good number of confirmed slots 
             # to train a full layout
             confirmed = [a for a in annotations if a.get('state') == 'confirmed']
-            if len(confirmed) < 5: # Need at least some density
+            if len(confirmed) < 5: 
                 continue
 
             # Map slot names to normalized bboxes
@@ -53,7 +68,7 @@ class LayoutDatasetBuilder:
             for ann in confirmed:
                 slot = ann.get('slot')
                 bbox = ann.get('bbox') # [x, y, w, h]
-                if not slot or not bbox:
+                if not slot or not bbox or slot not in REGRESSOR_SLOTS:
                     continue
                 
                 # Normalize to 0.0 - 1.0
@@ -63,6 +78,9 @@ class LayoutDatasetBuilder:
                 nh = bbox[3] / h
                 slot_labels[slot] = [nx, ny, nw, nh]
 
+            if len(slot_labels) < 3: # Need at least 3 relevant slots to be useful
+                continue
+
             samples.append({
                 'image_path': img_path,
                 'width': w,
@@ -70,7 +88,7 @@ class LayoutDatasetBuilder:
                 'labels': slot_labels
             })
 
-        log.info(f"Built layout dataset with {len(samples)} samples for {build_type}")
+        log.info(f"Built unified layout dataset with {len(samples)} samples")
         return samples
 
 if __name__ == '__main__':

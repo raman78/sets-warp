@@ -4,6 +4,18 @@
 
 **All code must be in English** — comments, log messages, docstrings, variable names, string literals visible in logs. No Polish in source files. When editing existing code that contains Polish log messages or comments, translate them to English.
 
+## Rules
+
+1. First think through the problem, read the codebase for relevant files.
+2. Before you make any major changes, check in with me and I will verify the plan.
+3. Please every step of the way just give me a high level explanation of what changes you made
+4. Make every task and code change you do as simple as possible yet not naive. We want to avoid making any massive or complex changes. Every change should impact as little code as possible. Everything is about simplicity.
+5. Maintain a documentation file that describes how the architecture of the app works inside and out.
+6. Maintain a documentation files in the projects. Recognize which are technical and which are more human redable (manual, program description, readme)
+7. Never speculate about code you have not opened. If the user references a specific file, you MUST read the file before answering. Make sure to investigate and read relevant files BEFORE answering questions about the codebase. Never make any claims about code before investigating unless you are certain of the correct answer - give grounded and hallucination-free answers.
+8. Never use workarounds. Especially never change existing code just to fix your freshly made problem. Only recent changes are supposed to be fixed. If situation requires fixing existing code it requires user one-time approval.
+9. NEVER EVER USE -Force or -f (force attribute) in terminal commands. It is strictly forbidden! If there is no other way you NEED to ask the user to run the command in terminal themselves providing justification.
+
 ---
 
 ## Project overview

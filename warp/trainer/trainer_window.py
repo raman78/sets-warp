@@ -36,7 +36,7 @@ from warp.trainer.training_data      import TrainingDataManager, AnnotationState
 from warp.trainer.sync               import SyncWorker, HFTokenDialog
 from warp.style import (
     apply_dark_style, primary_btn_style, secondary_btn_style,
-    warning_btn_style, danger_btn_style,
+    warning_btn_style, danger_btn_style, toggle_yellow_btn_style,
     ACCENT, FG, MFG, BG, MBG, LBG, BC, C_WARNING, C_SUCCESS, C_FAILURE,
 )
 
@@ -699,6 +699,14 @@ class WarpCoreWindow(QMainWindow):
         except Exception as _e:
             log.debug(f'Model update check skipped: {_e}')
 
+    def showEvent(self, event):
+        """Ensure canvas has focus once window is shown."""
+        super().showEvent(event)
+        self.activateWindow()
+        self.raise_()
+        if hasattr(self, '_ann_widget'):
+            self._ann_widget.setFocus()
+
     def _build_ui(self):
         c = QWidget()
         self.setCentralWidget(c)
@@ -757,7 +765,7 @@ class WarpCoreWindow(QMainWindow):
         self._ann_widget.bbox_changed.connect(self._on_bbox_changed)
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidget(self._ann_widget)
-        self._scroll_area.setWidgetResizable(False)
+        self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._scroll_area.setStyleSheet(f'QScrollArea {{ background: {BG}; border: none; }}')
         cl.addWidget(self._scroll_area, 1)
@@ -897,8 +905,14 @@ class WarpCoreWindow(QMainWindow):
         self._btn_remove_item = QPushButton('- Remove BBox')
         self._btn_remove_item.setStyleSheet(danger_btn_style())
         self._btn_remove_item.clicked.connect(self._on_remove_item)
+        self._btn_debug_cnn = QPushButton('Layout View OFF')
+        self._btn_debug_cnn.setCheckable(True)
+        self._btn_debug_cnn.setStyleSheet(toggle_yellow_btn_style())
+        self._btn_debug_cnn.setToolTip('Show ghost overlay of CNN (P4) predicted slot positions')
+        self._btn_debug_cnn.clicked.connect(self._on_debug_cnn_toggle)
         mgmt.addWidget(self._btn_add_bbox)
         mgmt.addWidget(self._btn_remove_item)
+        mgmt.addWidget(self._btn_debug_cnn)
         pl.addLayout(mgmt)
         self._manual_mode_lbl = QLabel('')
         self._manual_mode_lbl.setStyleSheet(f'color:{C_WARNING};font-size:10px;background:{MBG};border:1px solid {LBG};border-radius:3px;padding:3px;')
@@ -1090,6 +1104,8 @@ class WarpCoreWindow(QMainWindow):
         if row < 0 or row >= len(self._screenshots): return
         self._current_idx = row; path = self._screenshots[row]; stype = self._screen_types.get(path.name, 'UNKNOWN')
         self._ann_widget.load_image(path); self._exit_manual_bbox_mode(); self._update_screen_type_ui(stype)
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(100, self._ann_widget.setFocus)
         # Clear Item Name and reset completer when switching to a new screenshot
         self._completer.setCompletionPrefix('')
         self._name_edit.blockSignals(True)
@@ -1301,6 +1317,11 @@ class WarpCoreWindow(QMainWindow):
         for ri in self._recognition_items:
             self._add_review_row(ri['name'], ri['slot'], ri.get('conf', 0.0), confirmed=(ri.get('state') == 'confirmed'), cross_check_failed=ri.get('cross_check_failed', False))
         self._ann_widget.set_review_items(self._recognition_items)
+        # Update CNN debug view if enabled
+        if getattr(self, '_btn_debug_cnn', None) and self._btn_debug_cnn.isChecked():
+            self._run_cnn_debug()
+        else:
+            self._ann_widget.set_cnn_debug_items({})
         self._ann_widget.set_selected_row(-1)
         n = len(self._recognition_items)
         matched = sum(1 for i in self._recognition_items if i.get('name'))
@@ -1462,17 +1483,6 @@ class WarpCoreWindow(QMainWindow):
             if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 self._on_remove_item()
                 return True
-        # Ctrl+wheel anywhere over canvas → zoom (single handler, no duplicates)
-        from PySide6.QtCore import QEvent as _QE
-        if event.type() == _QE.Type.Wheel and aw is not None and sa is not None:
-            ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-            if ctrl:
-                from PySide6.QtGui import QCursor as _QC
-                from PySide6.QtCore import QRect
-                sa_rect = QRect(sa.mapToGlobal(sa.rect().topLeft()), sa.rect().size())
-                if sa_rect.contains(_QC.pos()):
-                    aw.wheelEvent(event)
-                    return True
         return super().eventFilter(obj, event)
 
     def _on_add_bbox_toggle(self, checked: bool):
@@ -1487,6 +1497,47 @@ class WarpCoreWindow(QMainWindow):
             self._add_bbox_mode = False
             self._manual_mode_lbl.setVisible(False)
             self._ann_widget.set_draw_mode(False)
+
+    def _on_debug_cnn_toggle(self, checked: bool):
+        self._btn_debug_cnn.setText(f'Layout View {"ON" if checked else "OFF"}')
+        if checked:
+            self._run_cnn_debug()
+        else:
+            self._ann_widget.set_cnn_debug_items({})
+
+    def _run_cnn_debug(self):
+        """Run Strategy 0 (CNN) only and show result as ghost overlay."""
+        if self._current_idx < 0: return
+        path = self._screenshots[self._current_idx]
+        stype = self._screen_types.get(path.name, 'UNKNOWN')
+        build_type = self._STYPE_TO_BUILD.get(stype)
+        if not build_type:
+            self.statusBar().showMessage(f'CNN view: current screen type ({stype}) not supported for layout regressor.')
+            self._ann_widget.set_cnn_debug_items({})
+            return
+
+        try:
+            import cv2
+            from warp.recognition.layout_detector import LayoutDetector, LAYOUT_MODEL_PATH
+            if not LAYOUT_MODEL_PATH.exists():
+                self.statusBar().showMessage('Layout View: No model found. Please train (P4 CNN) first.')
+                self._ann_widget.set_cnn_debug_items({})
+                return
+
+            img = cv2.imread(str(path))
+            if img is not None:
+                detector = LayoutDetector()
+                # Run CNN only — strategy 0
+                cnn_layout = detector._detect_via_cnn(img, build_type)
+                if cnn_layout:
+                    self._ann_widget.set_cnn_debug_items(cnn_layout)
+                    self.statusBar().showMessage(f'CNN view: showing predicted bboxes for {build_type}')
+                else:
+                    self.statusBar().showMessage('CNN view: model not loaded or prediction failed.')
+                    self._ann_widget.set_cnn_debug_items({})
+        except Exception as e:
+            self.statusBar().showMessage(f'CNN view error: {e}')
+            self._ann_widget.set_cnn_debug_items({})
 
     def _on_remove_item(self):
         row = self._review_list.currentRow()
@@ -1985,10 +2036,12 @@ class WarpCoreWindow(QMainWindow):
         self._ann_widget.clear_highlight()
 
     def _on_bbox_changed(self, row: int, new_bbox: tuple):
-        """Shift+LMB move/resize finished — persist the new bbox."""
+        """Shift+LMB move/resize finished — persist the new bbox and re-classify."""
         if row < 0 or row >= len(self._recognition_items): return
         ri = self._recognition_items[row]
         ri['bbox'] = new_bbox
+        
+        # Update underlying annotation if it exists
         ann_id = ri.get('ann_id', '')
         if ann_id and self._current_idx >= 0:
             path = self._screenshots[self._current_idx]
@@ -1997,6 +2050,44 @@ class WarpCoreWindow(QMainWindow):
                     self._data_mgr.update_annotation(path, ann, bbox=new_bbox)
                     self._data_mgr.save()
                     break
+        
+        # Re-run recognition for this specific crop if not already confirmed
+        if ri.get('state') != 'confirmed' and self._current_idx >= 0:
+            try:
+                import cv2
+                from warp.warp_importer import WarpImporter
+                path = self._screenshots[self._current_idx]
+                img = cv2.imread(str(path))
+                if img is not None:
+                    stype = self._screen_types.get(path.name, 'UNKNOWN')
+                    importer_type = {'SPACE_EQ': 'SPACE', 'GROUND_EQ': 'GROUND', 'TRAITS': 'SPACE_TRAITS',
+                                     'BOFFS': 'BOFFS', 'SPECIALIZATIONS': 'SPEC',
+                                     'SPACE_MIXED': 'SPACE', 'GROUND_MIXED': 'GROUND'}.get(stype, 'SPACE_EQ')
+                    importer = WarpImporter(sets_app=self._sets, build_type=importer_type, from_trainer=True)
+                    matcher = importer._get_matcher()
+                    
+                    x, y, w, h = new_bbox
+                    # Ensure bbox is within image bounds
+                    y = max(0, min(y, img.shape[0]-1))
+                    x = max(0, min(x, img.shape[1]-1))
+                    h = max(1, min(h, img.shape[0]-y))
+                    w = max(1, min(w, img.shape[1]-x))
+                    
+                    crop = img[y:y+h, x:x+w]
+                    if crop.size > 0:
+                        # Optional: limit candidates by slot type
+                        # For now, just match against full index for better flexibility in trainer
+                        name, conf, thumb, _used_sess = matcher.match(crop)
+                        ri['name'] = name
+                        ri['conf'] = conf
+                        # Refresh visual row
+                        self._review_list.takeItem(row)
+                        self._add_review_row(name, ri['slot'], conf, confirmed=False)
+                        self._review_list.insertItem(row, self._review_list.takeItem(self._review_list.count()-1))
+                        self._review_list.setCurrentRow(row)
+            except Exception as e:
+                log.warning(f'Re-classification failed: {e}')
+
         self._ann_widget.set_review_items(self._recognition_items)
 
     def _on_item_selected(self, ann: dict):

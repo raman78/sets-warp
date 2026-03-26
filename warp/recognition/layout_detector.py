@@ -787,20 +787,31 @@ class LayoutDetector:
             
             # Inference
             with torch.no_grad():
-                pred = model(t_inp).squeeze(0).cpu().numpy() # [56]
+                pred = model(t_inp).squeeze(0).cpu().numpy() # [NUM_SLOTS * 5]
             
-            # Post-process: denormalize and filter by build_type
-            active_slots = GROUND_SLOT_ORDER if build_type == 'GROUND' else SPACE_SLOT_ORDER_CARRIER
+            # Post-process: determine which slots to return
+            # If DEBUG, return everything the network thinks is there (presence > 0.5)
+            if build_type == 'DEBUG':
+                active_filter = REGRESSOR_SLOTS
+            else:
+                # Map build_type to its relevant slot set
+                from warp.trainer.trainer_window import SLOT_GROUPS # Optional import here
+                active_filter = SLOT_GROUPS.get(build_type, REGRESSOR_SLOTS)
+            
             result = {}
-            
             for i, slot_name in enumerate(REGRESSOR_SLOTS):
-                if slot_name not in active_slots:
+                if slot_name not in active_filter:
                     continue
                 
-                # Get [nx, ny, nw, nh]
-                nx, ny, nw, nh = pred[i*4 : i*4+4]
+                # Get [nx, ny, nw, nh, presence]
+                nx, ny, nw, nh, pres = pred[i*5 : i*5+5]
                 
-                # Minimum confidence check: if coords are [0,0,0,0], skip
+                # Primary filter: Network confidence (presence bit)
+                # We use 0.5 as threshold for binary classification
+                if pres < 0.5:
+                    continue
+                
+                # Safety fallback: skip tiny/degenerate boxes
                 if nw < 0.01 or nh < 0.01:
                     continue
                 
@@ -810,11 +821,13 @@ class LayoutDetector:
                 pw = int(nw * w)
                 ph = int(nh * h)
                 
-                # Simple validation: must be within image
-                if px < 0 or py < 0 or px + pw > w or py + ph > h:
+                # Simple validation: center must be within image
+                if px < 0 or py < 0 or px > w or py > h:
                     continue
-                    
-                result[slot_name] = [(px, py, pw, ph)]
+
+                if slot_name not in result:
+                    result[slot_name] = []
+                result[slot_name].append((px, py, pw, ph))
             
             return result if result else None
             

@@ -389,63 +389,118 @@ class LocalTrainWorker(QThread):
         import torch
         import torch.nn as nn
         import cv2
+        import random
         from warp.trainer.layout_dataset_builder import LayoutDatasetBuilder
         from warp.trainer.layout_trainer import LayoutRegressor, REGRESSOR_SLOTS, NUM_SLOTS, OUTPUT_SIZE
 
-        self.progress.emit(91, 'Loading confirmed layouts for P4...')
+        self.progress.emit(85, 'Loading confirmed layouts for P4...')
+        _slog.info('LocalTrainer: starting P4 Layout CNN training')
         builder = LayoutDatasetBuilder(self._sets_root)
         samples = builder.build()
         
         if len(samples) < 5:
             _slog.info('LocalTrainer: not enough confirmed layouts for P4 training (min 5)')
-            return
+            return None
 
-        self.progress.emit(92, f'Training Layout CNN on {len(samples)} samples...')
+        self.progress.emit(86, f'Preparing {len(samples)} layout samples...')
         
         # Hyper-parameters for layout
-        LAYOUT_EPOCHS = 20
-        LAYOUT_LR     = 5e-4
-        LAYOUT_BATCH  = 4 # Layout images are large-ish
+        LAYOUT_EPOCHS = 100
+        LAYOUT_LR     = 3e-4
+        LAYOUT_BATCH  = 8
 
         # Build training tensors
-        x_train, y_train = [], []
+        x_all, y_all = [], []
         for s in samples:
             img = cv2.imread(str(s['image_path']), cv2.IMREAD_GRAYSCALE)
             if img is None: continue
-            # Resize to model input size (224x224)
             img_resized = cv2.resize(img, (224, 224))
-            x_train.append(img_resized[np.newaxis, :, :].astype(np.float32) / 255.0)
+            x_all.append(img_resized[np.newaxis, :, :].astype(np.float32) / 255.0)
             
-            # Label vector (normalized coords for REGRESSOR_SLOTS)
-            vec = np.zeros(NUM_SLOTS * 4, dtype=np.float32)
+            vec = np.zeros(NUM_SLOTS * 5, dtype=np.float32)
             for i, slot_name in enumerate(REGRESSOR_SLOTS):
                 if slot_name in s['labels']:
                     bbox = s['labels'][slot_name] # [nx, ny, nw, nh]
-                    vec[i*4 : i*4+4] = bbox
-            y_train.append(vec)
+                    vec[i*5 : i*5+4] = bbox
+                    vec[i*5 + 4] = 1.0 # Presence bit
+            y_all.append(vec)
 
-        if not x_train: return
+        if not x_all: 
+            return None
+        
+        # Simple train/val split (80/20)
+        idx = list(range(len(x_all)))
+        random.shuffle(idx)
+        split = int(len(idx) * 0.8)
+        train_idx, val_idx = idx[:split], idx[split:]
         
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = LayoutRegressor().to(device)
-        criterion = nn.MSELoss()
+        criterion = nn.MSELoss(reduction='none') # We will mask it
         optimizer = torch.optim.Adam(model.parameters(), lr=LAYOUT_LR)
 
-        x_t = torch.from_numpy(np.array(x_train)).to(device)
-        y_t = torch.from_numpy(np.array(y_train)).to(device)
+        x_train = torch.from_numpy(np.array([x_all[i] for i in train_idx])).to(device)
+        y_train = torch.from_numpy(np.array([y_all[i] for i in train_idx])).to(device)
+        x_val   = torch.from_numpy(np.array([x_all[i] for i in val_idx])).to(device) if val_idx else x_train
+        y_val   = torch.from_numpy(np.array([y_all[i] for i in val_idx])).to(device) if val_idx else y_train
 
-        model.train()
+        best_val_loss = float('inf')
+        best_state = None
+
+        _slog.info(f'LocalTrainer: P4 starting loop (epochs={LAYOUT_EPOCHS}, device={device}, samples={len(x_all)})')
         for epoch in range(LAYOUT_EPOCHS):
-            # Simple batching (not ideal for large datasets but ok for P4 alpha)
+            if self.isInterruptionRequested():
+                return None
+
+            # Train
+            model.train()
             optimizer.zero_grad()
-            pred = model(x_t)
-            loss = criterion(pred, y_t)
-            loss.backward()
+            pred_train = model(x_train)
+            
+            # Split into coords [B, N, 4] and presence [B, N]
+            p_coords = pred_train.view(-1, NUM_SLOTS, 5)[:, :, :4]
+            t_coords = y_train.view(-1, NUM_SLOTS, 5)[:, :, :4]
+            p_pres   = pred_train.view(-1, NUM_SLOTS, 5)[:, :, 4]
+            t_pres   = y_train.view(-1, NUM_SLOTS, 5)[:, :, 4]
+            
+            # Masked Coords Loss: only train on slots that exist
+            mask = t_pres.unsqueeze(-1) # [B, N, 1]
+            loss_c = (criterion(p_coords, t_coords) * mask).sum() / (mask.sum() + 1e-6)
+            # Presence Loss: train on everything (to learn what's missing)
+            loss_p = nn.functional.mse_loss(p_pres, t_pres)
+            
+            loss_train = loss_c + loss_p
+            loss_train.backward()
             optimizer.step()
             
-            if (epoch + 1) % 5 == 0:
-                self.progress.emit(92 + int(epoch/LAYOUT_EPOCHS*5), 
-                                   f'Layout Epoch {epoch+1}/{LAYOUT_EPOCHS} loss={loss.item():.4f}')
+            # Val
+            model.eval()
+            with torch.no_grad():
+                pred_val = model(x_val)
+                pv_coords = pred_val.view(-1, NUM_SLOTS, 5)[:, :, :4]
+                tv_coords = y_val.view(-1, NUM_SLOTS, 5)[:, :, :4]
+                pv_pres   = pred_val.view(-1, NUM_SLOTS, 5)[:, :, 4]
+                tv_pres   = y_val.view(-1, NUM_SLOTS, 5)[:, :, 4]
+                
+                mv = tv_pres.unsqueeze(-1)
+                lv_c = (criterion(pv_coords, tv_coords) * mv).sum() / (mv.sum() + 1e-6)
+                lv_p = nn.functional.mse_loss(pv_pres, tv_pres)
+                loss_val = lv_c + lv_p
+            
+            if loss_val < best_val_loss:
+                best_val_loss = loss_val.item()
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+
+            # Progress
+            pct = 87 + int(epoch / LAYOUT_EPOCHS * 12)
+            msg = f'Layout Epoch {epoch+1}/{LAYOUT_EPOCHS} loss={loss_train.item():.4f} val={loss_val.item():.4f}'
+            self.progress.emit(pct, msg)
+            if (epoch + 1) % 5 == 0 or epoch == 0:
+                _slog.info(f'LocalTrainer: {msg}')
+
+        # Save best weights
+        if best_state:
+            model.load_state_dict(best_state)
 
         # Save P4 model
         models_dir = self._sets_root / 'warp' / 'models'
@@ -454,11 +509,11 @@ class LocalTrainWorker(QThread):
         
         model.eval().to('cpu')
         torch.save(model.state_dict(), str(pt_path))
-        _slog.info(f'LocalTrainer: P4 Layout Regressor saved to {pt_path.name}')
+        _slog.info(f'LocalTrainer: P4 Layout Regressor saved (best val_loss={best_val_loss:.5f})')
         self.progress.emit(100, 'Layout training complete.')
         
         return (f'Layout Regressor (P4) trained successfully.\n'
-                f'{len(samples)} layouts | Loss: {loss.item():.4f}\n'
+                f'{len(samples)} layouts | val_loss: {best_val_loss:.5f}\n'
                 f'Saved to: {pt_path.name}')
     # ── helpers ───────────────────────────────────────────────────────────────
 
