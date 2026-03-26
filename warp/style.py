@@ -59,6 +59,16 @@ def warning_btn_style(checked_border: bool = False) -> str:
         f'QPushButton:hover{{background:{MBG};}}'
         + checked
     )
+def toggle_yellow_btn_style() -> str:
+    """Toggle button that fills yellow/amber (C_WARNING) when checked."""
+    return (
+        f'QPushButton {{'
+        f'background:transparent;color:{C_WARNING};'
+        f'border:1px solid {C_WARNING};border-radius:3px;padding:4px 10px;}}'
+        f'QPushButton:hover{{background:{MBG};}}'
+        f'QPushButton:checked{{background:{C_WARNING};color:{BG};font-weight:bold;}}'
+    )
+
 
 def danger_btn_style() -> str:
     """Destructive action button — red accent."""

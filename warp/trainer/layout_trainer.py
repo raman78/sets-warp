@@ -11,20 +11,33 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# Fixed list of slots we train the regressor on (SPACE order)
+# Expanded list of slots covering all categories (Space, Ground, Boffs, Traits, Specs)
 REGRESSOR_SLOTS = [
-    'Fore Weapons', 'Deflector', 'Sec-Def', 'Engines', 'Warp Core', 
-    'Shield', 'Aft Weapons', 'Experimental', 'Devices', 'Universal Consoles', 
-    'Engineering Consoles', 'Science Consoles', 'Tactical Consoles', 'Hangars'
+    # Space EQ & Metadata
+    'Fore Weapons', 'Deflector', 'Sec-Def', 'Engines', 'Warp Core', 'Shield',
+    'Aft Weapons', 'Experimental', 'Devices', 'Universal Consoles',
+    'Engineering Consoles', 'Science Consoles', 'Tactical Consoles', 'Hangars',
+    'Ship Name', 'Ship Type', 'Ship Tier',
+    # Ground EQ
+    'Body Armor', 'EV Suit', 'Personal Shield', 'Weapons', 'Kit', 'Kit Modules', 'Ground Devices',
+    # Traits
+    'Personal Space Traits', 'Starship Traits', 'Space Reputation', 'Active Space Rep',
+    'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
+    # Boffs
+    'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+    'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
+    # Specializations
+    'Primary Specialization', 'Secondary Specialization'
 ]
-NUM_SLOTS = len(REGRESSOR_SLOTS)
-OUTPUT_SIZE = NUM_SLOTS * 4 # [x, y, w, h] for each slot
+NUM_SLOTS = len(REGRESSOR_SLOTS) # Currently 42
+OUTPUT_SIZE = NUM_SLOTS * 5 # [x, y, w, h, presence] for each slot
 
 class LayoutRegressor(nn.Module):
     """
     MobileNetV3-Small based regressor for slot positions.
     Input: Grayscale (1-channel) image resized to 224x224.
-    Output: Coordinates normalized to 0.0-1.0.
+    Output: Normalized coordinates [x, y, w, h] + presence bit for each slot.
+    Usage: Each slot block is 5 floats. Presence > 0.5 means slot exists.
     """
     def __init__(self, output_size: int = OUTPUT_SIZE):
         super().__init__()

@@ -28,8 +28,10 @@ SELECTED_PEN_WIDTH = 3
 FONT_SIZE_BADGE    = 9
 
 # Colour of the bbox being drawn (Add BBox / Alt+LMB).
-# Change this one value to update both the drawn rectangle and the cursor colour.
 DRAW_BBOX_COLOR = QColor(255, 200, 0)   # yellow — matches Add BBox button style
+
+# Color for manipulation tools (Move/Resize)
+MANIP_COLOR = QColor(100, 200, 255)  # Action blue
 
 
 class AnnotationWidget(QWidget):
@@ -83,6 +85,7 @@ class AnnotationWidget(QWidget):
         self._review_items: list[dict] = []
         self._selected_row: int = -1      # row for full edit mode (with handles)
         self._highlighted_row: int = -1   # row for simple highlight (red dotted box)
+        self._cnn_debug_items: dict[str, list[tuple]] = {} # P4: Predicted bboxes
 
         # Hover tooltip state
         self._hover_row:   int   = -1
@@ -121,6 +124,7 @@ class AnnotationWidget(QWidget):
         self._user_scale  = None   # reset to fit-to-window on every image load
         self._compute_transform()
         self.adjustSize()
+        self.setFocus()
         self.update()
 
     def confirm_current(self, slot: str, name: str):
@@ -149,6 +153,9 @@ class AnnotationWidget(QWidget):
 
     def clear_highlight(self):
         self._highlighted_row = -1; self.update()
+
+    def set_cnn_debug_items(self, items: dict[str, list[tuple]]):
+        self._cnn_debug_items = items; self.update()
 
     def clear_pending(self):
         self._pending_bbox = None; self._drawing = False; self._draw_start = None; self._draw_current = None; self.update()
@@ -195,6 +202,12 @@ class AnnotationWidget(QWidget):
             ri = self._review_items[self._selected_row]
             self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), True, False)
 
+        # 4. CNN Debug items (P4)
+        if self._cnn_debug_items:
+            for slot, boxes in self._cnn_debug_items.items():
+                for bbox in boxes:
+                    self._draw_cnn_debug_item(painter, bbox, slot)
+
         # In-progress drawing (while dragging)
         if self._drawing and self._draw_start and self._draw_current:
             pen = QPen(DRAW_BBOX_COLOR, DRAW_PEN_WIDTH, Qt.PenStyle.DashLine)
@@ -234,6 +247,18 @@ class AnnotationWidget(QWidget):
             for hx, hy in self._handle_positions(rect):
                 painter.drawRect(QRect(hx - h // 2, hy - h // 2, h, h))
 
+    def _draw_cnn_debug_item(self, painter: QPainter, bbox: tuple, slot: str):
+        color = QColor(255, 120, 0, 180) # Orange
+        pen = QPen(color, 1, Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        rect = self._img_to_screen_rect(bbox)
+        painter.drawRect(rect)
+        
+        # Mini label
+        painter.setFont(QFont('', 7))
+        painter.drawText(rect.topLeft() + QPoint(2, 9), slot.split()[-1])
+
     # ---------------------------------------------------------------- mouse events
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -243,24 +268,27 @@ class AnnotationWidget(QWidget):
         alt_held   = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
         shift_held = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
 
-        # Shift+LMB — move or resize an existing review item via handles
+        # Shift+LMB — move or resize ANY existing review item via handles
         if shift_held and not alt_held:
-            # Prefer the currently selected row, then fall back to any hit
-            target_row = self._selected_row
-            if target_row < 0:
+            handle, target_row = self._handle_hit_test_all_reviews(pos)
+            if handle is None:
+                # If no handle hit, check if we hit the body of any bbox
                 target_row = self._hit_test_review(pos)
-            if target_row >= 0:
-                handle = self._handle_hit_test_review(pos, target_row)
-                if handle is None and self._hit_test_review(pos) == target_row:
-                    handle = 'move'   # anywhere inside bbox → move
-                if handle:
-                    self._drag_review_row = target_row
-                    self._drag_mode       = handle
-                    self._drag_start      = pos
-                    self._drag_orig       = self._review_items[target_row].get('bbox')
-                    self.setCursor(self._cursor_for_handle(handle))
-                    self.update()
-                    return
+                if target_row >= 0:
+                    handle = 'move'
+            
+            if handle and target_row >= 0:
+                self._drag_review_row = target_row
+                self._drag_mode       = handle
+                self._drag_start      = pos
+                self._drag_orig       = self._review_items[target_row].get('bbox')
+                self.setCursor(self._cursor_for_handle(handle))
+                # Sync selection to the item being manipulated
+                if target_row != self._selected_row:
+                    ri = self._review_items[target_row]
+                    self.item_selected.emit({'slot': ri.get('slot', ''), 'name': ri.get('name', ''), 'bbox': ri.get('bbox')})
+                self.update()
+                return
 
         if alt_held:
             self._drawing = True
@@ -341,34 +369,42 @@ class AnnotationWidget(QWidget):
             if nw > 8 and nh > 8:
                 ann = self._annotations[self._selected_idx]; self._data_mgr.update_annotation(self._img_path, ann, bbox=(nx, ny, nw, nh)); self._annotations = self._data_mgr.get_annotations(self._img_path)
             self.update(); return
-        if self._selected_idx >= 0:
-            handle = self._handle_hit_test(pos, self._selected_idx)
-            if handle: self.setCursor(self._cursor_for_handle(handle)); return
-        # Preserve context cursor if modifier held
         from PySide6.QtWidgets import QApplication as _QApp
         mods = _QApp.queryKeyboardModifiers()
+
+        # 1. Modifiers have highest priority for cursor shape (e.g. forced draw/zoom mode)
         if mods & Qt.KeyboardModifier.AltModifier:
             self.setCursor(self._make_draw_cursor())
-        elif mods & Qt.KeyboardModifier.ControlModifier:
+            self._cancel_hover_timer()
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.hideText()
+            return
+
+        if mods & Qt.KeyboardModifier.ControlModifier:
             self.setCursor(self._make_zoom_cursor())
-        elif mods & Qt.KeyboardModifier.ShiftModifier:
-            # Cursor hints for Shift+LMB move/resize
-            handle = self._handle_hit_test_review(pos, self._selected_row)
+            self._cancel_hover_timer()
+            return
+
+        # 2. Check for handle/bbox hover ONLY IF Shift is held (Edit Mode)
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            handle, target_row = self._handle_hit_test_all_reviews(pos)
             if handle:
                 self.setCursor(self._cursor_for_handle(handle))
-            elif self._hit_test_review(pos) >= 0:
-                self.setCursor(Qt.CursorShape.SizeAllCursor)
-            else:
-                self.unsetCursor()
-        else:
-            self.unsetCursor()
-        # Hover tooltip — find review item under mouse
-        hovered = -1
-        for idx, ri in enumerate(self._review_items):
-            bbox = ri.get('bbox')
-            if bbox and self._img_to_screen_rect(bbox).contains(pos):
-                hovered = idx
-                break
+                self._cancel_hover_timer()
+                from PySide6.QtWidgets import QToolTip
+                QToolTip.hideText()
+                return
+
+            hit_row = self._hit_test_review(pos)
+            if hit_row >= 0:
+                self.setCursor(self._make_edit_cursor())
+                self._cancel_hover_timer()
+                from PySide6.QtWidgets import QToolTip
+                QToolTip.hideText()
+                return
+
+        # 3. Regular hover tooltip logic (no special cursor)
+        hovered = self._hit_test_review(pos)
         if hovered != self._hover_row:
             self._hover_row = hovered
             self._cancel_hover_timer()
@@ -377,6 +413,13 @@ class AnnotationWidget(QWidget):
             else:
                 from PySide6.QtWidgets import QToolTip
                 QToolTip.hideText()
+        
+        # Restore appropriate cursor if not over anything special
+        if hovered < 0:
+            if mods & Qt.KeyboardModifier.ShiftModifier:
+                self.setCursor(self._make_edit_cursor())
+            else:
+                self.unsetCursor()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton: return
@@ -426,7 +469,10 @@ class AnnotationWidget(QWidget):
         self._hover_timer.start(700)
 
     def _show_hover_tooltip(self, row: int):
-        if row < 0 or row >= len(self._review_items):
+        from PySide6.QtWidgets import QApplication as _QApp
+        if row < 0 or row >= len(self._review_items) or (_QApp.queryKeyboardModifiers() & Qt.KeyboardModifier.ShiftModifier):
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.hideText()
             return
         ri        = self._review_items[row]
         name      = ri.get('name') or '— unmatched —'
@@ -477,6 +523,20 @@ class AnnotationWidget(QWidget):
             if abs(x - hx) <= h and abs(y - hy) <= h: return name
         return None
 
+    def _handle_hit_test_all_reviews(self, pos: QPoint) -> tuple[str | None, int]:
+        """Hit-test handles for ALL review items. Returns (handle_name, row_index)."""
+        # Prioritize selected row if it's under mouse
+        if self._selected_row >= 0:
+            h = self._handle_hit_test_review(pos, self._selected_row)
+            if h: return h, self._selected_row
+            
+        # Then check others (top-most in list first)
+        for idx in range(len(self._review_items)):
+            if idx == self._selected_row: continue
+            h = self._handle_hit_test_review(pos, idx)
+            if h: return h, idx
+        return None, -1
+
     def _handle_hit_test(self, pos: QPoint, ann_idx: int) -> str | None:
         if ann_idx < 0 or ann_idx >= len(self._annotations): return None
         try:
@@ -508,25 +568,33 @@ class AnnotationWidget(QWidget):
     @staticmethod
     def _make_zoom_cursor() -> QCursor:
         """Magnifying glass cursor shown while Ctrl is held."""
-        size = 22
+        size = 28
         px = QPixmap(size, size)
         px.fill(Qt.GlobalColor.transparent)
         p = QPainter(px)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # White outline for visibility on dark backgrounds
-        p.setPen(QPen(QColor(255, 255, 255), 4))
-        p.drawEllipse(2, 2, 12, 12)
-        p.drawLine(13, 13, 19, 19)
-        # Dark glass + handle
-        p.setPen(QPen(QColor(40, 40, 40), 2))
-        p.drawEllipse(2, 2, 12, 12)
-        p.drawLine(13, 13, 19, 19)
+        # White outer ring
+        p.setPen(QPen(QColor(255, 255, 255, 220), 2))
+        p.setBrush(QBrush(QColor(100, 200, 255, 60)))
+        p.drawEllipse(2, 2, 16, 16)
+        # Handle
+        p.drawLine(16, 16, 24, 24)
         p.end()
-        return QCursor(px, 6, 6)
+        return QCursor(px, 10, 10)
 
     @staticmethod
-    def _cursor_for_handle(handle: str) -> Qt.CursorShape:
-        return {'move': Qt.CursorShape.SizeAllCursor, 'resize_NW': Qt.CursorShape.SizeFDiagCursor, 'resize_SE': Qt.CursorShape.SizeFDiagCursor, 'resize_NE': Qt.CursorShape.SizeBDiagCursor, 'resize_SW': Qt.CursorShape.SizeBDiagCursor, 'resize_N': Qt.CursorShape.SizeVerCursor, 'resize_S': Qt.CursorShape.SizeVerCursor, 'resize_W': Qt.CursorShape.SizeHorCursor, 'resize_E': Qt.CursorShape.SizeHorCursor}.get(handle, Qt.CursorShape.ArrowCursor)
+    def _make_edit_cursor() -> Qt.CursorShape:
+        """Use system move cursor for 'Edit Mode' (Shift) as requested."""
+        return Qt.CursorShape.SizeAllCursor
+
+    def _cursor_for_handle(self, handle: str) -> QCursor | Qt.CursorShape:
+        # Use system resize cursors for precision as requested
+        if handle == 'move': return self._make_edit_cursor()
+        if handle in ('resize_NW', 'resize_SE'): return Qt.CursorShape.SizeFDiagCursor
+        if handle in ('resize_NE', 'resize_SW'): return Qt.CursorShape.SizeBDiagCursor
+        if handle in ('resize_N', 'resize_S'):   return Qt.CursorShape.SizeVerCursor
+        if handle in ('resize_W', 'resize_E'):   return Qt.CursorShape.SizeHorCursor
+        return Qt.CursorShape.ArrowCursor
 
     def wheelEvent(self, event):
         ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
@@ -545,20 +613,24 @@ class AnnotationWidget(QWidget):
             sa = self.parent()
             while sa and not isinstance(sa, QAbstractScrollArea):
                 sa = sa.parent()
-            # Cursor in viewport coords + scroll offset → image point under cursor
+
+            pw, ph = self._pixmap.width(), self._pixmap.height()
+            lpos = self.mapFromGlobal(QCursor.pos())
+            img_x, img_y = self._screen_to_img(lpos.x(), lpos.y())
+            
             if sa:
                 vp = sa.viewport()
                 vp_pos = vp.mapFromGlobal(QCursor.pos())
                 vp_cx, vp_cy = float(vp_pos.x()), float(vp_pos.y())
-                h_val = float(sa.horizontalScrollBar().value())
-                v_val = float(sa.verticalScrollBar().value())
-                img_x = (vp_cx + h_val) / old_s if old_s else 0.0
-                img_y = (vp_cy + v_val) / old_s if old_s else 0.0
+                # If cursor is outside image, zoom towards image center
+                if not (0 <= img_x <= pw and 0 <= img_y <= ph):
+                    img_x, img_y = pw / 2.0, ph / 2.0
+                    vp_cx, vp_cy = vp.width() / 2.0, vp.height() / 2.0
             else:
+                img_x, img_y = pw / 2.0, ph / 2.0
                 vp_cx, vp_cy = self.width() / 2.0, self.height() / 2.0
-                img_x = vp_cx / old_s if old_s else 0.0
-                img_y = vp_cy / old_s if old_s else 0.0
                 sa = None
+
             if new_s <= fit_s * 1.001:
                 self._user_scale = None
             else:
@@ -585,27 +657,47 @@ class AnnotationWidget(QWidget):
         QApplication.instance().removeEventFilter(self)
 
     def enterEvent(self, event):
-        """Mouse entered canvas area — show context cursor if modifier held."""
+        """Mouse entered canvas area — grab focus and show context cursor."""
+        self.setFocus()
         from PySide6.QtWidgets import QApplication
-        mods = QApplication.queryKeyboardModifiers()
+        mods = QApplication.keyboardModifiers()
         if mods & Qt.KeyboardModifier.AltModifier:
             self.setCursor(self._make_draw_cursor())
         elif mods & Qt.KeyboardModifier.ControlModifier:
             self.setCursor(self._make_zoom_cursor())
 
     def leaveEvent(self, event):
-        """Mouse left canvas area — restore normal cursor."""
-        if not self._drawing:
+        """Mouse left canvas area — only restore normal cursor if no tools are active."""
+        if self._drawing: return
+        from PySide6.QtWidgets import QApplication as _QApp
+        mods = _QApp.queryKeyboardModifiers()
+        if not (mods & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)):
             self.unsetCursor()
 
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
         etype = event.type()
-        if etype in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
-            # Only react when mouse is over this widget
+        if etype in (QEvent.Type.MouseMove, QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            # Only react when mouse is over this widget or its general area
             from PySide6.QtGui import QCursor as _QC
-            if not self.rect().contains(self.mapFromGlobal(_QC.pos())):
+            gpos = _QC.pos()
+            lpos = self.mapFromGlobal(gpos)
+            
+            # If mouse is over us and a key is pressed, grab focus if we don't have it
+            if etype == QEvent.Type.KeyPress and self.rect().contains(lpos) and not self.hasFocus():
+                self.setFocus()
+
+            # Allow cursor change if mouse is within the viewport even if outside the image widget
+            over_area = self.rect().contains(lpos)
+            if not over_area and self.parent():
+                viewport_rect = self.parent().rect()
+                viewport_pos = self.parent().mapFromGlobal(gpos)
+                if viewport_rect.contains(viewport_pos):
+                    over_area = True
+
+            if not over_area:
                 return False
+            
             key = event.key()
             if key == Qt.Key.Key_Alt and not event.isAutoRepeat():
                 if etype == QEvent.Type.KeyPress:
@@ -619,13 +711,15 @@ class AnnotationWidget(QWidget):
                 else:
                     self.unsetCursor()
             elif key == Qt.Key.Key_Shift and not event.isAutoRepeat():
-                local_pos = self.mapFromGlobal(_QC.pos())
                 if etype == QEvent.Type.KeyPress:
-                    handle = self._handle_hit_test_review(local_pos, self._selected_row)
+                    from PySide6.QtWidgets import QToolTip
+                    QToolTip.hideText()
+                    # Determine appropriate cursor based on what's under mouse
+                    handle, _row = self._handle_hit_test_all_reviews(lpos)
                     if handle:
                         self.setCursor(self._cursor_for_handle(handle))
-                    elif self._hit_test_review(local_pos) >= 0:
-                        self.setCursor(Qt.CursorShape.SizeAllCursor)
+                    else:
+                        self.setCursor(self._make_edit_cursor())
                 else:
                     if not self._drawing:
                         self.unsetCursor()
@@ -661,6 +755,17 @@ class AnnotationWidget(QWidget):
         x, y, w, h = bbox
         return QRect(int(x*s)+self._offset_x, int(y*s)+self._offset_y,
                      max(4,int(w*s)), max(4,int(h*s)))
+
+    def _screen_to_img(self, x: float, y: float) -> tuple[float, float]:
+        """Convert screen (widget) pixel position to original image coordinate."""
+        s = self._scale
+        if not s: return 0.0, 0.0
+        return (x - self._offset_x) / s, (y - self._offset_y) / s
+
+    def _img_to_screen(self, x: float, y: float) -> tuple[float, float]:
+        """Convert original image coordinate to screen (widget) pixel position."""
+        s = self._scale
+        return x * s + self._offset_x, y * s + self._offset_y
 
     def _screen_to_img_rect(self, rect: QRect) -> tuple:
         s = self._scale
