@@ -15,6 +15,21 @@
 - **Small safe steps**: each phase is independently testable. No big-bang changes.
 - **Talk before risky moves**: any conflict marked HIGH risk requires discussion before resolution.
 
+## Testing & Verification Responsibility
+
+**All testing, refactoring and auditing at every step is performed by Claude** — the user is not expected to run tests or inspect code manually.
+
+Methods used (in order of preference):
+1. Static code analysis — reading files, grep, diff
+2. Log inspection — running the app in background, reading output
+3. Any other tools available — bash, git, linters
+
+**The user is asked to intervene only when truly necessary** (e.g. visual UI verification, confirming a specific click path, or checking something only visible in the running app). When that happens, Claude provides exact step-by-step instructions:
+- What to launch / click / type
+- What input to provide
+- What the expected output or visual result should be
+- What to report back if it differs
+
 ---
 
 ## Current State Analysis (2026-03-27)
