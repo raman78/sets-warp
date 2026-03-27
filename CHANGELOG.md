@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## v1.7b (2026-03-27)
+## v1.8b (2026-03-27)
 
 ### WARP CORE — Canvas zoom & cursor fixes
 
@@ -11,6 +11,12 @@
 - **Ctrl+wheel from scroll area padding**: `WarpCoreWindow` global event filter intercepts wheel events when mouse is in scroll area but outside canvas, forwarding to canvas — Ctrl+wheel zoom works anywhere in the central panel.
 - **Modifier key cursors fixed (`QApplication.setOverrideCursor`)**: `widget.setCursor()` only works when mouse is over that widget. Replaced with `QApplication.setOverrideCursor()` / `restoreOverrideCursor()` — cursor changes on first Ctrl/Alt/Shift press regardless of mouse position.
 - **`AttributeError: QMouseEvent has no attribute key()`**: eventFilter called `event.key()` on MouseMove events — fixed by early return for `MouseMove` before key-handling branch.
+
+### CI / GitHub Actions fixes
+
+- **`release.yml`**: added `permissions: contents: write` — without it workflow failed with 403 when creating releases
+- **`release.yml`**: removed `prerelease: true`, added `make_latest: true` — releases now correctly marked as Latest
+- **`build_installer.yml`**: changed trigger from `release: published` to `push: tags: v*` — `GITHUB_TOKEN` cannot trigger other workflows via release events, so installer never built automatically; direct tag trigger fixes this
 
 ---
 
