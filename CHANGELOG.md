@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## v1.7b (2026-03-27)
+
+### WARP CORE — Canvas zoom & cursor fixes
+
+- **Zoom anchor corrected (Gwenview-style)**: image loads at 1:1 if it fits the viewport; scales down to fit if it's larger. Previously `_fit_scale` was always `1.0` (never computed from viewport).
+- **Scrollbars in zoom mode**: `setWidgetResizable(False)` so `adjustSize()` after zoom actually expands the widget beyond the viewport — scrollbars now appear correctly.
+- **`_compute_transform` uses viewport size**: `_fit_scale` computed from parent viewport dimensions. `sizeHint` returns viewport size in fit mode, `image × scale` in zoom mode.
+- **Viewport resize handled**: event filter on viewport fires `_compute_transform` + `adjustSize` on window resize so fit-to-window stays correct.
+- **Ctrl+wheel from scroll area padding**: `WarpCoreWindow` global event filter intercepts wheel events when mouse is in scroll area but outside canvas, forwarding to canvas — Ctrl+wheel zoom works anywhere in the central panel.
+- **Modifier key cursors fixed (`QApplication.setOverrideCursor`)**: `widget.setCursor()` only works when mouse is over that widget. Replaced with `QApplication.setOverrideCursor()` / `restoreOverrideCursor()` — cursor changes on first Ctrl/Alt/Shift press regardless of mouse position.
+- **`AttributeError: QMouseEvent has no attribute key()`**: eventFilter called `event.key()` on MouseMove events — fixed by early return for `MouseMove` before key-handling branch.
+
+---
+
 ## v1.6b (2026-03-26)
 
 ### WARP — Integrated Autonomous Recognition Engine (P0–P5)
