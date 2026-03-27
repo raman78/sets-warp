@@ -1,47 +1,308 @@
-# Roadmap: SETS-WARP Separation
+# Roadmap: SETS-WARP Separation & Upstream Merge
 
 ## Goal
-Decouple WARP-specific logic from the original `src/` (SETS) directory. This allows for seamless updates from the `SETS` upstream repository while maintaining WARP features as a "plugin" or extension.
+
+1. **Decouple WARP-specific logic from `src/`** so upstream SETS can be merged with minimal conflicts.
+2. **Merge upstream SETS** into SETS-WARP to catch up with 738 commits of upstream development.
+3. **Preserve 100% of SETS-WARP functionality** — no feature may be lost at any step.
+4. **Contribute select improvements back upstream** after separation is stable.
 
 ## Guiding Principles
-*   **Zero Functionality Loss**: No additional SETS functionality and no WARP features and user settings must be lost during or after the separation.
-*   **Clean `src/`**: The `src/` directory should eventually be an exact copy of the upstream `SETS` repository.
-*   **Runtime Injection**: Use inheritance and monkey patching to add WARP features at runtime.
+
+- **Zero Functionality Loss**: No SETS or WARP feature, no user setting may be lost.
+- **Upstream is master for `src/`**: when merging, upstream code wins unless it directly breaks WARP — then we discuss before acting.
+- **WARP is a plugin**: all WARP-specific logic lives in `warp/` and is injected at runtime via inheritance from `WarpSETS(SETS)`.
+- **Small safe steps**: each phase is independently testable. No big-bang changes.
+- **Talk before risky moves**: any conflict marked HIGH risk requires discussion before resolution.
 
 ---
 
-## Phase 0: Preparation & Analysis
-* [x] **0.1 Setup Upstream Remote**: Add original SETS repo as `upstream`. (Assumed done or managed externally)
-* [x] **0.2 Create Vendor Branch**: Create `vendor-sets` branch to track clean upstream. (User action required: `git checkout -b vendor-sets upstream/main`)
-* [x] **0.3 Change Audit**: Identified all WARP modifications in `src/` within `sets-warp`.
+## Current State Analysis (2026-03-27)
 
-## Phase 1: Establish WARP Entry Point
-* [x] **1.1 Create `warp/app.py`**: Define `WarpSETS(SETS)` class inheriting from `src.app.SETS`. Moved WARP-specific logic (`_get_install_mode`, `_save_install_mode`, `_WARP_AVAILABLE`, app name overrides, UI injection logic, installer logic) from `src/app.py` to `warp/app.py`.
-* [x] **1.2 Update `main.py`**: Switch entry point to `warp.app.WarpSETS`.
-* [x] **1.3 Basic Overrides**: Moved version strings (`version`, `__version__`), application naming, and Windows Taskbar ID to `WarpSETS`.
+### Branch divergence
+- **738 commits** upstream ahead of us — upstream SETS has been actively developed since our fork
+- **180 commits** we are ahead of upstream — our WARP additions
+- Protected snapshot: branch `stable-1.8b` (created at Phase 0)
 
-## Phase 2: Migrate UI & Feature Injections
-* [ ] **2.1 UI Helpers Migration**: Move menu injections, "Warp Core" section, and update checks to `warp/ui_helpers.py`.
-* [ ] **2.2 Initialization Flow**: Call UI helpers from `WarpSETS.__init__` or a dedicated `_inject_warp_ui` method.
-* [ ] **2.3 Cleanup `src/app.py`**: Remove all UI injection code from the original source.
-* [ ] **2.4 Installer Logic**: Move WARP installation/uninstallation logic to the `warp` module.
+### What upstream SETS added since our fork (features we want)
+| Area | Example commits |
+|------|----------------|
+| Skill tree (space + ground) | Multiple |
+| Markdown export | `e4c9b99`, `f83d8d4`, `70d2ef8` |
+| Settings page with UI scale | `0a018d5` |
+| About sidebar | `eb0289e` |
+| Picker improvements + relative position fix | `2dfd9c9`, `8fcccb0` |
+| Save format preference (JSON/PNG) | `00e04a4` |
+| Boff/console/temporal operative bug fixes | `7baa777`, `6368f8c`, `280cc7c` |
+| Modifier data refinement | `14dfaf8`, `5e61133` |
+| Legacy build conversion | `d2bb7d2` |
+| Linux path fixes (`os.path.join` everywhere) | `9c5b384` |
 
-## Phase 3: Monkey Patching & Source Cleanup
-* [ ] **3.1 Identify Complex Modifications**: List modifications in `src/` modules other than `app.py`.
-* [ ] **3.2 Implement Patches**: Use method overriding in `WarpSETS` or monkey patching in `warp/patches.py` for:
-    * `src.buildupdater.update_boff_seat`
-    * `src.widgetbuilder` UI overrides
-    * Custom constant injections in `src.constants`.
-* [ ] **3.3 Full Source Restore**: Revert all files in `src/` to their original `SETS` state.
+We want ALL of these — they are valuable SETS improvements.
 
-## Phase 4: Verification & Upstream Integration
-* [ ] **4.1 Regression Testing**: Verify all SETS and WARP features work post-separation.
-* [ ] **4.2 Sync with Upstream**: Merge `upstream/main` into `main` branch.
-* [ ] **4.3 Feature Integration**: Integrate "Science Destroyer" update (`ae63ef1`) into the clean `src/` directory.
+### Files in `src/` and their status
+
+#### Files ENTIRELY OURS — no merge conflict possible
+These files do not exist in upstream. Git keeps them automatically on merge.
+
+| File | Lines | Notes |
+|------|-------|-------|
+| `src/setsdebug.py` | 60 | Our logging system — used everywhere |
+| `src/syncmanager.py` | 604 | Our sync + GitHub cache fallback |
+| `src/cargomanager.py` | 46 | Our cargo data manager |
+| `src/downloader.py` | 196 | Our HTTP downloader |
+| `src/imagemanager.py` | 141 | Our image manager |
+
+No action needed for these. After merge, verify they still import correctly.
+
+#### Files modified on BOTH sides — real conflict risk
+
+| File | Upstream adds | We add | Risk |
+|------|--------------|--------|------|
+| `src/app.py` | Skill tree init, settings page, about sidebar, markdown export wiring, Picker fixes | CargoManager/ImageManager/Downloader setup, WARP injection, Cloudflare cookies | **HIGH** |
+| `src/datafunctions.py` | Modifier refinements, legacy build fixes, skill loading (-470/+68 net diff) | Our data pipeline | **HIGH** |
+| `src/iofunc.py` | `os.path.join` fixes, maintenance functions, save dialog improvements | Our utility additions | **MEDIUM** |
+| `src/callbacks.py` | Boff fixes, console slot fix, skill unlock callback | `_save_session_slots`, `_restore_session_slots` | **LOW** — our additions are isolated |
+| `src/buildupdater.py` | Skill tree integration, `convert_old_build` improvements | DC ships (`equipcannons`), item normalization, boff ability aliases | **MEDIUM** |
+| `src/constants.py` | Minor upstream additions | `SEVEN_DAYS_IN_SECONDS`, `GITHUB_CACHE_URL`, species sets | **LOW** |
+| `src/widgets.py` | Upstream also added `ImageLabel` (different impl) | Our `ImageLabel`, `TooltipLabel`, `reset_cache` improvements | **MEDIUM** — both added ImageLabel |
+| `src/splash.py` | New splash layout | Our `splash_progress` | **LOW** |
+| `src/subwindows.py` | Small changes | Small changes | **LOW** |
+| `src/export.py` | Markdown export restructure | Minor | **LOW** |
+| `src/textedit.py` | Minor | Minor | **LOW** |
+
+### WARP-specific code still in `src/` (must move to `warp/` before merge)
+
+| Code | Current location | Target |
+|------|-----------------|--------|
+| `_save_session_slots()` | `src/callbacks.py` | `warp/session.py` |
+| `_restore_session_slots()` | `src/callbacks.py` | `warp/session.py` |
+| Debug `print('[SETS]...')` statements | `src/app.py` | Remove entirely |
+| WARP injection, install_mode, `_WARP_AVAILABLE` | `src/app.py` | **Already done** in `warp/app.py` (Phase 1) |
 
 ---
 
-## Technical Approach: Decoupling Strategy
-1. **Inheritance**: `WarpSETS` extends `SETS` to override specific behaviors.
-2. **Monkey Patching**: Dynamic runtime replacement of functions in `src` modules to add WARP logic without editing files.
-3. **Dependency Injection**: UI elements are injected into layouts after they are initialized by the base class.
+## Phases
+
+### Phase 0 — Branch protection (do immediately) ✅
+
+Create `stable-1.8b` branch from current HEAD before any work begins.
+
+```bash
+git checkout -b stable-1.8b
+git push origin stable-1.8b
+git checkout main
+```
+
+This is the safety net. If anything goes wrong at any later phase, we return here.
+
+---
+
+### Phase 1 — WARP entry point ✅ DONE
+
+- `warp/app.py` created with `WarpSETS(SETS)` class
+- Version strings, app naming, Windows taskbar ID moved out of `src/app.py`
+- `main.py` updated to use `warp.app.WarpSETS`
+
+---
+
+### Phase 2 — Remove remaining WARP code from `src/`
+
+**Goal**: after this phase, `src/` contains zero WARP-specific logic.
+Each step is a separate commit. Run the app after each step.
+
+#### 2.1 Move session slot functions (LOW risk)
+
+- Create `warp/session.py`
+- Move `_save_session_slots()` and `_restore_session_slots()` from `src/callbacks.py` into it
+- Update `warp/warp_dialog.py` imports to use `warp.session`
+- Remove the functions from `src/callbacks.py`
+- Verify: open WARP dialog, switch ships — build state preserved ✓
+
+These functions are only called by `warp_dialog.py`. Safe move.
+
+#### 2.2 Clean debug prints from `src/app.py` (LOW risk)
+
+- Remove all `print('[SETS]...')` and `print("[SETS]...")` statements added during development
+- These are not upstream and will cause unnecessary merge conflicts
+
+#### 2.3 Verify `src/app.py` is clean of WARP (LOW risk)
+
+- After 2.1 and 2.2, confirm no WARP-specific code remains in `src/app.py`
+- `WarpSETS` in `warp/app.py` handles all overrides via inheritance
+
+**Checkpoint**: full smoke test — SETS opens, WARP dialog works, WARP CORE opens.
+
+---
+
+### Phase 3 — Upstream merge
+
+**This is the big step. Do not rush. One file at a time.**
+
+#### 3.1 Dry-run: map actual conflicts
+
+```bash
+git merge --no-commit --no-ff upstream/main
+git status
+git merge --abort
+```
+
+Review the conflict list. Classify each file:
+- **AUTO**: safe to take upstream, our changes are absent or trivial to re-add
+- **MANUAL**: needs careful line-by-line review
+
+#### 3.2 LOW-risk files — take upstream, re-apply our additions
+
+Strategy for each: `git checkout upstream/main -- <file>`, then re-add our specific lines.
+
+- `src/__init__.py` — take upstream
+- `src/textedit.py` — take upstream, check if our 6 added lines still needed
+- `src/export.py` — take upstream (upstream restructured markdown export significantly)
+- `src/splash.py` — take upstream, re-add `splash_progress` if still needed by our code
+- `src/subwindows.py` — take upstream, re-add our additions if any remain after Phase 2
+
+#### 3.3 MEDIUM-risk files — manual merge, one at a time
+
+**`src/callbacks.py`** (LOW after Phase 2.1):
+- After session functions moved out, our changes are minimal
+- Take upstream version, verify nothing WARP-related remains
+
+**`src/constants.py`**:
+- Take upstream version
+- Re-add: `SEVEN_DAYS_IN_SECONDS`, `GITHUB_CACHE_URL`, species sets (`'Klingon': {...}` etc.)
+- These are used by `src/syncmanager.py` and `src/cargomanager.py`
+
+**`src/iofunc.py`**:
+- Take upstream as base (it has `os.path.join` fixes that we want everywhere)
+- Identify our additions: compare `git diff upstream/main HEAD -- src/iofunc.py`
+- Re-add our unique functions on top
+- Verify `src/syncmanager.py` still imports correctly
+
+**`src/buildupdater.py`**:
+- Take upstream as base
+- Re-apply our additions method by method:
+  - DC ship support: `if ship_data['equipcannons'] == 'yes': self.widgets.ship['dc'].show()`
+  - Item normalization: `item.setdefault('mark', '')` / `setdefault('modifiers', [...])`
+  - Boff ability alias resolution block
+  - Intel Holoship `uni_consoles += 1` special case
+- These are in different methods than upstream's skill tree additions — conflict unlikely but check
+
+**`src/widgets.py`**:
+- Both sides added `ImageLabel`. Compare implementations:
+  - Ours: aspect-ratio preserving, uses `setPixmap`, `resizeEvent`
+  - Upstream: may differ — take the better one or merge best of both
+- Keep our unique additions: `TooltipLabel`, `reset_cache` improvements, `progress_bar`/`progress_detail` fields
+- Keep our extended import list
+
+#### 3.4 HIGH-risk files — discuss before each
+
+**`src/datafunctions.py`** (HIGH):
+- Largest diff: upstream -470 lines from our version, +68 new upstream lines
+- Means upstream restructured this file significantly
+- Strategy:
+  1. Read upstream version fully
+  2. Read our version fully
+  3. List what we have that upstream doesn't — identify each addition
+  4. Take upstream as base, re-add our additions function by function
+  5. **STOP and discuss** if any upstream restructure makes our additions incompatible
+
+**`src/app.py`** (HIGH — do last):
+- Upstream added: skill tree `__init__` calls, settings page setup, about sidebar, markdown export wiring
+- We added: `CargoManager`, `ImageManager`, `Downloader` init, Cloudflare cookie config
+- These are additive sections in `__init__` — manual merge should be feasible
+- Strategy: take upstream `__init__` as base, insert our manager setup blocks after upstream's equivalent init calls
+- **STOP and discuss** if upstream's `__init__` structure conflicts with our insertions
+
+#### 3.5 Verify our-only files still work
+
+After all file merges, test integration of our exclusive files:
+- `src/syncmanager.py` — verify imports from new `src/iofunc.py` still work
+- `src/cargomanager.py` — verify imports still valid
+- `src/downloader.py`, `src/imagemanager.py` — verify no interface breakage
+
+#### 3.6 Full integration test after merge
+
+- SETS-WARP opens → splash, ship selector ✓
+- Skill tree loads (new upstream feature) ✓
+- Markdown export works (new upstream feature) ✓
+- Settings page opens (new upstream feature) ✓
+- WARP dialog → import a screenshot ✓
+- WARP CORE → load folder, zoom/cursor, accept item ✓
+- Export build (all formats) ✓
+
+---
+
+### Phase 4 — Stabilization after merge
+
+#### 4.1 Update `warp/app.py` overrides
+
+Upstream's `SETS.__init__` will have changed. Review `WarpSETS`:
+- Check method signatures still match
+- Check that `super().__init__()` call in `WarpSETS.__init__` passes correct arguments
+- Update any overridden methods whose upstream base changed
+
+#### 4.2 Document maintained differences
+
+Create `docs/src_patches.md` listing every intentional difference between our `src/` and upstream:
+- What we added and why
+- What upstream hasn't accepted yet
+- What to watch on future upstream updates (what to re-apply next time)
+
+#### 4.3 Release stabilization
+
+- Run full test cycle
+- Tag `v1.9b` or `v2.0b` depending on scope of changes
+- Update CHANGELOG with upstream feature list we inherited
+
+---
+
+### Phase 5 — Upstream contribution (after Phase 4 stable)
+
+Offer our `src/` improvements back to upstream SETS via Pull Request.
+
+**Candidates for upstream PR — genuine SETS fixes/features:**
+| Our change | Why upstream would want it |
+|-----------|--------------------------|
+| DC ship support (`equipcannons` in buildupdater) | Genuine missing ship feature |
+| Item normalization (`mark`/`modifiers` defaults) | Bug fix for legacy builds |
+| Boff ability alias resolution | Bug fix |
+| `GITHUB_CACHE_URL` fallback for Cloudflare-blocked stowiki | Useful for all SETS users on Linux |
+
+**NOT appropriate for upstream (SETS-WARP exclusive):**
+- `syncmanager.py`, `cargomanager.py`, `imagemanager.py`, `downloader.py`
+- `setsdebug.py`
+- Anything in `warp/`
+
+**Process for each PR:**
+1. Create a branch FROM `upstream/main` (not our main)
+2. Add only the specific change — nothing else
+3. Open PR to `STOCD/SETS` with clear description of the fix
+4. Do not merge upstream's response into our main until they accept/reject
+
+---
+
+## Risk Register
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|-----------|
+| `src/app.py` merge breaks SETS `__init__` | HIGH | HIGH | Do last, `stable-1.8b` fallback, test after each block |
+| `src/datafunctions.py` upstream restructure incompatible | MEDIUM | HIGH | Full read of both sides before touching, discuss if unclear |
+| Our `syncmanager` breaks with new `iofunc` | LOW | HIGH | Test immediately after iofunc merge |
+| `src/widgets.py` duplicate `ImageLabel` causes runtime error | MEDIUM | MEDIUM | Compare both, pick one, keep unique additions |
+| WARP dialog breaks after `_session_slots` move (Phase 2.1) | LOW | HIGH | Update imports in warp_dialog.py in same commit |
+| Upstream skill tree conflicts with our ship loading | LOW | MEDIUM | Skill tree is new code, unlikely to touch our DC/normalization additions |
+| `warp/app.py` override signature mismatch after merge | MEDIUM | MEDIUM | Phase 4.1 explicitly reviews this |
+| Losing `stable-1.8b` as fallback | VERY LOW | CRITICAL | Push to origin immediately in Phase 0 |
+
+---
+
+## Decision Log
+
+| Date | Decision | Reason |
+|------|----------|--------|
+| 2026-03-27 | Upstream is master for `src/` on conflicts | 738 commits of upstream work is more current; we don't lose features, we re-add on top |
+| 2026-03-27 | Full merge (not cherry-pick) from upstream | We want ALL upstream features, not selective ones |
+| 2026-03-27 | WARP code lives in `warp/` only — injected via inheritance | Enables clean upstream sync going forward |
+| 2026-03-27 | No monkey patching for `buildupdater` | Fragile — breaks silently on upstream signature changes; subclass override instead |
+| 2026-03-27 | `stable-1.8b` branch before any work | Safety net for all phases |
+| 2026-03-27 | Upstream PR for genuine fixes (Phase 5) | DC ships, item normalization are genuine SETS fixes, not WARP-specific |
