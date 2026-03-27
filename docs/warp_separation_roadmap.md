@@ -121,30 +121,40 @@ This is the safety net. If anything goes wrong at any later phase, we return her
 
 ---
 
-### Phase 2 — Remove remaining WARP code from `src/`
+### Phase 2 — Remove remaining WARP code from `src/` ✅ DONE
 
 **Goal**: after this phase, `src/` contains zero WARP-specific logic.
-Each step is a separate commit. Run the app after each step.
 
-#### 2.1 Move session slot functions (LOW risk)
+#### 2.1 Session slot functions — REVISED (NO MOVE NEEDED)
 
-- Create `warp/session.py`
-- Move `_save_session_slots()` and `_restore_session_slots()` from `src/callbacks.py` into it
-- Update `warp/warp_dialog.py` imports to use `warp.session`
-- Remove the functions from `src/callbacks.py`
-- Verify: open WARP dialog, switch ships — build state preserved ✓
+**Decision**: `_save_session_slots()` and `_restore_session_slots()` stay in `src/callbacks.py`.
+They are called from `select_ship()` and `tier_callback()` in `src/callbacks.py` itself — not only
+from `warp_dialog.py`. Moving them to `warp/` would create a wrong `src/ → warp/` dependency.
+These are SETS improvements (preserve equipment on ship switch), not WARP-exclusive.
 
-These functions are only called by `warp_dialog.py`. Safe move.
+#### 2.2 Clean debug prints from `src/app.py` ✅
 
-#### 2.2 Clean debug prints from `src/app.py` (LOW risk)
+- Removed all `print('[SETS]...')` statements added during development (lines 2, 4, 7, 12)
 
-- Remove all `print('[SETS]...')` and `print("[SETS]...")` statements added during development
-- These are not upstream and will cause unnecessary merge conflicts
+#### 2.3 Remove WARP code from `src/app.py` ✅
 
-#### 2.3 Verify `src/app.py` is clean of WARP (LOW risk)
+- Removed `_MODE_FILE`, `_get_install_mode`, `_save_install_mode`, `_WARP_AVAILABLE` from `src/app.py`
+  (these now live exclusively in `warp/app.py`)
+- Removed `inject_warp_buttons` import from `src/app.py`
+- Removed `if _WARP_AVAILABLE: inject_warp_buttons(...)` from `SETS.setup_main_layout`
+- Stored `menu_layout` as `self.widgets.menu_layout` — accessible to `WarpSETS` override
+- Removed WARP Updates + Installation sections from `SETS.setup_settings_frame`
+- Removed Uninstall section from `SETS.setup_settings_frame`
+- Removed `_on_uninstall` and `_run_uninstall` methods from `SETS`
+- Changed `create_main_window` app naming: `'sets-warp'/'SETS-WARP'` → `'SETS'/'STOCD'` (upstream defaults)
+- Stored `scroll_layout` as `self.widgets.settings_scroll_layout` — accessible to `WarpSETS` override
 
-- After 2.1 and 2.2, confirm no WARP-specific code remains in `src/app.py`
-- `WarpSETS` in `warp/app.py` handles all overrides via inheritance
+**`warp/app.py` now implements**:
+- `create_main_window()` override: sets app name back to `'sets-warp'/'SETS-WARP'` after super()
+- `setup_main_layout()` override: calls `inject_warp_buttons(self, self.widgets.menu_layout)`
+- `setup_settings_frame()` override: calls `_add_warp_settings_sections()` which appends
+  WARP Updates, Installation, and Uninstall sections to `self.widgets.settings_scroll_layout`
+- `_on_uninstall()` and `_run_uninstall()` methods moved here from `src/app.py`
 
 **Checkpoint**: full smoke test — SETS opens, WARP dialog works, WARP CORE opens.
 
