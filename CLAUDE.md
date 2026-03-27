@@ -157,18 +157,25 @@ Splitter initial sizes: `[400, 700, 400]`
 ### Canvas (`annotation_widget.py`) features
 
 **Zoom (Gwenview-style):**
-- `_fit_scale` computed ONCE at `load_image()` from viewport size — never changes
-- `_user_scale = None` → fit-to-window mode
-- `_user_scale = float` → explicit zoom, widget expands, scroll area shows scrollbars
-- Ctrl+wheel: zoom in/out anchored to cursor position
-- `adjustSize()` after zoom change informs scroll area
-- Ctrl+wheel intercepted at `QApplication` level (no click needed)
+- Image loads at 1:1 if it fits viewport; scales down to fit if larger (`min(1.0, min(vp_w/pw, vp_h/ph))`)
+- `_fit_scale` computed in `_compute_transform()` from parent (viewport) size — updated on viewport resize
+- `_user_scale = None` → fit-to-window; `_user_scale = float` → explicit zoom
+- `setWidgetResizable(False)` on scroll area — widget grows beyond viewport in zoom mode → scrollbars appear
+- `sizeHint()`: returns viewport size in fit mode, `image × scale` in zoom mode
+- Ctrl+wheel: zoom in/out anchored to cursor; `WarpCoreWindow` global filter forwards wheel from scroll area padding to canvas (no click needed)
+- Viewport resize event filter on parent: calls `_compute_transform` + `adjustSize` so fit-to-window adapts on window resize
+
+**Modifier key cursors (IMPORTANT — known pitfall):**
+- **DO NOT use `widget.setCursor()`** for Ctrl/Alt/Shift cursor changes — it only works when mouse is physically over that widget
+- Use `QApplication.setOverrideCursor()` / `restoreOverrideCursor()` — applies globally regardless of mouse position
+- Helpers: `_set_mod_cursor(cursor)` and `_clear_mod_cursor()` with `_mod_cursor_active` flag to avoid stacking
+- `enterEvent` re-applies mod cursor if modifier is still held; clears stale override if no modifier held
 
 **Alt+LMB draw:**
 - Hold Alt over canvas → cursor changes to colored crosshair (`DRAW_BBOX_COLOR`)
 - Alt+LMB drag → draws new bbox, triggers icon matching, auto-accept if conf ≥ threshold
-- `enterEvent`/`leaveEvent` change cursor when mouse enters/leaves canvas
-- Global `QApplication.installEventFilter` for Alt key detection without focus
+- `enterEvent`/`leaveEvent` manage mod cursor
+- Global `QApplication.installEventFilter` for Alt/Ctrl/Shift key detection
 
 **Color constants (change one value to update all):**
 ```python
