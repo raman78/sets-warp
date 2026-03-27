@@ -177,6 +177,9 @@ class WarpSETS(SETS):
         sec_uninst.addWidget(uninstall_label, 0, 2, alignment=ALEFT)
         scroll_layout.addLayout(sec_uninst)
 
+        # Force the scroll frame to recalculate its size after all sections are added
+        self.widgets.settings_scroll_frame.adjustSize()
+
     def _on_uninstall(self):
         """Confirm then schedule full uninstall: desktop entry + installation directory."""
         from PySide6.QtWidgets import QMessageBox
