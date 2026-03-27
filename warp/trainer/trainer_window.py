@@ -765,7 +765,7 @@ class WarpCoreWindow(QMainWindow):
         self._ann_widget.bbox_changed.connect(self._on_bbox_changed)
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidget(self._ann_widget)
-        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setWidgetResizable(False)
         self._scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._scroll_area.setStyleSheet(f'QScrollArea {{ background: {BG}; border: none; }}')
         cl.addWidget(self._scroll_area, 1)
