@@ -650,11 +650,15 @@ class AnnotationWidget(QWidget):
         super().showEvent(event)
         from PySide6.QtWidgets import QApplication
         QApplication.instance().installEventFilter(self)
+        if self.parent():
+            self.parent().installEventFilter(self)
 
     def hideEvent(self, event):
         super().hideEvent(event)
         from PySide6.QtWidgets import QApplication
         QApplication.instance().removeEventFilter(self)
+        if self.parent():
+            self.parent().removeEventFilter(self)
 
     def enterEvent(self, event):
         """Mouse entered canvas area — grab focus and show context cursor."""
@@ -677,6 +681,13 @@ class AnnotationWidget(QWidget):
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
         etype = event.type()
+        # Viewport resize → recompute fit scale and resize widget
+        if etype == QEvent.Type.Resize and obj is self.parent():
+            if self._user_scale is None:
+                self._compute_transform()
+                self.adjustSize()
+                self.update()
+            return False
         if etype in (QEvent.Type.MouseMove, QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
             # Only react when mouse is over this widget or its general area
             from PySide6.QtGui import QCursor as _QC
@@ -697,7 +708,10 @@ class AnnotationWidget(QWidget):
 
             if not over_area:
                 return False
-            
+
+            if etype == QEvent.Type.MouseMove:
+                return False
+
             key = event.key()
             if key == Qt.Key.Key_Alt and not event.isAutoRepeat():
                 if etype == QEvent.Type.KeyPress:
@@ -729,21 +743,30 @@ class AnnotationWidget(QWidget):
 
     def sizeHint(self):
         if self._pixmap:
-            return QSize(max(1,int(self._pixmap.width()*self._scale)),
-                         max(1,int(self._pixmap.height()*self._scale)))
+            if self._user_scale is None:
+                vp = self.parent()
+                if vp and vp.width() > 0:
+                    return QSize(vp.width(), vp.height())
+            return QSize(max(1, int(self._pixmap.width()  * self._scale)),
+                         max(1, int(self._pixmap.height() * self._scale)))
         return QSize(800, 600)
 
     def _compute_transform(self):
         if not self._pixmap: return
         pw, ph = self._pixmap.width(), self._pixmap.height()
         if self._user_scale is None:
-            # Fit-to-window using stored _fit_scale
-            # _fit_scale is set once at load_image, never changes
+            # Compute fit scale from viewport (parent) size
+            vp = self.parent()
+            if vp and vp.width() > 0 and vp.height() > 0:
+                vw, vh = vp.width(), vp.height()
+            else:
+                vw, vh = self.width() or pw, self.height() or ph
+            self._fit_scale = min(vw / pw, vh / ph) if pw and ph else 1.0
             self._scale = self._fit_scale
             ww = int(pw * self._scale)
             wh = int(ph * self._scale)
-            self._offset_x = max(0, (self.width()  - ww) // 2)
-            self._offset_y = max(0, (self.height() - wh) // 2)
+            self._offset_x = max(0, (vw - ww) // 2)
+            self._offset_y = max(0, (vh - wh) // 2)
         else:
             self._scale = self._user_scale
             self._offset_x = 0
