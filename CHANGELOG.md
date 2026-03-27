@@ -1,5 +1,82 @@
 # CHANGELOG
 
+## v1.6b (2026-03-26)
+
+### WARP — Integrated Autonomous Recognition Engine (P0–P5)
+
+- **P0 — Smart OCR**: ship metadata extraction now upscales low-res regions before reading; builds a per-session typo-correction table from confirmed annotations
+- **P1 — Slot inference on manual draw**: when a bbox is drawn manually, WARP infers the most likely slot type from position and surrounding confirmed boxes
+- **P3 — Multi-config layout memory with pixel scoring**: `_detect_via_learned_layouts` now scores every candidate layout by sampling brightness at predicted slot positions; best pixel-score wins instead of blindly using the most recent entry; LRU cap of 200 entries (oldest evicted automatically)
+- **P4 — CNN Layout Regressor (Strategy 0)**: new `layout_trainer.py` + `layout_dataset_builder.py`; trains a MobileNetV3-based regressor (`layout_regressor.pt`) that predicts slot positions directly from a screenshot; runs as Strategy 0 before all pixel-based strategies
+- **P5 — Dynamic anchoring**: high-confidence matches recalibrate the anchor grid for the current screenshot resolution; reduces drift on non-standard resolutions
+- **Layout View toggle** in WARP CORE right panel: `Layout View ON/OFF` button runs CNN Strategy 0 and overlays predicted slot positions as a ghost layer on the canvas (yellow style)
+- **ScreenTypeTrainer log error fixed**: worker no longer crashes when emitting per-file progress after training completes
+- **TrainerWindow worker orchestration fixed**: training threads are now started and joined in the correct order; no race condition when running multiple workers back-to-back
+
+### WARP CORE
+
+- **`setWidgetResizable(True)`** on scroll area — canvas now fills available space instead of showing a fixed-size widget with empty padding
+- **`showEvent` focus**: canvas automatically receives keyboard focus when WARP CORE window opens or is raised
+- **Screenshot switch**: `QTimer.singleShot(100, ...)` deferred focus to canvas after switching to a new screenshot
+
+### Documentation
+
+- `docs/warp_separation_roadmap.md` — plan for separating WARP into a standalone module
+- `docs/warp_ml_roadmap.md` updated with P0–P5 status
+
+---
+
+## v1.5b (2026-03-25)
+
+### WARP CORE
+
+- **Shift+LMB — move / resize bboxes**: hold Shift and drag any confirmed bbox on the canvas to reposition it; drag a corner handle to resize; annotation is updated in-place without re-running icon matching
+- **Slot change on confirmed bbox**: changing the slot type of an already-confirmed bbox from the review list now correctly updates the annotation and re-saves the crop; previously the change was silently ignored
+- **Graceful thread cleanup**: trainer threads (`LocalTrainWorker`, `ScreenTypeTrainerWorker`) now set a stop flag and `wait()` before the window closes; prevents occasional crash on exit during training
+- **Preserve item colors in screenshot list when selected**: selecting a screenshot in the left panel no longer resets row highlight colors (green = confirmed, yellow = partial, red = no match)
+- **Screen type detection stats**: `ScreenTypeDetectorWorker` collects per-type accuracy stats and logs a summary after each batch detection run; per-file log lines suppressed (too noisy)
+- **Remove `[index]` log noise during training**: per-item index prefix (`[0/123]`) removed from training log lines; summary line at end retained
+
+### Documentation
+
+- Guides moved from project root to `docs/`; all cross-links updated (`WARP_GUIDE.md`, `SETS_GUIDE.md`, `ML_PIPELINE.md`)
+
+---
+
+## v1.4b (2026-03-24)
+
+### Windows fixes
+
+- **Taskbar icon**: `SetCurrentProcessExplicitAppUserModelID` called at bootstrap level (before any Qt window) and `WM_SETICON` sent after `window.show()` via Win32 `LoadImageW` — icon now shows correctly in taskbar regardless of `python.exe` vs `pythonw.exe`
+- **`charmap` crash on Polish Windows (CP1250)**: all JSON reads in `icon_matcher.py`, `screen_classifier.py`, `training_data.py`, and `sync.py` now pass `encoding='utf-8'` explicitly
+- **Setup log header duplication**: `_write_log` (which writes the `====` header) was re-created on every line inside `on_line()`; moved outside the callback — one header per session
+- **Torch CPU wheel**: `--extra-index-url` (not `--index-url`) passed when installing remaining packages so pip finds the CPU-only torch wheel without replacing it with a CUDA build
+- **Installer directory page**: `DisableDirPage=no` added to Inno Setup script — install path is always shown and editable during setup
+
+### ML model download
+
+- **Startup summary dialog**: after splash closes, a small dialog summarises asset sync results, cargo data status, and ML model info (version, class count, training date); toggled via Settings → "Show Startup Summary"
+- **Model download in `populate_cache`**: if `model_version.json` is absent (e.g. after SETS-only → SETS+WARP upgrade), `ModelUpdater._bg_check()` runs synchronously inside the background populate thread; startup dialog shows correct model info on first post-upgrade launch
+- **`ModelUpdater` — progress callback**: `on_progress(text, current, total)` argument added; splash bar updates during download
+- **`ModelUpdater` — force download when model absent**: rate-limit cache no longer prevents the download when `model_version.json` does not exist yet
+- **`ModelUpdater` — write `model_version.json` post-download**: if the HF repo does not include the file, it is synthesised from backend metadata so the startup dialog always has something to display
+
+### Updater
+
+- **"Later" auto-snoozes current version**: clicking "Later" in the update dialog now auto-snoozes the current version (same effect as ticking "Don't remind me for vX.Y"); the dialog no longer reappears on every launch after an update
+
+### Log rotation
+
+- `sets_warp_early.log` and `sets_warp.log` (via `setsdebug.py`) now rotate on startup: existing log renamed to `.bak`, fresh file opened; keeps one session of history without unbounded growth
+- Same rotation added to bootstrap's `sets_warp_setup.log`
+
+### Documentation
+
+- `docs/ML_PIPELINE.md` — full technical reference for the ML pipeline (dataset flow, model architecture, training, community sync)
+- `README.md` — expanded auto-update, autoconfigure, and uninstall sections; update-check delay corrected (3 s, was 8 s); doc-links table added
+
+---
+
 ## v1.3b (2026-03-23)
 
 ### Bug fixes
