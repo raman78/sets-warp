@@ -761,7 +761,7 @@ class AnnotationWidget(QWidget):
                 vw, vh = vp.width(), vp.height()
             else:
                 vw, vh = self.width() or pw, self.height() or ph
-            self._fit_scale = min(vw / pw, vh / ph) if pw and ph else 1.0
+            self._fit_scale = min(1.0, min(vw / pw, vh / ph)) if pw and ph else 1.0
             self._scale = self._fit_scale
             ww = int(pw * self._scale)
             wh = int(ph * self._scale)
