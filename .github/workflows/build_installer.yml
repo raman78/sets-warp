@@ -1,17 +1,19 @@
 name: Build Windows Installer
 
-# Triggered automatically when a GitHub release is published.
-# Builds sets-warp-vX.Y-setup.exe and attaches it to the release.
+# Triggered on tag push (v*). Builds sets-warp-vX.Y-setup.exe and attaches it to the release.
+# Note: release: published is NOT used because GitHub Actions with GITHUB_TOKEN cannot
+# trigger other workflows via that event — so we trigger directly from the tag push.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to attach installer to (e.g. v1.1b)'
+        description: 'Release tag to attach installer to (e.g. v1.8b)'
         required: true
-        default: 'v1.1b'
+        default: 'v1.8b'
 
 jobs:
   build:
@@ -27,13 +29,13 @@ jobs:
         run: choco install innosetup --yes --no-progress
         shell: pwsh
 
-      - name: Get version from release tag
+      - name: Get version from tag
         id: version
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             echo "VERSION=${{ github.event.inputs.tag }}" >> $env:GITHUB_OUTPUT
           } else {
-            echo "VERSION=${{ github.event.release.tag_name }}" >> $env:GITHUB_OUTPUT
+            echo "VERSION=${{ github.ref_name }}" >> $env:GITHUB_OUTPUT
           }
         shell: pwsh
 
