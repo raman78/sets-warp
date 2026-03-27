@@ -292,6 +292,24 @@ from src.widgets import exec_in_thread
 
 ---
 
+## GitHub Actions workflows
+
+| File | Trigger | Purpose |
+|------|---------|---------|
+| `release.yml` | `push: tags: v*` | Creates GitHub Release from tag |
+| `build_installer.yml` | `push: tags: v*` | Builds Windows `.exe` installer and attaches to release |
+
+**Release flow**: push tag `vX.Yb` → both workflows fire simultaneously → release created + installer built and attached.
+
+**Known pitfall**: `build_installer.yml` previously triggered on `release: published`. This does NOT work when the release is created by another workflow using `GITHUB_TOKEN` — GitHub blocks cross-workflow event propagation with default tokens. Changed to `push: tags` to trigger directly.
+
+**Creating a release**:
+```bash
+git tag v1.9b && git push origin v1.9b
+```
+
+---
+
 ## sets-warp-backend
 
 Companion FastAPI service deployed on Render. Source: `/home/raman/PycharmProjects/sets-warp-backend/`.
