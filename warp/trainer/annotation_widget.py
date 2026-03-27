@@ -61,6 +61,7 @@ class AnnotationWidget(QWidget):
         self._zoom:     float          = 1.0   # 1.0–6.0
         self._zoom_ox:  float          = 0.0
         self._zoom_oy:  float          = 0.0
+        self._mod_cursor_active: bool  = False  # True when setOverrideCursor is active
 
         # Mode flags — drawing/editing only active when explicitly enabled
         self._draw_mode_forced: bool = False   # set by + Add BBox / Edit BBox
@@ -666,17 +667,18 @@ class AnnotationWidget(QWidget):
         from PySide6.QtWidgets import QApplication
         mods = QApplication.keyboardModifiers()
         if mods & Qt.KeyboardModifier.AltModifier:
-            self.setCursor(self._make_draw_cursor())
+            self._set_mod_cursor(self._make_draw_cursor())
         elif mods & Qt.KeyboardModifier.ControlModifier:
-            self.setCursor(self._make_zoom_cursor())
+            self._set_mod_cursor(self._make_zoom_cursor())
+        elif mods & Qt.KeyboardModifier.ShiftModifier:
+            self._set_mod_cursor(self._make_edit_cursor())
+        else:
+            self._clear_mod_cursor()  # clean up if modifier was released while mouse was outside
 
     def leaveEvent(self, event):
-        """Mouse left canvas area — only restore normal cursor if no tools are active."""
+        """Mouse left canvas area — clear mod cursor if no active drag."""
         if self._drawing: return
-        from PySide6.QtWidgets import QApplication as _QApp
-        mods = _QApp.queryKeyboardModifiers()
-        if not (mods & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)):
-            self.unsetCursor()
+        self._clear_mod_cursor()
 
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
@@ -712,38 +714,42 @@ class AnnotationWidget(QWidget):
             if etype == QEvent.Type.MouseMove:
                 return False
 
-            vp = self.parent()
             key = event.key()
             if key == Qt.Key.Key_Alt and not event.isAutoRepeat():
                 if etype == QEvent.Type.KeyPress:
-                    c = self._make_draw_cursor()
-                    self.setCursor(c)
-                    if vp: vp.setCursor(c)
+                    self._set_mod_cursor(self._make_draw_cursor())
                 else:
                     if not self._drawing:
-                        self.unsetCursor()
-                        if vp: vp.unsetCursor()
+                        self._clear_mod_cursor()
             elif key == Qt.Key.Key_Control and not event.isAutoRepeat():
                 if etype == QEvent.Type.KeyPress:
-                    c = self._make_zoom_cursor()
-                    self.setCursor(c)
-                    if vp: vp.setCursor(c)
+                    self._set_mod_cursor(self._make_zoom_cursor())
                 else:
-                    self.unsetCursor()
-                    if vp: vp.unsetCursor()
+                    self._clear_mod_cursor()
             elif key == Qt.Key.Key_Shift and not event.isAutoRepeat():
                 if etype == QEvent.Type.KeyPress:
                     from PySide6.QtWidgets import QToolTip
                     QToolTip.hideText()
                     handle, _row = self._handle_hit_test_all_reviews(lpos)
-                    c = self._cursor_for_handle(handle) if handle else self._make_edit_cursor()
-                    self.setCursor(c)
-                    if vp: vp.setCursor(c)
+                    self._set_mod_cursor(self._cursor_for_handle(handle) if handle else self._make_edit_cursor())
                 else:
                     if not self._drawing:
-                        self.unsetCursor()
-                        if vp: vp.unsetCursor()
+                        self._clear_mod_cursor()
         return False
+
+    def _set_mod_cursor(self, cursor):
+        from PySide6.QtWidgets import QApplication
+        if self._mod_cursor_active:
+            QApplication.changeOverrideCursor(cursor)
+        else:
+            QApplication.setOverrideCursor(cursor)
+            self._mod_cursor_active = True
+
+    def _clear_mod_cursor(self):
+        if self._mod_cursor_active:
+            from PySide6.QtWidgets import QApplication
+            QApplication.restoreOverrideCursor()
+            self._mod_cursor_active = False
 
     def resizeEvent(self, event): self._compute_transform(); self.update()
 
