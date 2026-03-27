@@ -1346,6 +1346,7 @@ class SETS():
         scroll_layout.addLayout(sec_3)
 
         scroll_frame.setLayout(scroll_layout)
+        self.widgets.settings_scroll_frame = scroll_frame
         scroll_area.setWidget(scroll_frame)
 
         # sidebar
