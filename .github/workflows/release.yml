@@ -17,6 +17,7 @@ jobs:
         with:
           name: Release ${{ github.ref_name }}
           body: "Automated release for version ${{ github.ref_name }}"
-          prerelease: true
+          prerelease: false
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
