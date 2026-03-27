@@ -712,31 +712,37 @@ class AnnotationWidget(QWidget):
             if etype == QEvent.Type.MouseMove:
                 return False
 
+            vp = self.parent()
             key = event.key()
             if key == Qt.Key.Key_Alt and not event.isAutoRepeat():
                 if etype == QEvent.Type.KeyPress:
-                    self.setCursor(self._make_draw_cursor())
+                    c = self._make_draw_cursor()
+                    self.setCursor(c)
+                    if vp: vp.setCursor(c)
                 else:
                     if not self._drawing:
                         self.unsetCursor()
+                        if vp: vp.unsetCursor()
             elif key == Qt.Key.Key_Control and not event.isAutoRepeat():
                 if etype == QEvent.Type.KeyPress:
-                    self.setCursor(self._make_zoom_cursor())
+                    c = self._make_zoom_cursor()
+                    self.setCursor(c)
+                    if vp: vp.setCursor(c)
                 else:
                     self.unsetCursor()
+                    if vp: vp.unsetCursor()
             elif key == Qt.Key.Key_Shift and not event.isAutoRepeat():
                 if etype == QEvent.Type.KeyPress:
                     from PySide6.QtWidgets import QToolTip
                     QToolTip.hideText()
-                    # Determine appropriate cursor based on what's under mouse
                     handle, _row = self._handle_hit_test_all_reviews(lpos)
-                    if handle:
-                        self.setCursor(self._cursor_for_handle(handle))
-                    else:
-                        self.setCursor(self._make_edit_cursor())
+                    c = self._cursor_for_handle(handle) if handle else self._make_edit_cursor()
+                    self.setCursor(c)
+                    if vp: vp.setCursor(c)
                 else:
                     if not self._drawing:
                         self.unsetCursor()
+                        if vp: vp.unsetCursor()
         return False
 
     def resizeEvent(self, event): self._compute_transform(); self.update()
