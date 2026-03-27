@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## v1.9b (2026-03-27)
+
+### Architecture — Phase 2: WARP separation from `src/`
+
+- **`src/app.py` is now WARP-free**: all WARP-specific logic moved to `warp/app.py`
+- **Removed from `src/app.py`**: debug print statements, `_MODE_FILE`, `_get_install_mode`, `_save_install_mode`, `_WARP_AVAILABLE`, `inject_warp_buttons` import, WARP button injection, WARP Updates/Installation/Uninstall settings sections, `_on_uninstall`/`_run_uninstall` methods
+- **`create_main_window` baseline**: app/org name set to `SETS`/`STOCD` (upstream defaults); `WarpSETS.create_main_window` override restores `sets-warp`/`SETS-WARP`
+- **`WarpSETS` overrides in `warp/app.py`**: `create_main_window`, `setup_main_layout` (injects WARP buttons via `self.widgets.menu_layout`), `setup_settings_frame` (appends WARP sections via `self.widgets.settings_scroll_layout`), `_on_uninstall`/`_run_uninstall`
+- **`self.widgets.menu_layout`** and **`self.widgets.settings_scroll_layout`** exposed so subclass overrides can extend the base layout
+- **`adjustSize()` after appending WARP sections** — required when adding widgets to a layout that is already embedded in a `QScrollArea` with `setWidgetResizable(False)`
+- **Phase 2.1 decision**: `_save_session_slots`/`_restore_session_slots` stay in `src/callbacks.py` — called from `select_ship()` and `tier_callback()` internally, moving would create wrong `src/ → warp/` dependency
+
+---
+
 ## v1.8b (2026-03-27)
 
 ### WARP CORE — Canvas zoom & cursor fixes
