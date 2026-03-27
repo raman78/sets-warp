@@ -1453,6 +1453,8 @@ class WarpCoreWindow(QMainWindow):
 
     def _setup_shortcuts(self):
         """Global keyboard shortcuts — work regardless of focus."""
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance().installEventFilter(self)
         QShortcut(QKeySequence('Alt+A'), self,
                   activated=lambda: self._btn_add_bbox.click())
         QShortcut(QKeySequence('Alt+R'), self,
@@ -1473,7 +1475,7 @@ class WarpCoreWindow(QMainWindow):
             lambda v: self._settings.setValue(_KEY_AUTO_CONF, v))
 
     def eventFilter(self, obj, event):
-        """Handle Delete key on review list and canvas to remove selected bbox."""
+        """Handle Delete key on review list/canvas, and forward Ctrl+wheel from scroll area to canvas."""
         from PySide6.QtCore import QEvent
         rl = getattr(self, '_review_list', None)
         aw = getattr(self, '_ann_widget', None)
@@ -1482,6 +1484,15 @@ class WarpCoreWindow(QMainWindow):
             key = event.key()
             if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 self._on_remove_item()
+                return True
+        # Forward wheel events from anywhere in scroll area to the canvas widget
+        if event.type() == QEvent.Type.Wheel and sa and aw:
+            from PySide6.QtGui import QCursor
+            gpos = QCursor.pos()
+            sa_pos = sa.mapFromGlobal(gpos)
+            aw_pos = aw.mapFromGlobal(gpos)
+            if sa.rect().contains(sa_pos) and not aw.rect().contains(aw_pos):
+                aw.wheelEvent(event)
                 return True
         return super().eventFilter(obj, event)
 
