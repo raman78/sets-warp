@@ -1,5 +1,30 @@
 # CHANGELOG
 
+## v2.0b (2026-03-28) — Upstream SETS merge (Phase 3)
+
+### Architecture — Phase 3: upstream merge complete
+
+Integrated 738 commits from upstream SETS into SETS-WARP. All SETS-WARP features preserved.
+
+**New features inherited from upstream SETS:**
+- **Skill tree** — full space and ground skill tree UI (`setup_space_skill_frame`, `setup_ground_skill_frame`)
+- **Markdown export** — restructured `src/export.py`, `get_build_markdown`
+- **Settings page** — UI Scale slider, Default Save Format, Picker Position, About sidebar with links
+- **Picker improvements** — relative position mode, fix for position calculation
+- **Legacy build conversion** — improved `convert_old_build` in `buildupdater.py`
+- **Modifier data** — refinements throughout `datafunctions.py`
+- **Linux path fixes** — `os.path.join` used consistently
+
+**SETS-WARP additions preserved in `src/`:**
+- `src/app.py`: `Downloader`/`CargoManager`/`ImageManager` init, Cloudflare cookie setup from `.env`, `cache_item_aliases`, `_set_win32_taskbar_icon`, `dual_cannons` DC icon + N/A placeholder image, `menu_layout`/`settings_scroll_layout`/`settings_scroll_frame` hooks, splash with progress bar, Preferred Backup and Show Startup Summary settings
+- `src/widgets.py`: `ImageLabel(QLabel)`, `ShipImage(QLabel)` (QLabel-based with setPixmap), `TooltipLabel`, `alt_images` in Cache, `progress_bar`/`progress_detail` fields
+- `src/datafunctions.py`: `SyncManager` integration, `_show_startup_dialog`, `GITHUB_CACHE_URL` fallback, full logging, `get_icon_set`/`build_cache` helpers
+- `src/callbacks.py`: `_save/_restore_session_slots`, `log`
+- `src/buildupdater.py`: DC ship support (`equipcannons`), item normalization (`mark`/`modifiers` defaults), boff ability alias resolution, Intel Holoship `uni_consoles` fix
+- `src/constants.py`: `SEVEN_DAYS_IN_SECONDS`, `GITHUB_CACHE_URL`, expanded SPECIES (Caitian, Klingon, Talaxian, Ferasan), `TRAIT_QUERY_URL` with `icon_name` field
+
+---
+
 ## v1.9b (2026-03-27)
 
 ### Architecture — Phase 2: WARP separation from `src/`
