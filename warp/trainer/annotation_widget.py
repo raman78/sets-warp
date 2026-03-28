@@ -701,7 +701,7 @@ class AnnotationWidget(QWidget):
             # If mouse is over us and a key is pressed, grab focus if we don't have it
             # (but not if a text-input widget is currently being edited)
             if etype == QEvent.Type.KeyPress and self.rect().contains(lpos) and not self.hasFocus():
-                from PySide6.QtWidgets import QLineEdit, QTextEdit, QAbstractSpinBox
+                from PySide6.QtWidgets import QApplication, QLineEdit, QTextEdit, QAbstractSpinBox
                 focused = QApplication.focusWidget()
                 if not isinstance(focused, (QLineEdit, QTextEdit, QAbstractSpinBox)):
                     self.setFocus()
