@@ -151,12 +151,15 @@ class TrainingDataManager:
                 return ann
 
         # 2. Fallback: same bbox, slot was edited → update in-place without duplicating
+        # Skip for NON_ICON_SLOTS — Ship Name/Type/Tier can share bbox coords legitimately;
+        # a slot-agnostic match would overwrite one with another.
         bbox_t = tuple(bbox)
-        for i, d in enumerate(self._annotations[key]):
-            if tuple(d.get('bbox', [])) == bbox_t:
-                self._annotations[key][i] = asdict(ann)
-                self._dirty = True
-                return ann
+        if slot not in NON_ICON_SLOTS:
+            for i, d in enumerate(self._annotations[key]):
+                if tuple(d.get('bbox', [])) == bbox_t:
+                    self._annotations[key][i] = asdict(ann)
+                    self._dirty = True
+                    return ann
 
         # 3. Single-instance slots: drop any existing confirmed annotation for
         #    this slot at a different bbox (user re-drew at correct position)
