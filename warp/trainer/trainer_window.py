@@ -707,6 +707,13 @@ class WarpCoreWindow(QMainWindow):
         if hasattr(self, '_ann_widget'):
             self._ann_widget.setFocus()
 
+    def _set_popup_transient(self, popup) -> None:
+        """Wayland fix: attach completer popup QWindow to main window so xdg_popup works."""
+        wh = popup.windowHandle()
+        mwh = self.windowHandle()
+        if wh and mwh:
+            wh.setTransientParent(mwh)
+
     def _build_ui(self):
         c = QWidget()
         self.setCentralWidget(c)
@@ -804,6 +811,10 @@ class WarpCoreWindow(QMainWindow):
         self._completer.setMaxVisibleItems(12)
         self._completer.activated.connect(self._on_completer_activated)
         self._name_edit.setCompleter(self._completer)
+        # Wayland: store popup widget and install event filter so we can set
+        # transientParent on first Show (handle does not exist until then).
+        self._completer_popup = self._completer.popup()
+        self._completer_popup.installEventFilter(self)
         nc.addWidget(self._name_edit)
         self._tier_combo = QComboBox()
         for t in SHIP_TIER_VALUES:
@@ -1516,6 +1527,10 @@ class WarpCoreWindow(QMainWindow):
             if sa.rect().contains(sa_pos) and not aw.rect().contains(aw_pos):
                 aw.wheelEvent(event)
                 return True
+        # Wayland: set transient parent on completer popup on first Show
+        cp = getattr(self, '_completer_popup', None)
+        if cp and obj is cp and event.type() == QEvent.Type.Show:
+            QTimer.singleShot(0, lambda: self._set_popup_transient(cp))
         return super().eventFilter(obj, event)
 
     def _on_add_bbox_toggle(self, checked: bool):
