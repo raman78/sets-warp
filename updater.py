@@ -210,6 +210,15 @@ def _do_git_update(sets_app) -> None:
     from PySide6.QtWidgets import QMessageBox
     parent = getattr(sets_app, 'window', None)
     try:
+        # Fetch tags explicitly — git pull alone does not fetch tags that were
+        # created after the commit was already on the remote (common release pattern).
+        subprocess.run(
+            ['git', 'fetch', '--tags'],
+            cwd=str(_repo_root()),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
         result = subprocess.run(
             ['git', 'pull'],
             cwd=str(_repo_root()),
