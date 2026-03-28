@@ -178,10 +178,16 @@ class SyncWorker(QThread):
             self.progress.emit(100, f"Daily upload limit ({MAX_DAILY_UPLOADS}) reached.")
             return
 
-        # Fetch existing hashes in this user's staging folder
+        # Load local cache of already-uploaded hashes (avoids list_repo_files on every sync)
         self.progress.emit(5, "Checking existing uploads…")
-        existing_hashes = self._fetch_staging_hashes(api, staging_crop)
-        _slog.info(f'HF Sync: {len(existing_hashes)} crops already on HF staging')
+        existing_hashes = self._load_uploaded_hashes_cache()
+        if existing_hashes:
+            _slog.info(f'HF Sync: {len(existing_hashes)} crops in local cache (skipping HF listing)')
+        else:
+            # Bootstrap: fetch from HF once, then persist locally
+            existing_hashes = self._fetch_staging_hashes(api, staging_crop)
+            _slog.info(f'HF Sync: bootstrapped {len(existing_hashes)} hashes from HF listing')
+            self._save_uploaded_hashes_cache(existing_hashes)
 
         # Collect all new files first, then upload in a single commit
         from huggingface_hub import CommitOperationAdd
@@ -238,6 +244,8 @@ class SyncWorker(QThread):
                 commit_message=f"WARP staging: {uploaded} new crops ({today})",
             )
             _slog.info(f'HF Sync: commit sent — {uploaded} crops + annotations')
+            # Persist newly uploaded hashes so next sync skips list_repo_files
+            self._save_uploaded_hashes_cache(existing_hashes)
 
         # Update local rate limit counter
         rl[today] = daily_count + uploaded
@@ -249,6 +257,22 @@ class SyncWorker(QThread):
         msg = f"Uploaded {uploaded} annotations to staging." if uploaded else "Nothing new to upload (all already on HF)."
         _slog.info(f'HF Sync: done — {uploaded} new uploads, total on HF: {len(existing_hashes)}')
         self.progress.emit(100, msg)
+
+    def _load_uploaded_hashes_cache(self) -> set[str]:
+        """Load locally cached set of already-uploaded crop sha256 hashes."""
+        cache_file = self._mgr._dir / '.sync_uploaded_hashes.json'
+        try:
+            return set(json.loads(cache_file.read_text()))
+        except Exception:
+            return set()
+
+    def _save_uploaded_hashes_cache(self, hashes: set[str]) -> None:
+        """Persist the uploaded-hashes set locally so future syncs skip HF listing."""
+        cache_file = self._mgr._dir / '.sync_uploaded_hashes.json'
+        try:
+            cache_file.write_text(json.dumps(sorted(hashes)))
+        except Exception:
+            pass
 
     def _fetch_staging_hashes(self, api, staging_crop_dir: str) -> set[str]:
         try:
