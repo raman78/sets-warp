@@ -1,7 +1,7 @@
 # WARP ML Roadmap — Layout + Content Recognition
 
 **Updated:** 2026-03-28
-**Status:** v2.0 — P0–P5, P2 complete. Pending: P6, P7, P8, P9.
+**Status:** v2.1 — P0–P6 complete. Pending: P7, P8, P9.
 
 ---
 
@@ -118,7 +118,7 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 
 ---
 
-### P6 — Progress indicator for OCR / matching during manual bbox draw
+### 🟢 P6 — Progress indicator for OCR / matching during manual bbox draw (COMPLETED)
 
 **Why:** OCR + icon matching on a drawn crop can take 1-3 seconds. Without feedback the UI appears frozen.
 
@@ -193,7 +193,7 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 ✅ P3 (layout multi-config)     — DONE
 ✅ P4 (CNN layout regression)   — DONE
 ✅ P5 (dynamic anchoring)       — DONE
-── P6 (progress indicator)      — UX, standalone, low risk
+✅ P6 (progress indicator)      — DONE
 ✅ P2 (cross-validation)        — DONE
 ── P7 (data augmentation)       — standalone, improves EfficientNet with no extra data
 ── P8 (confidence fusion)       — depends on both template + ML running (already do)
@@ -226,8 +226,8 @@ Each point specifies who tests and how:
 
 | File | Pending changes |
 |------|----------------|
-| `warp/trainer/trainer_window.py` | P6 |
-| `warp/recognition/layout_detector.py` | — |
+| `warp/trainer/trainer_window.py` | — |
+| `warp/recognition/layout_detector.py` | P8 |
 | `warp/warp_importer.py` | — |
 | `warp/recognition/icon_matcher.py` | P8 |
 | `warp/trainer/local_trainer.py` | P7, P9 |

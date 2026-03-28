@@ -372,6 +372,41 @@ class OCRWorker(QThread):
             self.finished.emit(self.row, '', 0.0, self.crop_bgr, '')
 
 
+class MatchWorker(QThread):
+    """Background icon matching (two-pass) to keep UI responsive during bbox draw."""
+    finished = Signal(str, float, object, object, tuple)  # name, conf, thumb, crop_bgr, bbox
+
+    def __init__(self, crop_bgr, bbox: tuple, candidate_names, sets_app, parent=None):
+        super().__init__(parent)
+        self._crop = crop_bgr
+        self._bbox = bbox
+        self._candidates = candidate_names
+        self._sets = sets_app
+
+    def run(self):
+        name, conf, thumb = '', 0.0, None
+        try:
+            from warp.recognition.icon_matcher import SETSIconMatcher
+            from src.setsdebug import log as _slog
+            name, conf, thumb, _ = SETSIconMatcher(self._sets).match(
+                self._crop, candidate_names=self._candidates)
+            _slog.info(f'match_worker pass1 → name={name!r} conf={conf:.2f} '
+                       f'(pool={len(self._candidates) if self._candidates else "all"})')
+            if conf < 0.40 and self._candidates:
+                name2, conf2, thumb2, _ = SETSIconMatcher(self._sets).match(
+                    self._crop, candidate_names=None)
+                _slog.info(f'match_worker pass2 (unrestricted) → name={name2!r} conf={conf2:.2f}')
+                if conf2 > conf:
+                    name, conf, thumb = name2, conf2, thumb2
+            if conf < 0.40:
+                _slog.info(f'match_worker: conf {conf:.2f} < 0.40 — treating as unmatched')
+                name, conf, thumb = '', 0.0, None
+        except Exception as e:
+            from src.setsdebug import log as _slog
+            _slog.warning(f'MatchWorker failed: {e}')
+        self.finished.emit(name, conf, thumb, self._crop, self._bbox)
+
+
 class RecognitionWorker(QThread):
     finished = Signal(list)
     error    = Signal(str)
@@ -381,69 +416,92 @@ class RecognitionWorker(QThread):
         self._stype = stype
         self._sets_app = sets_app
     def run(self):
+        import cv2
         from src.setsdebug import log as _slog
-        importer_type = {'SPACE_EQ': 'SPACE', 'GROUND_EQ': 'GROUND', 'TRAITS': 'SPACE_TRAITS',
-                         'BOFFS': 'BOFFS', 'SPECIALIZATIONS': 'SPEC',
-                         'SPACE_MIXED': 'SPACE', 'GROUND_MIXED': 'GROUND'}.get(self._stype, 'SPACE_EQ')
-        _slog.info(f'RecognitionWorker: start {self._path.name} stype={self._stype} → importer={importer_type}')
-        try:
-            import cv2
-            from warp.warp_importer import WarpImporter
-            importer = WarpImporter(sets_app=self._sets_app, build_type=importer_type, from_trainer=True)
-            img = cv2.imread(str(self._path))
-            if img is None:
-                _slog.warning(f'RecognitionWorker: cannot read image {self._path}')
-                self.finished.emit([])
-                return
-            _slog.info(f'RecognitionWorker: image loaded {img.shape[1]}x{img.shape[0]} px')
-            # Build profile_override from confirmed annotations for this file
-            profile_override = {}
+        from warp.warp_importer import WarpImporter
+
+        # Load image once — reused for inference, recognition pipeline, and crop extraction
+        img = cv2.imread(str(self._path))
+        if img is None:
+            _slog.warning(f'RecognitionWorker: cannot read image {self._path}')
+            self.finished.emit([])
+            return
+        _slog.info(f'RecognitionWorker: image loaded {img.shape[1]}x{img.shape[0]} px')
+
+        # Map trainer screen type → WarpImporter build_type
+        _STYPE_MAP = {
+            'SPACE_EQ':        'SPACE',
+            'GROUND_EQ':       'GROUND',
+            'TRAITS':          'SPACE_TRAITS',   # refined below via CNN
+            'BOFFS':           'BOFFS',
+            'SPECIALIZATIONS': 'SPEC',
+            'SPACE_MIXED':     'SPACE',    # WarpImporter has no SPACE_MIXED order; confirmed_layout handles extras
+            'GROUND_MIXED':    'GROUND',   # same rationale
+        }
+        importer_type = _STYPE_MAP.get(self._stype)   # None → UNKNOWN
+
+        # CNN-based inference for UNKNOWN screens and to distinguish SPACE_TRAITS vs GROUND_TRAITS
+        if importer_type is None or self._stype == 'TRAITS':
             try:
-                data_mgr = getattr(self._sets_app, '_warp_core_window', None)
-                data_mgr = getattr(data_mgr, '_data_mgr', None)
-                if data_mgr:
-                    anns = data_mgr.get_annotations(self._path)
-                    for a in anns:
-                        if a.state.value == 'confirmed' and a.slot:
-                            profile_override[a.slot] = profile_override.get(a.slot, 0) + 1
-                    if profile_override:
-                        _slog.info(f'RecognitionWorker: profile_override from confirmed: {profile_override}')
-            except Exception as _pe:
-                _slog.debug(f'RecognitionWorker: profile_override failed: {_pe}')
+                from warp.recognition.layout_detector import LayoutDetector
+                inferred = LayoutDetector().infer_build_type(img)
+                if importer_type is None:
+                    importer_type = inferred or 'SPACE'
+                    _slog.info(f'RecognitionWorker: UNKNOWN screen — CNN inferred {importer_type!r}')
+                elif inferred in ('SPACE_TRAITS', 'GROUND_TRAITS'):
+                    importer_type = inferred
+                    _slog.info(f'RecognitionWorker: TRAITS screen — CNN refined to {inferred!r}')
+            except Exception as _ie:
+                if importer_type is None:
+                    importer_type = 'SPACE'
+                _slog.debug(f'RecognitionWorker: infer_build_type failed: {_ie}')
+
+        _slog.info(f'RecognitionWorker: start {self._path.name} stype={self._stype} → importer={importer_type}')
+
+        # Build profile_override from confirmed annotations for this file
+        profile_override = {}
+        try:
+            data_mgr = getattr(self._sets_app, '_warp_core_window', None)
+            data_mgr = getattr(data_mgr, '_data_mgr', None)
+            if data_mgr:
+                anns = data_mgr.get_annotations(self._path)
+                for a in anns:
+                    if a.state.value == 'confirmed' and a.slot:
+                        profile_override[a.slot] = profile_override.get(a.slot, 0) + 1
+                if profile_override:
+                    _slog.info(f'RecognitionWorker: profile_override from confirmed: {profile_override}')
+        except Exception as _pe:
+            _slog.debug(f'RecognitionWorker: profile_override failed: {_pe}')
+
+        try:
+            importer = WarpImporter(sets_app=self._sets_app, build_type=importer_type, from_trainer=True)
             result = importer._process_image(img, str(self._path), profile_override=profile_override or None)
             _slog.info(f'RecognitionWorker: pipeline done — {len(result.items)} items found')
-            if result.errors:
-                for e in result.errors:
-                    _slog.warning(f'RecognitionWorker: pipeline error: {e}')
-            
+            for e in result.errors:
+                _slog.warning(f'RecognitionWorker: pipeline error: {e}')
+
             # Cross-check layout vs content
             cross_check_failed_items = set()
             try:
-                from warp.warp_importer import WarpImporter
-                importer = WarpImporter(sets_app=self._sets_app)
+                xcheck = WarpImporter(sets_app=self._sets_app)
                 for item in result.items:
-                    if not importer._item_valid_for_slot(item.name, item.slot):
-                         _slog.info(f'RecognitionWorker: cross-check warning: {item.name!r} invalid for {item.slot!r}')
-                         cross_check_failed_items.add((item.slot, item.name))
+                    if not xcheck._item_valid_for_slot(item.name, item.slot):
+                        _slog.info(f'RecognitionWorker: cross-check warning: {item.name!r} invalid for {item.slot!r}')
+                        cross_check_failed_items.add((item.slot, item.name))
             except:
                 pass
-                
         except Exception as e:
             _slog.warning(f'RecognitionWorker: exception — {e}')
             self.error.emit(str(e))
             return
+
         items = []
-        try:
-            import cv2
-            img2 = cv2.imread(str(self._path))
-        except:
-            img2 = None
         for ri in result.items:
             crop_bgr = None
-            if ri.bbox and img2 is not None:
+            if ri.bbox is not None:
                 try:
                     x, y, w, h = ri.bbox
-                    crop_bgr = img2[y:y+h, x:x+w].copy()
+                    crop_bgr = img[y:y+h, x:x+w].copy()
                 except:
                     pass
             _slog.info(f'RecognitionWorker:   slot={ri.slot!r:25} name={ri.name!r:40} conf={ri.confidence:.2f} bbox={ri.bbox}')
@@ -776,6 +834,18 @@ class WarpCoreWindow(QMainWindow):
         self._scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._scroll_area.setStyleSheet(f'QScrollArea {{ background: {BG}; border: none; }}')
         cl.addWidget(self._scroll_area, 1)
+        # Fixed-height frame so progress bar never shifts the canvas or bottom panel
+        _pf = QWidget()
+        _pf.setFixedHeight(6)
+        _pf_lay = QHBoxLayout(_pf)
+        _pf_lay.setContentsMargins(0, 0, 0, 0)
+        self._match_progress = QProgressBar()
+        self._match_progress.setRange(0, 0)
+        self._match_progress.setFixedHeight(6)
+        self._match_progress.setTextVisible(False)
+        self._match_progress.setVisible(False)
+        _pf_lay.addWidget(self._match_progress)
+        cl.addWidget(_pf)
         cl.addWidget(self._make_bottom_panel())
         return center
 
@@ -1527,10 +1597,12 @@ class WarpCoreWindow(QMainWindow):
             if sa.rect().contains(sa_pos) and not aw.rect().contains(aw_pos):
                 aw.wheelEvent(event)
                 return True
-        # Wayland: set transient parent on completer popup on first Show
-        cp = getattr(self, '_completer_popup', None)
-        if cp and obj is cp and event.type() == QEvent.Type.Show:
-            QTimer.singleShot(0, lambda: self._set_popup_transient(cp))
+        # Wayland: set transient parent on any popup window (QComboBox, QMenu, QCompleter, …)
+        from PySide6.QtWidgets import QWidget as _QW
+        if (event.type() == QEvent.Type.Show
+                and isinstance(obj, _QW)
+                and (obj.windowFlags() & Qt.WindowType.Popup)):
+            QTimer.singleShot(0, lambda o=obj: self._set_popup_transient(o))
         return super().eventFilter(obj, event)
 
     def _on_add_bbox_toggle(self, checked: bool):
@@ -1701,7 +1773,6 @@ class WarpCoreWindow(QMainWindow):
                             self._slot_combo.setCurrentText(suggested)
                             self._slot_combo.blockSignals(False)
                             _slog.info(f'add_bbox: P1 slot suggestion → {suggested!r}')
-                        from warp.recognition.icon_matcher import SETSIconMatcher
                         _current_slot = self._slot_combo.currentText()
                         # If current slot is a NON_ICON_SLOT already confirmed for this image,
                         # advance to the next unconfirmed NON_ICON_SLOT to prevent
@@ -1723,113 +1794,119 @@ class WarpCoreWindow(QMainWindow):
                                         break
                         if _current_slot not in NON_ICON_SLOTS:
                             _candidates = set(self._build_search_candidates(_current_slot)) or None
-                            # Pass 1: match with slot-restricted candidates
-                            name, conf, thumb, _ = SETSIconMatcher(self._sets).match(
-                                crop_bgr, candidate_names=_candidates)
-                            _slog.info(f'add_bbox: pass1 → name={name!r} conf={conf:.2f} '
-                                       f'(slot={_current_slot!r}, pool={len(_candidates) if _candidates else "all"})')
-                            # Pass 2: if low conf, retry without slot restriction
-                            if conf < 0.40 and _candidates:
-                                name2, conf2, thumb2, _ = SETSIconMatcher(self._sets).match(
-                                    crop_bgr, candidate_names=None)
-                                _slog.info(f'add_bbox: pass2 (unrestricted) → name={name2!r} conf={conf2:.2f}')
-                                if conf2 > conf:
-                                    name, conf, thumb = name2, conf2, thumb2
-                            # Discard low-confidence results — below threshold means 'no match'
-                            if conf < 0.40:
-                                _slog.info(f'add_bbox: conf {conf:.2f} < 0.40 — treating as unmatched')
-                                name, conf, thumb = '', 0.0, None
-                        else:
-                            name, conf, thumb = '', 0.0, None
+                            self._start_match_worker(crop_bgr, bbox, _candidates)
+                            return
+                        # NON_ICON_SLOT: icon matching skipped, fall through to _finish_bbox_drawn
                 except Exception as _e:
                     from src.setsdebug import log as _slog
-                    _slog.warning(f'add_bbox: matcher error: {_e}')
-            slot = self._slot_combo.currentText()
-            # If matcher found a name, infer the correct slot from cache item type
-            # Restrict to slots allowed by the current screen type
-            if name:
-                stype = 'UNKNOWN'
-                if self._current_idx >= 0:
-                    stype = self._screen_types.get(
-                        self._screenshots[self._current_idx].name, 'UNKNOWN')
-                group_key = SCREEN_TO_SLOT_GROUP.get(stype, 'ALL')
-                allowed = SLOT_GROUPS.get(group_key)  # None means no restriction
-                inferred = self._infer_slot_from_name(name, allowed_slots=allowed)
-                if inferred:
-                    slot = inferred
-                else:
-                    # Name found by matcher but doesn't belong to any allowed slot
-                    # for this screen type — discard to avoid wrong slot assignment
-                    from src.setsdebug import log as _slog2
-                    _slog2.info(f'add_bbox: discarding {name!r} — not valid for stype={stype}')
-                    name, conf, thumb = '', 0.0, None
-            # NON_ICON_SLOTS (Ship Name/Type/Tier) — position only, always confirmed
-            if slot in NON_ICON_SLOTS:
-                _auto = False
-            else:
-                # Auto-accept before adding to list if conf >= threshold
-                _auto = (name and conf > 0
-                         and getattr(self, '_chk_auto_accept', None)
-                         and self._chk_auto_accept.isChecked()
-                         and conf >= self._spin_auto_conf.value())
-            
-            _cross_check = False
-            try:
-                if name:
-                    from warp.warp_importer import WarpImporter
-                    _cross_check = not WarpImporter(sets_app=self._sets)._item_valid_for_slot(name, slot)
-            except: pass
-
-            _state = 'confirmed' if _auto else 'pending'
-            new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': _state, 'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': '', 'cross_check_failed': _cross_check}
-            self._recognition_items.append(new_item)
-            if _auto and self._current_idx >= 0:
-                _path = self._screenshots[self._current_idx]
-                _saved = self._data_mgr.add_annotation(
-                    image_path=_path, bbox=bbox, slot=slot, name=name,
-                    state=AnnotationState.CONFIRMED, ml_conf=conf, ml_name=name)
-                new_item['ann_id'] = _saved.ann_id
-                if crop_bgr is not None:
-                    from warp.recognition.icon_matcher import SETSIconMatcher
-                    SETSIconMatcher.add_session_example(crop_bgr, name)
-                self._data_mgr.save()
-            self._add_review_row(name, slot, conf, confirmed=_auto, cross_check_failed=_cross_check)
-            new_row = len(self._recognition_items) - 1
-            self._review_list.setCurrentRow(new_row)
-            self._set_review_buttons_enabled(True)
-            if self._current_idx >= 0:
-                fname = self._screenshots[self._current_idx].name
-                self._recognition_cache[fname] = list(self._recognition_items)
-            self._ann_widget.clear_pending()
-            
-            if slot in NON_ICON_SLOTS and crop_bgr is not None:
-                if self._ship_type_combo.count() == 0:
-                    self._populate_ship_type_combo()
-                v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
-                v_types = [self._ship_type_combo.itemText(i) for i in range(self._ship_type_combo.count())]
-                worker = OCRWorker(new_row, crop_bgr, slot, v_tiers, v_types, parent=self)
-                worker.finished.connect(self._on_ocr_finished)
-                worker.start()
-                if not hasattr(self, '_ocr_workers'): self._ocr_workers = []
-                self._ocr_workers.append(worker)
-            # Update slot combo to match inferred slot (suppressing textEdited on name field)
-            if slot != self._slot_combo.currentText():
-                self._slot_combo.blockSignals(True)
-                self._slot_combo.setCurrentText(slot)
-                self._slot_combo.blockSignals(False)
-                self._populate_name_completer(slot)
-            # Fill recognised name but do NOT open the dropdown automatically.
-            # User can click the field to browse all slot-compatible items.
-            self._name_edit.blockSignals(True)
-            self._name_edit.setText(name)
-            self._name_edit.blockSignals(False)
-            if not _auto:
-                self._ann_widget.setFocus()
-            else:
-                self._review_list.setFocus()
+                    _slog.warning(f'add_bbox: error: {_e}')
+            self._finish_bbox_drawn('', 0.0, None, crop_bgr, bbox)
         else:
             self._name_edit.setFocus()
             self._name_edit.clear()
+
+    def _start_match_worker(self, crop_bgr, bbox: tuple, candidate_names) -> None:
+        """Start async icon matching; show spinner after 500ms if still running."""
+        if not hasattr(self, '_match_workers'):
+            self._match_workers = []
+        worker = MatchWorker(crop_bgr, bbox, candidate_names, self._sets, parent=self)
+        worker.finished.connect(self._on_match_worker_done)
+        self._match_workers.append(worker)
+        QTimer.singleShot(500, lambda: self._match_progress.setVisible(
+            any(w.isRunning() for w in self._match_workers)))
+        worker.start()
+
+    def _on_match_worker_done(self, name: str, conf: float, thumb, crop_bgr, bbox: tuple) -> None:
+        self._match_progress.setVisible(False)
+        self._finish_bbox_drawn(name, conf, thumb, crop_bgr, bbox)
+
+    def _finish_bbox_drawn(self, name: str, conf: float, thumb, crop_bgr, bbox: tuple) -> None:
+        """Finalise a drawn bbox: infer slot, add to review list, trigger OCR if needed."""
+        slot = self._slot_combo.currentText()
+        # If matcher found a name, infer the correct slot from cache item type
+        # Restrict to slots allowed by the current screen type
+        if name:
+            stype = 'UNKNOWN'
+            if self._current_idx >= 0:
+                stype = self._screen_types.get(
+                    self._screenshots[self._current_idx].name, 'UNKNOWN')
+            group_key = SCREEN_TO_SLOT_GROUP.get(stype, 'ALL')
+            allowed = SLOT_GROUPS.get(group_key)  # None means no restriction
+            inferred = self._infer_slot_from_name(name, allowed_slots=allowed)
+            if inferred:
+                slot = inferred
+            else:
+                # Name found by matcher but doesn't belong to any allowed slot
+                # for this screen type — discard to avoid wrong slot assignment
+                from src.setsdebug import log as _slog2
+                _slog2.info(f'add_bbox: discarding {name!r} — not valid for stype={stype}')
+                name, conf, thumb = '', 0.0, None
+        # NON_ICON_SLOTS (Ship Name/Type/Tier) — position only, always confirmed
+        if slot in NON_ICON_SLOTS:
+            _auto = False
+        else:
+            # Auto-accept before adding to list if conf >= threshold
+            _auto = (name and conf > 0
+                     and getattr(self, '_chk_auto_accept', None)
+                     and self._chk_auto_accept.isChecked()
+                     and conf >= self._spin_auto_conf.value())
+
+        _cross_check = False
+        try:
+            if name:
+                from warp.warp_importer import WarpImporter
+                _cross_check = not WarpImporter(sets_app=self._sets)._item_valid_for_slot(name, slot)
+        except: pass
+
+        _state = 'confirmed' if _auto else 'pending'
+        new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': _state,
+                    'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': '',
+                    'cross_check_failed': _cross_check}
+        self._recognition_items.append(new_item)
+        if _auto and self._current_idx >= 0:
+            _path = self._screenshots[self._current_idx]
+            _saved = self._data_mgr.add_annotation(
+                image_path=_path, bbox=bbox, slot=slot, name=name,
+                state=AnnotationState.CONFIRMED, ml_conf=conf, ml_name=name)
+            new_item['ann_id'] = _saved.ann_id
+            if crop_bgr is not None:
+                from warp.recognition.icon_matcher import SETSIconMatcher
+                SETSIconMatcher.add_session_example(crop_bgr, name)
+            self._data_mgr.save()
+        self._add_review_row(name, slot, conf, confirmed=_auto, cross_check_failed=_cross_check)
+        new_row = len(self._recognition_items) - 1
+        self._review_list.setCurrentRow(new_row)
+        self._set_review_buttons_enabled(True)
+        if self._current_idx >= 0:
+            fname = self._screenshots[self._current_idx].name
+            self._recognition_cache[fname] = list(self._recognition_items)
+        self._ann_widget.clear_pending()
+
+        if slot in NON_ICON_SLOTS and crop_bgr is not None:
+            if self._ship_type_combo.count() == 0:
+                self._populate_ship_type_combo()
+            v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
+            v_types = [self._ship_type_combo.itemText(i) for i in range(self._ship_type_combo.count())]
+            worker = OCRWorker(new_row, crop_bgr, slot, v_tiers, v_types, parent=self)
+            worker.finished.connect(self._on_ocr_finished)
+            worker.start()
+            if not hasattr(self, '_ocr_workers'): self._ocr_workers = []
+            self._ocr_workers.append(worker)
+        # Update slot combo to match inferred slot (suppressing textEdited on name field)
+        if slot != self._slot_combo.currentText():
+            self._slot_combo.blockSignals(True)
+            self._slot_combo.setCurrentText(slot)
+            self._slot_combo.blockSignals(False)
+            self._populate_name_completer(slot)
+        # Fill recognised name but do NOT open the dropdown automatically.
+        # User can click the field to browse all slot-compatible items.
+        self._name_edit.blockSignals(True)
+        self._name_edit.setText(name)
+        self._name_edit.blockSignals(False)
+        if not _auto:
+            self._ann_widget.setFocus()
+        else:
+            self._review_list.setFocus()
 
     def _on_ocr_finished(self, row: int, text: str, conf: float, crop_bgr, ocr_raw: str = ''):
         if row < 0 or row >= len(self._recognition_items): return

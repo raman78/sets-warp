@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## v2.1 (2026-03-28) — ML roadmap P6, layout inference, UX fixes
+
+### Features
+- **P6 — Async bbox matching** (`trainer_window.py`): icon matching during manual bbox
+  draw now runs in a background `MatchWorker` thread; UI stays responsive; indeterminate
+  `QProgressBar` in a fixed-height frame below canvas appears after 500ms if still running
+- **CNN screen-type inference** (`layout_detector.py`): new `infer_build_type(img)` scores
+  each build type (SPACE, GROUND, SPACE_TRAITS, GROUND_TRAITS, BOFFS, SPEC) by average
+  slot presence from the CNN; used by `RecognitionWorker` for UNKNOWN screenshots and to
+  distinguish SPACE_TRAITS vs GROUND_TRAITS (screen classifier returns 'TRAITS' for both)
+- **CNN slot filter fix** (`layout_detector.py`): Strategy 0 now maps WarpImporter
+  build_types ('SPACE', 'GROUND', …) to the correct `SLOT_GROUPS` keys ('SPACE_EQ',
+  'GROUND_EQ', …); previously 'SPACE' fell through to `REGRESSOR_SLOTS` (all 42 slots)
+  causing Traits/Reputation bboxes to appear on SPACE_EQ screenshots
+
+### Improvements
+- **`RecognitionWorker.run()`** refactored: image loaded once (was loaded twice), explicit
+  `_STYPE_MAP` with comments, CNN inference for UNKNOWN/TRAITS before creating WarpImporter
+- **Wayland popup fix** (`trainer_window.py`): general handler in `eventFilter` catches
+  ALL widgets with `Qt.WindowType.Popup` flag on `QEvent.Show` (covers QComboBox dropdowns,
+  QMenu, QCompleter); replaces per-combo per-view approach that caused more errors
+
+---
+
 ## v2.0.1 (2026-03-28) — Bug fixes & sync optimization
 
 ### Bug fixes
