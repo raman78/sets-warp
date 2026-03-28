@@ -2542,7 +2542,7 @@ class WarpCoreWindow(QMainWindow):
         self._tier_combo.setVisible(is_tier)
         self._ship_type_combo.setVisible(is_ship_type)
         self._name_edit.setVisible(not is_tier and not is_ship_type)
-        self._name_edit.setEnabled(not is_ship_name)
+        self._name_edit.setEnabled(True)
         if is_tier:
             self._name_label.setText('Tier:')
         elif is_ship_type:
@@ -2550,7 +2550,7 @@ class WarpCoreWindow(QMainWindow):
             self._populate_ship_type_combo()
         elif is_ship_name:
             self._name_label.setText('Ship Name:')
-            self._name_edit.setPlaceholderText('OCR only — bbox position saved')
+            self._name_edit.setPlaceholderText('Ship name (or leave blank)')
         else:
             self._name_label.setText('Item name:')
             self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
