@@ -6,6 +6,39 @@
 
 ---
 
+## How to sync with a new upstream release
+
+```bash
+# 1. Dry-run — see what's new and what would be applied
+python scripts/upstream_sync.py
+
+# 2. Apply — create branch, auto-patch, get manual checklist
+python scripts/upstream_sync.py --apply
+
+# 3. Review the ⚠️ patches and manual files listed in the output
+#    (use this document as reference for each manual file)
+
+# 4. After all manual fixes are committed:
+git checkout main
+git merge upstream-merge-YYYY-MM-DD
+git tag vX.Yb && git push origin main --tags
+```
+
+**What the script auto-applies** (no manual work):
+- `src/constants.py` — SEVEN_DAYS_IN_SECONDS, GITHUB_CACHE_URL, TRAIT_QUERY_URL, SPECIES
+- `src/callbacks.py` — log import, _EQUIPMENT_CATS/_TRAIT_CATS, _save/_restore_session_slots
+- `src/buildupdater.py` — Intel Holoship fix, item normalization, boff alias lookup
+- `src/datafunctions.py` — trait key migration
+
+**What always requires manual review** (see sections below):
+- `src/app.py` — HIGH risk, complex additions
+- `src/iofunc.py` — MEDIUM, utilities and imports
+- `src/widgets.py` — MEDIUM, ImageLabel/TooltipLabel
+- `src/splash.py` — LOW, take our version entirely
+- `src/datafunctions.py` — icon_name → cache.alt_images section
+
+---
+
 ## Files that exist only in SETS-WARP (no merge conflict)
 
 These files are not present in upstream. Git keeps them automatically on merge.
