@@ -1287,6 +1287,8 @@ class WarpCoreWindow(QMainWindow):
             path = self._screenshots[self._current_idx]
             for ann in self._data_mgr.get_annotations(path):
                 if ann.state == AnnotationState.CONFIRMED:
+                    log.debug(f'populate: confirmed from disk slot={ann.slot!r} '
+                              f'bbox={ann.bbox} name={ann.name!r} ann_id={ann.ann_id}')
                     confirmed_by_id[ann.ann_id] = {
                     'name': ann.name, 'slot': ann.slot, 'bbox': ann.bbox,
                     'state': 'confirmed',
@@ -2126,7 +2128,8 @@ class WarpCoreWindow(QMainWindow):
         self._slot_combo.blockSignals(True)
         self._slot_combo.setCurrentText(slot)
         self._slot_combo.blockSignals(False)
-        self._populate_name_completer(slot)
+        if slot not in NON_ICON_SLOTS:
+            self._populate_name_completer(slot)
 
         # Set name fields
         if slot == 'Ship Tier':
@@ -2256,6 +2259,7 @@ class WarpCoreWindow(QMainWindow):
             ri['state'] = 'confirmed'
             if ri.get('bbox') and self._current_idx >= 0:
                 path = self._screenshots[self._current_idx]
+                log.debug(f'accept: row={row} slot={slot!r} name={name!r} bbox={ri["bbox"]}')
                 saved = self._data_mgr.add_annotation(
                     image_path=path, bbox=ri['bbox'], slot=slot, name=name,
                     state=AnnotationState.CONFIRMED,

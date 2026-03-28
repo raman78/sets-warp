@@ -143,9 +143,17 @@ class TrainingDataManager:
         if key not in self._annotations:
             self._annotations[key] = []
 
+        try:
+            from src.setsdebug import log as _log
+        except Exception:
+            _log = logger
+
+        _log.debug(f'add_annotation: img={key} slot={slot!r} bbox={bbox} state={state} ann_id={ann.ann_id}')
+
         # 1. Update in-place if ann_id already exists (exact match — fast path)
         for i, d in enumerate(self._annotations[key]):
             if d.get('ann_id') == ann.ann_id:
+                _log.debug(f'add_annotation: step1 hit — updating in-place (ann_id={ann.ann_id})')
                 self._annotations[key][i] = asdict(ann)
                 self._dirty = True
                 return ann
@@ -157,6 +165,8 @@ class TrainingDataManager:
         if slot not in NON_ICON_SLOTS:
             for i, d in enumerate(self._annotations[key]):
                 if tuple(d.get('bbox', [])) == bbox_t:
+                    _log.debug(f'add_annotation: step2 hit — slot change on same bbox '
+                               f'old_slot={d.get("slot")!r} -> {slot!r}')
                     self._annotations[key][i] = asdict(ann)
                     self._dirty = True
                     return ann
@@ -164,12 +174,17 @@ class TrainingDataManager:
         # 3. Single-instance slots: drop any existing confirmed annotation for
         #    this slot at a different bbox (user re-drew at correct position)
         if state == AnnotationState.CONFIRMED and slot in SINGLE_INSTANCE_SLOTS:
+            before = len(self._annotations[key])
             self._annotations[key] = [
                 d for d in self._annotations[key]
                 if not (d.get('slot') == slot and d.get('state') == 'confirmed')
             ]
+            removed = before - len(self._annotations[key])
+            if removed:
+                _log.debug(f'add_annotation: step3 removed {removed} existing confirmed {slot!r}')
 
         # 4. New annotation
+        _log.debug(f'add_annotation: step4 insert new — {slot!r} bbox={bbox}')
         self._annotations[key].append(asdict(ann))
         self._dirty = True
         try:
