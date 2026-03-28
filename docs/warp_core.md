@@ -160,3 +160,127 @@ Background (8s after launch)
   -> If remote trained_at > local trained_at: downloads from HF
   -> Skipped for 24h after bootstrap download
 ```
+
+---
+
+## NON_ICON_SLOTS — known pitfalls and solutions (v1.9b)
+
+`NON_ICON_SLOTS = {'Ship Name', 'Ship Type', 'Ship Tier'}` — text-only slots.
+Their bboxes are stored in `annotations.json` for layout learning but no ML crop is
+generated. Despite this difference, most annotation logic is shared with icon slots.
+The section below documents bugs that were hard to reproduce and their root causes.
+
+---
+
+### Bug: canvas clicks on freshly confirmed NON_ICON_SLOT bbox did nothing
+
+**Symptom:** After drawing and confirming a Ship Name/Type bbox, clicking on it on
+the canvas did not highlight it or update the review list. After switching to another
+screenshot and back, everything worked.
+
+**Root cause:** `AnnotationWidget._annotations` (used by `_hit_test`) is set at
+`load_image()` and was never refreshed during a session. Clicking the bbox caused
+`_hit_test` to return a stale result from disk, which did not match the freshly
+added `_recognition_items` entry — so the loop in `_on_item_selected` found no
+matching row.
+
+**Fix:** Added `refresh_annotations(path)` method to `AnnotationWidget`. Called from
+`_on_accept` (in `trainer_window.py`) immediately after `add_annotation`, so
+`_hit_test` always reflects the current confirmed state.
+
+---
+
+### Bug: Ship Name bbox disappeared after app restart
+
+**Symptom:** User confirmed Ship Name, then Ship Type. After restart, only Ship Type
+was visible — both bboxes appeared at Ship Type's position.
+
+**Root cause:** `TrainingDataManager.add_annotation` step 2 (bbox-coordinate fallback)
+matched by `bbox` alone, ignoring slot. If Ship Name and Ship Type were drawn at
+identical pixel coordinates (same horizontal screen line), confirming Ship Type
+overwrote Ship Name's entry in `annotations.json` in-place.
+
+**Fix:** Step 2 is now skipped for `NON_ICON_SLOTS`. These slots can legitimately
+share bbox coordinates, so only step 1 (exact `ann_id` match) and step 4 (new insert)
+are used for them.
+
+```python
+# training_data.py — add_annotation step 2
+if slot not in NON_ICON_SLOTS:
+    for i, d in enumerate(self._annotations[key]):
+        if tuple(d.get('bbox', [])) == bbox_t:
+            ...
+```
+
+---
+
+### Bug: switching between NON_ICON_SLOT items was slow (fan spinning)
+
+**Symptom:** Clicking between Ship Name / Ship Type bboxes on the canvas caused
+noticeable lag and fan activity.
+
+**Root cause:** `_on_item_selected` (called on every canvas bbox click and also from
+`_on_ocr_finished`) called `_populate_name_completer(slot)` unconditionally. For
+NON_ICON_SLOTS there is no entry in `_SLOT_TO_CACHE_KEY`, so `_build_search_candidates`
+fell through to the `else` branch and iterated **all** equipment categories — rebuilding
+a QStandardItemModel with thousands of entries on every single click.
+
+**Fix:** Guard in `_on_item_selected`:
+```python
+if slot not in NON_ICON_SLOTS:
+    self._populate_name_completer(slot)
+```
+
+---
+
+### Bug: drawing second bbox reused slot of first NON_ICON_SLOT
+
+**Symptom:** User confirmed Ship Name, then drew a new bbox — the slot combo still
+showed Ship Name. OCRWorker ran as `slot='Ship Name'`, confirmed the result as Ship
+Name. Step 3 (SINGLE_INSTANCE) then silently deleted the first Ship Name. After
+restart only one bbox remained.
+
+**Root cause:** After accepting a confirmed annotation, the slot combo is not reset.
+P1 slot suggestion also did not change the slot if both bboxes were at similar
+vertical positions.
+
+**Fix:** In `_on_bbox_drawn`, after P1 slot suggestion, check if the current slot is
+a NON_ICON_SLOT that is already confirmed for this image. If yes, auto-advance to the
+next unconfirmed slot in the sequence `Ship Name → Ship Type → Ship Tier`:
+
+```python
+if _current_slot in NON_ICON_SLOTS and self._current_idx >= 0:
+    _confirmed_slots = {ann.slot for ann in self._data_mgr.get_annotations(path)
+                        if ann.state == AnnotationState.CONFIRMED}
+    if _current_slot in _confirmed_slots:
+        for _next in ('Ship Name', 'Ship Type', 'Ship Tier'):
+            if _next not in _confirmed_slots:
+                _current_slot = _next
+                self._slot_combo.setCurrentText(_next)
+                break
+```
+
+---
+
+### Feature: confirmed NON_ICON_SLOTs hidden from slot combo dropdown
+
+**Behaviour:** Once Ship Name/Type/Tier is confirmed for the current image, it
+disappears from the slot combo. This prevents the user from accidentally adding a
+second bbox for the same slot (which would trigger SINGLE_INSTANCE removal of the
+first). Removing a confirmed annotation via **Remove BBox** restores the slot.
+
+**Implementation:** `_refresh_slot_combo(stype, keep_slot='')` filters out confirmed
+NON_ICON_SLOTS before rebuilding the combo. `keep_slot` is passed when a row is
+selected (review list click or canvas click) so the active slot always stays visible
+for editing.
+
+Called from:
+- `_on_accept` — after confirm, slot disappears
+- `_on_remove_item` — after remove, slot reappears
+- `_populate_review_panel` — on image load, reflects saved state
+- `_on_review_row_changed` — passes `keep_slot=slot` so editing is possible
+- `_on_item_selected` — passes `keep_slot=slot` so canvas clicks work
+
+**Pitfall:** `_on_accept` must pass `keep_slot` = slot of the **current row after
+`_advance_to_next_unconfirmed`**, not the slot just confirmed. Otherwise the just-
+edited slot immediately disappears when we stay on the same row.
