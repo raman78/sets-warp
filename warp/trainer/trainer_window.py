@@ -1149,11 +1149,20 @@ class WarpCoreWindow(QMainWindow):
     def _refresh_slot_combo(self, stype: str):
         group_key = SCREEN_TO_SLOT_GROUP.get(stype, 'SPACE_EQ')
         slots = SLOT_GROUPS.get(group_key, ALL_SLOTS)
+        # Hide NON_ICON_SLOTS already confirmed for this image (one per image max)
+        confirmed_non_icon: set[str] = set()
+        if self._current_idx >= 0:
+            path = self._screenshots[self._current_idx]
+            confirmed_non_icon = {
+                ann.slot for ann in self._data_mgr.get_annotations(path)
+                if ann.state == AnnotationState.CONFIRMED and ann.slot in NON_ICON_SLOTS
+            }
         current_slot = self._slot_combo.currentText()
         self._slot_combo.blockSignals(True)
         self._slot_combo.clear()
         for s in slots:
-            self._slot_combo.addItem(s)
+            if s not in confirmed_non_icon:
+                self._slot_combo.addItem(s)
         idx = self._slot_combo.findText(current_slot)
         if idx >= 0:
             self._slot_combo.setCurrentIndex(idx)
@@ -1332,6 +1341,8 @@ class WarpCoreWindow(QMainWindow):
         ship = (self._recognition_items[0].get('ship_name') or '--') if self._recognition_items else '--'
         self._review_summary.setText(f'{matched}/{n} identified  Ship: {ship}  {icon} {label}')
         self._set_review_buttons_enabled(n > 0)
+        # Hide confirmed NON_ICON_SLOTS from slot combo for this image
+        self._refresh_slot_combo(stype)
         if n > 0:
             self._review_list.setCurrentRow(0)
 
@@ -1596,6 +1607,10 @@ class WarpCoreWindow(QMainWindow):
             self._on_review_row_changed(new_row)
         self._ann_widget.set_review_items(self._recognition_items)
         self._update_progress()
+        # Restore removed NON_ICON_SLOT back to combo if it was confirmed
+        if self._current_idx >= 0:
+            _stype = self._screen_types.get(self._screenshots[self._current_idx].name, 'UNKNOWN')
+            self._refresh_slot_combo(_stype)
 
     def _enter_manual_bbox_mode(self):
         pass  # Resize/move disabled — reserved for future implementation
@@ -2330,6 +2345,10 @@ class WarpCoreWindow(QMainWindow):
         # Update learned layout for this screenshot after each confirm
         if self._current_idx >= 0:
             self._learn_layout_for(self._screenshots[self._current_idx])
+        # Remove confirmed NON_ICON_SLOTS from slot combo
+        if self._current_idx >= 0:
+            _stype = self._screen_types.get(self._screenshots[self._current_idx].name, 'UNKNOWN')
+            self._refresh_slot_combo(_stype)
         # Deferred focus — after all signals settle, return focus to list
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._review_list.setFocus)
