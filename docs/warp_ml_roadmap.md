@@ -135,24 +135,6 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 
 ---
 
-### 🟢 P2 — Cross-validation: layout vs content (COMPLETED)
-
-**Why:** Layout detection and icon matching are completely independent. If layout places a bbox in the wrong slot and icon matcher returns an item whose type doesn't match, nothing catches this.
-
-**What to do:**
-- After icon matching returns `(name, conf)` for a slot:
-  - Look up `name` in `cache.equipment` → get `item['type']` (e.g., `"Engineering Console"`)
-  - Check against `SLOT_VALID_TYPES` from `warp_importer.py`
-  - If mismatch → flag in review list with warning colour, log the conflict
-- Apply in `RecognitionWorker.run()` and in `_on_bbox_drawn`
-- Also covers fore/aft weapon validation (fore-only weapons in aft slots)
-
-**Testing:** Claude tests with a build screenshot, verifies warnings appear for cross-type mismatches. No user test needed.
-
-**Files:** `trainer_window.py`, `warp_importer.py` (re-export `SLOT_VALID_TYPES`).
-
----
-
 ### P7 — Training data augmentation (EfficientNet)
 
 **Why:** Current EfficientNet fine-tune uses crops as-is. With small datasets (< 1000 crops per class) the model overfits. Adding augmentation during training improves generalization across different in-game UI scales, brightness settings, and display gammas without collecting more data.
