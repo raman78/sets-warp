@@ -1,5 +1,39 @@
 # CHANGELOG
 
+## v2.1b (2026-03-28) — WARP CORE NON_ICON_SLOT fixes + docs
+
+### WARP CORE — NON_ICON_SLOT annotation workflow fixes (10 commits)
+
+- **Focus protection** — canvas `enterEvent` and `eventFilter` no longer steal focus from
+  `QLineEdit`/`QTextEdit`/`QAbstractSpinBox` fields; item name field stays editable while mousing over canvas
+- **Canvas hit-test stale after accept** — `refresh_annotations(path)` called after `add_annotation`
+  so freshly confirmed bboxes are immediately clickable on canvas
+- **Ship Name/Type bbox overwrite** — `add_annotation` step 2 (bbox-coord match) now skips
+  NON_ICON_SLOTS; Ship Type could silently overwrite Ship Name when drawn at same position
+- **NON_ICON_SLOT completer performance** — `_populate_name_completer` skipped for Ship Name/Type/Tier
+  (was iterating all equipment on every canvas click)
+- **Canvas clears stale highlight** — switching to a slot with no bbox now calls `clear_highlight()`
+- **Slot combo UX** — confirmed NON_ICON_SLOTS hidden from dropdown to prevent duplicates;
+  restored on remove; `keep_slot` param in `_refresh_slot_combo` keeps active slot visible when editing;
+  auto-advance when drawing new bbox on an already-confirmed NON_ICON_SLOT
+- **Remove-bbox dialog** — default button changed to Yes (Enter confirms removal)
+- **Diagnostic logs** — DEBUG-level logs added in `add_annotation` and `_on_accept` for tracing
+
+### WARP CORE — Shift anchor cursor fix
+
+- Shift+hover over bbox handles now correctly shows resize cursors (SizeFDiag/SizeBDiag/SizeHor/SizeVer)
+- Root cause: `mouseMoveEvent` used `self.setCursor()` which was overridden by the `QApplication`
+  override cursor set by `eventFilter` on Shift keypress
+- Fix: use `_set_mod_cursor()` (which calls `QApplication.changeOverrideCursor()`) in Shift section
+  of `mouseMoveEvent` — same approach as the rest of the modifier cursor system
+
+### Documentation — Phase 4.2
+
+- Created `docs/src_patches.md` — complete reference of every intentional difference between
+  our `src/` and upstream SETS, with re-application instructions for future upstream merges
+
+---
+
 ## v2.0b (2026-03-28) — Upstream SETS merge (Phase 3 + 4)
 
 ### Architecture — Phase 3 + 4: upstream merge + stabilization

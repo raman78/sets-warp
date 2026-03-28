@@ -279,6 +279,13 @@ def load_cargo_cache(self, threaded_worker: ThreadObject) -> bool:
     self.cache.traits = get_cached_cargo_data(self, 'traits.json')
     if len(self.cache.traits) == 0:
         return False
+    # Migrate old key format (traits/rep_traits/active_rep_traits → personal/rep/active_rep)
+    _key_map = {'traits': 'personal', 'rep_traits': 'rep', 'active_rep_traits': 'active_rep'}
+    for env in ('space', 'ground'):
+        if env in self.cache.traits and 'traits' in self.cache.traits[env]:
+            self.cache.traits[env] = {
+                _key_map.get(k, k): v for k, v in self.cache.traits[env].items()
+            }
     self.cache.starship_traits = get_cached_cargo_data(self, 'starship_traits.json')
     if len(self.cache.starship_traits) == 0:
         return False

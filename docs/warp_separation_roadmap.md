@@ -280,12 +280,10 @@ Upstream's `SETS.__init__` will have changed. Review `WarpSETS`:
 - Check that `super().__init__()` call in `WarpSETS.__init__` passes correct arguments
 - Update any overridden methods whose upstream base changed
 
-#### 4.2 Document maintained differences
+#### 4.2 Document maintained differences ✅ DONE (2026-03-28)
 
-Create `docs/src_patches.md` listing every intentional difference between our `src/` and upstream:
-- What we added and why
-- What upstream hasn't accepted yet
-- What to watch on future upstream updates (what to re-apply next time)
+`docs/src_patches.md` created — complete file-by-file reference of every intentional difference
+between our `src/` and upstream SETS, including re-application instructions for future merges.
 
 #### 4.3 Release stabilization
 
