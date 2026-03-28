@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## v2.2 (2026-03-28) — ML roadmap P7, P8, P9
+
+### Improvements
+- **P7 — EfficientNet augmentation** (`local_trainer.py`): training transform now includes
+  `ColorJitter(0.3, 0.3, 0.2)`, `RandomHorizontalFlip(p=0.3)`, and
+  `RandomAffine(degrees=5, translate=(0.05, 0.05))`; validation transform unchanged;
+  reduces overfitting on small datasets without collecting more data
+- **P8 — Confidence fusion** (`icon_matcher.py`): ML now runs when template score < 0.75
+  (was < 0.55); fused confidence = `max(template, 0.4*template + 0.6*ml)` so high-ML /
+  borderline-template cases correctly prefer the ML result; both scores logged at DEBUG;
+  `FUSION_THRESHOLD = 0.75` constant added
+- **P9 — Hard negatives mining** (`local_trainer.py`): after each training epoch, samples
+  where `predicted != label AND conf > 0.5` get weight doubled (capped at 3×) in
+  `WeightedRandomSampler`; focuses subsequent epochs on the model's hardest mistakes
+
+---
+
 ## v2.1 (2026-03-28) — ML roadmap P6, layout inference, UX fixes
 
 ### Features

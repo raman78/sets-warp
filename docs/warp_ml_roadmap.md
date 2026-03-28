@@ -1,7 +1,7 @@
 # WARP ML Roadmap — Layout + Content Recognition
 
 **Updated:** 2026-03-28
-**Status:** v2.1 — P0–P6 complete. Pending: P7, P8, P9.
+**Status:** v2.2 — P0–P9 complete. All roadmap items done.
 
 ---
 
@@ -135,7 +135,7 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 
 ---
 
-### P7 — Training data augmentation (EfficientNet)
+### 🟢 P7 — Training data augmentation (EfficientNet) (COMPLETED)
 
 **Why:** Current EfficientNet fine-tune uses crops as-is. With small datasets (< 1000 crops per class) the model overfits. Adding augmentation during training improves generalization across different in-game UI scales, brightness settings, and display gammas without collecting more data.
 
@@ -152,7 +152,7 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 
 ---
 
-### P8 — Confidence fusion: template + ML combined score
+### 🟢 P8 — Confidence fusion: template + ML combined score (COMPLETED)
 
 **Why:** Current pipeline is strict fallback — template matching wins if it fires, ML is only used if template fails. When template score is borderline (0.5–0.7) and ML score is high (0.8+), ML should win. Combining both signals gives a more accurate final confidence.
 
@@ -169,7 +169,7 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 
 ---
 
-### P9 — Hard negatives mining for EfficientNet
+### 🟢 P9 — Hard negatives mining for EfficientNet (COMPLETED)
 
 **Why:** The model confuses visually similar items (e.g., consoles of the same set). Standard random training doesn't focus on these hard cases. Mining confusing pairs and over-sampling them during training directly improves the most common failure mode.
 
@@ -195,9 +195,9 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 ✅ P5 (dynamic anchoring)       — DONE
 ✅ P6 (progress indicator)      — DONE
 ✅ P2 (cross-validation)        — DONE
-── P7 (data augmentation)       — standalone, improves EfficientNet with no extra data
-── P8 (confidence fusion)       — depends on both template + ML running (already do)
-── P9 (hard negatives)          — depends on P7 training loop changes
+✅ P7 (data augmentation)       — DONE
+✅ P8 (confidence fusion)       — DONE
+✅ P9 (hard negatives)          — DONE
 ```
 
 ---
