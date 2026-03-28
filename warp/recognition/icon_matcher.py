@@ -44,6 +44,7 @@ TEMPLATE_THRESHOLD  = 0.55   # min TM_CCOEFF_NORMED score to accept a match
 HIST_WEIGHT         = 0.20   # weight of histogram score when blending with template
 HIST_THRESHOLD      = 0.50   # min histogram correlation to contribute
 ML_TRIGGER_THRESHOLD= 0.50   # if combined conf below this, try ML stage
+FUSION_THRESHOLD    = 0.75   # P8: run ML and fuse scores when template < this
 HIST_BINS           = [18, 16] # H×S bins for _hist_hsv — must match everywhere
 
 HF_REPO_ID          = 'sets-sto/icon-classifier'
@@ -162,14 +163,17 @@ class SETSIconMatcher:
                 auto_name  = entry['name']
                 auto_entry = entry
 
-        # Stage 3 (autonomous ML): triggered when template confidence is low
-        if auto_score < TEMPLATE_THRESHOLD and not self._ml_disabled:
+        # Stage 3 (P8 confidence fusion): run ML when template score < FUSION_THRESHOLD.
+        # fused = max(template_conf, 0.4*template_conf + 0.6*ml_conf)
+        # When template is borderline and ML is high, ML name wins with fused confidence.
+        if auto_score < FUSION_THRESHOLD and not self._ml_disabled:
             ml_name, ml_conf = self._classify_ml(crop64)
-            if ml_name and ml_conf > auto_score:
-                # Reject ML result if it's not valid for this slot
-                if candidate_names is None or ml_name in candidate_names:
+            log.debug(f'WARP: template={auto_score:.3f} ml={ml_conf:.3f} ({ml_name!r})')
+            if ml_name and (candidate_names is None or ml_name in candidate_names):
+                fused = max(auto_score, 0.4 * auto_score + 0.6 * ml_conf)
+                if fused > auto_score:
                     auto_name  = ml_name
-                    auto_score = ml_conf
+                    auto_score = fused
                     auto_entry = None
 
         # ── Phase B — session examples (confirmed crops from training data) ────
