@@ -663,8 +663,10 @@ class AnnotationWidget(QWidget):
 
     def enterEvent(self, event):
         """Mouse entered canvas area — grab focus and show context cursor."""
-        self.setFocus()
-        from PySide6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication, QLineEdit, QTextEdit, QAbstractSpinBox
+        focused = QApplication.focusWidget()
+        if not isinstance(focused, (QLineEdit, QTextEdit, QAbstractSpinBox)):
+            self.setFocus()
         mods = QApplication.keyboardModifiers()
         if mods & Qt.KeyboardModifier.AltModifier:
             self._set_mod_cursor(self._make_draw_cursor())
