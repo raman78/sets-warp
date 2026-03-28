@@ -190,7 +190,7 @@ def populate_cache(self, threaded_worker: ThreadObject):
     success = load_cargo_cache(self, threaded_worker)
     log.info(f'populate_cache: load_cargo_cache returned {success}')
     if not success:
-        self.cache.reset_cache(keep_static_data=True)
+        self.cache.reset_cache(keep_skills=True)
         log.info('populate_cache: calling load_cargo_data')
         load_cargo_data(self, threaded_worker)
         log.info('populate_cache: load_cargo_data done')
@@ -222,7 +222,7 @@ def populate_cache(self, threaded_worker: ThreadObject):
     # If cargo JSON files were updated, reload the in-memory cache
     if sync_report.get('cargo_updated'):
         log.info('populate_cache: cargo files updated by sync — reloading')
-        self.cache.reset_cache(keep_static_data=True)
+        self.cache.reset_cache(keep_skills=True)
         load_cargo_data(self, threaded_worker)
         log.info('populate_cache: cargo reloaded after sync')
 
@@ -379,11 +379,11 @@ def load_cargo_data(self, threaded_worker: ThreadObject):
         name = trait['name']
         if trait['type'] != 'doff' and trait['type'] != 'boff' and name is not None:
             if trait['type'] == 'reputation':
-                trait_type = 'rep_traits'
+                trait_type = 'rep'
             elif trait['type'] == 'activereputation':
-                trait_type = 'active_rep_traits'
+                trait_type = 'active_rep'
             else:
-                trait_type = 'traits'
+                trait_type = 'personal'
             try:
                 self.cache.traits[trait['environment']][trait_type][name] = {
                     'Page': trait['Page'],

@@ -145,20 +145,20 @@ class Cache():
     def __init__(self):
         self.reset_cache()
 
-    def reset_cache(self, keep_static_data: bool = False):
+    def reset_cache(self, keep_skills=False):
         self.ships: dict = dict()
         self.equipment: dict = {type_: dict() for type_ in set(EQUIPMENT_TYPES.values())}
         self.starship_traits: dict = dict()
         self.traits: dict = {
             'space': {
-                'traits': dict(),
-                'rep_traits': dict(),
-                'active_rep_traits': dict()
+                'personal': dict(),
+                'rep': dict(),
+                'active_rep': dict()
             },
             'ground': {
-                'traits': dict(),
-                'rep_traits': dict(),
-                'active_rep_traits': dict()
+                'personal': dict(),
+                'rep': dict(),
+                'active_rep': dict()
             }
         }
         self.ground_doffs: dict = dict()
@@ -169,8 +169,7 @@ class Cache():
             'all': dict()
         }
 
-        if not keep_static_data:
-            self.item_aliases: dict = dict()
+        if not keep_skills:
             self.skills = {
                 'space': dict(),
                 'space_unlocks': dict(),
@@ -184,9 +183,17 @@ class Cache():
                 'ground_points_total': 0,
             }
 
+        self.species: dict = {
+            'Federation': dict(),
+            'Klingon': dict(),
+            'Romulan': dict(),
+            'Dominion': dict(),
+            'TOS Federation': dict(),
+            'DSC Federation': dict()
+        }
         self.modifiers: dict = {type_: dict() for type_ in set(EQUIPMENT_TYPES.values())}
 
-        self.empty_image: QImage = QImage()
+        self.empty_image: QImage
         self.overlays: OverlayCache = OverlayCache()
         self.icons: dict = dict()
         self.images: dict = dict()
@@ -357,12 +364,6 @@ class ItemButton(QFrame):
                 self._tooltip_label.setFixedWidth(tooltip_width)
                 self._tooltip_frame.move(position)
                 self._tooltip_frame.updateGeometry()
-                win = self.window().windowHandle()
-                if win:
-                    self._tooltip_frame.winId()  # ensure native handle exists
-                    handle = self._tooltip_frame.windowHandle()
-                    if handle and handle.transientParent() != win:
-                        handle.setTransientParent(win)
                 self._tooltip_frame.show()
         event.accept()
 
@@ -498,24 +499,14 @@ class VBoxLayout(QVBoxLayout):
 
 
 class PySideThread(QThread):
-    _call_finished = Signal()  # emitted from worker thread, received in main thread
-
     def __init__(self, parent, finished_func, worker):
         self.finished_func = finished_func
         self.worker = worker
         super().__init__(parent)
-        if finished_func is not None:
-            # Qt queued connection: slot always runs in the thread that owns this QThread object
-            # (the main thread), regardless of which thread emits the signal.
-            self._call_finished.connect(self._run_finished_func, Qt.ConnectionType.QueuedConnection)
-
-    @Slot()
-    def _run_finished_func(self):
-        if self.finished_func is not None:
-            self.finished_func()
 
     def worker_finished(self):
-        self._call_finished.emit()  # schedule finished_func in main thread
+        if self.finished_func is not None:
+            self.finished_func()
         self.quit()
 
 
@@ -524,7 +515,6 @@ class ThreadObject(QObject):
     start = Signal(tuple)
     result = Signal(object)
     update_splash = Signal(str)
-    update_progress = Signal(int, int)   # (current, total)  — 0,0 hides the bar
     finished = Signal()
 
     def __init__(self, func, *args, **kwargs) -> None:
@@ -535,25 +525,18 @@ class ThreadObject(QObject):
 
     @Slot()
     def run(self, start_args=tuple()):
-        try:
-            self._func(*self._args, *start_args, threaded_worker=self, **self._kwargs)
-        except Exception as exc:
-            import traceback
-            print(f"[ThreadObject] Exception in worker thread:\n{traceback.format_exc()}",
-                  flush=True)
-        finally:
-            self.finished.emit()
+        self._func(*self._args, *start_args, threaded_worker=self, **self._kwargs)
+        self.finished.emit()
 
 
 def exec_in_thread(
-        self, func, *args, result=None, update_splash=None, update_progress=None,
-        finished=None, start_later=False,
+        self, func, *args, result=None, update_splash=None, finished=None, start_later=False,
         **kwargs):
     """
     Executes function `func` in separate thread. All positional and keyword parameters not listed
     are passed to the function. The function must take a parameter `threaded_worker` which will
     contain the worker object holding the signals: `start` (tuple), `result` (object),
-    `update_splash` (str), `update_progress` (int, int), `finished` (no data)
+    `update_splash` (str), `finished` (no data)
 
     Parameters:
     - :param func: function to execute
@@ -562,8 +545,6 @@ def exec_in_thread(
     [optional]
     - :param update_splash: callable that is executed when signal update_splash is emitted
     (takes str) [optional]
-    - :param update_progress: callable that is executed when signal update_progress is emitted
-    (takes int, int) [optional]
     - :param finished: callable that is executed after `func` returns (takes no parameters)
     [optional]
     - :param start_later: set to True to defer execution of the function; makes this function
@@ -573,24 +554,16 @@ def exec_in_thread(
     """
     worker = ThreadObject(func, *args, **kwargs)
     thread = PySideThread(self.app, finished, worker)
-
-    # moveToThread MUST happen before connecting signals — this ensures Qt
-    # sees the objects in different threads and uses QueuedConnection automatically.
-    # We also set QueuedConnection explicitly to be 100% safe.
-    worker.moveToThread(thread)
-
     if result is not None:
-        worker.result.connect(result, Qt.ConnectionType.QueuedConnection)
+        worker.result.connect(result)
     if update_splash is not None:
-        worker.update_splash.connect(update_splash, Qt.ConnectionType.QueuedConnection)
-    if update_progress is not None:
-        worker.update_progress.connect(update_progress, Qt.ConnectionType.QueuedConnection)
-
+        worker.update_splash.connect(update_splash)
+    worker.moveToThread(thread)
     if start_later:
         worker.start.connect(worker.run)
     else:
         thread.started.connect(worker.run)
-    worker.finished.connect(thread.worker_finished, Qt.ConnectionType.QueuedConnection)
+    worker.finished.connect(thread.worker_finished)
     thread.finished.connect(worker.deleteLater)
     thread.finished.connect(thread.deleteLater)
     thread.start(QThread.Priority.LowestPriority)
@@ -669,19 +642,8 @@ class DoffCombobox(QComboBox):
         return QSize(100, super().minimumSizeHint().height())
 
 
-class notempty():
-    """
-    Yields items from iterable that are neither None nor an empty string.
-    """
-    def __init__(self, iterable):
-        self._gen = (element for element in iterable if element is not None and element != '')
-
-    def __iter__(self):
-        return self._gen
-
-
 class TooltipLabel(QLabel):
-    """Label with tooltip"""
+    """Label that shows a floating tooltip widget on hover."""
     def __init__(self, text: str, tooltip: QLabel):
         super().__init__(text)
         self._tooltip = tooltip
@@ -704,3 +666,14 @@ class TooltipLabel(QLabel):
     def leaveEvent(self, event: QEvent) -> None:
         self._tooltip.hide()
         event.accept()
+
+
+class notempty():
+    """
+    Yields items from iterable that are neither None nor an empty string.
+    """
+    def __init__(self, iterable):
+        self._gen = (element for element in iterable if element is not None and element != '')
+
+    def __iter__(self):
+        return self._gen

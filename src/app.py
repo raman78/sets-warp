@@ -1,8 +1,9 @@
 import sys
 import os
 from pathlib import Path
+
 from PySide6.QtCore import QSettings, Qt, QThread
-from PySide6.QtGui import QFontDatabase, QImage, QPainter, QColor, QFont, QPen, QTextOption
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QImage, QPainter, QPen, QTextOption
 from PySide6.QtWidgets import QApplication, QFrame, QPlainTextEdit, QScrollArea, QTabWidget, QWidget
 
 from .cargomanager import CargoManager
@@ -108,7 +109,6 @@ class SETS():
             self.config['config_subfolders']['images'],
             self.config['config_subfolders']['ship_images'])
         # Configure downloader session with Cloudflare cookie + Firefox UA from .env
-        # This allows downloading images from stowiki.net which uses Cloudflare protection
         from .iofunc import read_env_file
         _env = read_env_file(
             Path(self.config['config_folder_path']) / '.env',
@@ -246,7 +246,6 @@ class SETS():
                 self.box_height, self.box_height * 182 / 106)
 
         # N/A placeholder — shown when an item image cannot be found or downloaded
-        from PySide6.QtCore import Qt
         w, h = int(self.box_width), int(self.box_height)
         na = QImage(w, h, QImage.Format.Format_ARGB32)
         na.fill(QColor(40, 40, 40, 220))
@@ -289,59 +288,17 @@ class SETS():
         :return: QApplication, QWidget
         """
         app = QApplication(argv)
-        app.setApplicationName('SETS')
-        app.setOrganizationName('STOCD')
-        _icon = load_icon('icon.ico', self.app_dir)
-        if _icon.isNull():
-            _icon = load_icon('SETS_icon_small.png', self.app_dir)
-        if not _icon.isNull():
-            app.setWindowIcon(_icon)
         font_database = QFontDatabase()
         font_database.addApplicationFont(
                 get_asset_path('Overpass-VariableFont_wght.ttf', self.app_dir))
         font_database.addApplicationFont(
                 get_asset_path('RobotoMono-Regular.ttf', self.app_dir))
         app.setStyleSheet(self.create_style_sheet(self.theme['app']['style']))
-        MIN_W, MIN_H = 1900, 1000
-
-        # Subclass QWidget so resizeEvent is a proper override, not a monkey-patch.
-        # This ensures the window manager cannot shrink the window below minimum.
-        from PySide6.QtWidgets import QWidget as _QWidget
-        from PySide6.QtCore import QSize as _QSize
-
-        class _MainWindow(_QWidget):
-            def resizeEvent(self, event):
-                super().resizeEvent(event)
-                s = self.size()
-                new_w = max(s.width(),  MIN_W)
-                new_h = max(s.height(), MIN_H)
-                if new_w != s.width() or new_h != s.height():
-                    self.resize(new_w, new_h)
-
-            def minimumSizeHint(self):
-                return _QSize(MIN_W, MIN_H)
-
-        window = _MainWindow()
-        # Use .ico on Windows for correct taskbar rendering; fall back to PNG elsewhere.
-        _win_icon = load_icon('icon.ico', self.app_dir)
-        if _win_icon.isNull():
-            _win_icon = load_icon('SETS_icon_small.png', self.app_dir)
-        window.setWindowIcon(_win_icon)
+        window = QWidget()
+        window.setWindowIcon(load_icon('SETS_icon_small.png', self.app_dir))
         window.setWindowTitle('STO Equipment and Trait Selector')
-        window.setMinimumSize(MIN_W, MIN_H)
-        # Restore saved geometry — discard any save that's smaller than minimum
-        saved_geo = self.settings.value('geometry')
-        if saved_geo:
-            window.restoreGeometry(saved_geo)
-            if window.width() < MIN_W or window.height() < MIN_H:
-                # Saved geometry is too small (e.g. from an old version) — discard it
-                self.settings.remove('geometry')
-                window.showMaximized()
-            else:
-                window.show()
-        else:
-            window.showMaximized()
-
+        if self.settings.value('geometry'):
+            window.restoreGeometry(self.settings.value('geometry'))
         window.closeEvent = self.main_window_close_callback
         app.focusWindowChanged.connect(self.hide_tooltips)
         QThread.currentThread().setPriority(QThread.Priority.TimeCriticalPriority)
@@ -351,17 +308,14 @@ class SETS():
         """
         Creates the main layout and places it into the main window.
         """
-        log.info('setup_main_layout: start')
         # master layout: banner, borders and splash screen
         layout = VBoxLayout(margins=0, spacing=0)
         background_frame = self.create_frame(
                 style_override={'background-color': '@sets'}, size_policy=SMINMIN)
         layout.addWidget(background_frame)
         self.window.setLayout(layout)
-        log.info('setup_main_layout: base layout OK')
         main_layout = VBoxLayout(margins=0, spacing=0)
         banner = ImageLabel(get_asset_path('sets_banner.png', self.app_dir), (2880, 126))
-        log.info('setup_main_layout: banner ImageLabel created')
         main_layout.addWidget(banner)
         frame_width = 8 * self.config['ui_scale']
         tabber_layout = VBoxLayout(margins=frame_width, spacing=0)
@@ -373,14 +327,11 @@ class SETS():
         tabber_layout.addWidget(splash_tabber)
         main_layout.addLayout(tabber_layout)
         background_frame.setLayout(main_layout)
-        log.info('setup_main_layout: tabber OK')
         content_frame = self.create_frame()
         splash_frame = self.create_frame()
         splash_tabber.addTab(content_frame, 'Main')
         splash_tabber.addTab(splash_frame, 'Splash')
-        log.info('setup_main_layout: calling setup_splash')
         self.setup_splash(splash_frame)
-        log.info('setup_main_layout: setup_splash OK')
 
         content_layout = GridLayout(margins=0, spacing=0)
         content_layout.setColumnStretch(0, 1)
@@ -421,9 +372,7 @@ class SETS():
         }
         menu_layout.addLayout(self.create_button_series(right_button_group), 0, 2, ARIGHT | AVCENTER)
         self.widgets.menu_layout = menu_layout
-
         content_layout.addLayout(menu_layout, 0, 0, 1, 2)
-        log.info('setup_main_layout: menu_layout OK')
 
         # sidebar
         sidebar = self.create_frame(size_policy=SMINMIN)
@@ -441,9 +390,7 @@ class SETS():
             tab_frame = self.create_frame()
             sidebar_tabber.addTab(tab_frame, tab_name)
             self.widgets.sidebar_frames.append(tab_frame)
-        log.info('setup_main_layout: calling setup_ship_frame')
         self.setup_ship_frame()
-        log.info('setup_main_layout: setup_ship_frame OK')
         sidebar_layout.addWidget(sidebar_tabber, 0, 0)
 
         character_tabber = QTabWidget()
@@ -452,9 +399,7 @@ class SETS():
         character_tabber.setSizePolicy(SMINMAX)
         self.widgets.character_tabber = character_tabber
         char_frame = self.create_frame()
-        log.info('setup_main_layout: calling setup_character_frame')
         self.setup_character_frame(char_frame)
-        log.info('setup_main_layout: setup_character_frame OK')
         character_tabber.addTab(char_frame, 'char')
         empty_frame = self.create_frame()
         character_tabber.addTab(empty_frame, 'empty')
@@ -469,7 +414,6 @@ class SETS():
         sidebar_layout.addWidget(seperator, 0, 1, 2, 1)
         sidebar.setLayout(sidebar_layout)
         content_layout.addWidget(sidebar, 1, 0)
-        log.info('setup_main_layout: sidebar OK')
 
         # build section
         build_tabber = QTabWidget()
@@ -484,16 +428,11 @@ class SETS():
             tab_frame = self.create_frame()
             build_tabber.addTab(tab_frame, tab_name)
             self.widgets.build_frames.append(tab_frame)
-        log.info('setup_main_layout: calling setup_build_frames')
-        self.setup_build_frames()
-        log.info('setup_main_layout: setup_build_frames OK')
-        log.info('setup_main_layout: calling setup_settings_frame')
-        self.setup_settings_frame()
-        log.info('setup_main_layout: setup_settings_frame OK')
-
         content_layout.addWidget(build_tabber, 1, 1)
+        self.setup_build_frames()
+        self.setup_settings_frame()
+
         content_frame.setLayout(content_layout)
-        log.info('setup_main_layout: DONE')
 
     def setup_ship_frame(self):
         """
@@ -506,10 +445,11 @@ class SETS():
         image_frame = self.create_frame(size_policy=SMINMIN)
         image_layout = GridLayout(margins=0, spacing=0)
         ship_image = ShipImage()
+        ship_image.setSizePolicy(SMINMIN)
         self.widgets.ship['image'] = ship_image
         image_layout.addWidget(ship_image, 0, 0)
         image_frame.setLayout(image_layout)
-        layout.addWidget(image_frame)
+        layout.addWidget(image_frame, stretch=1)
 
         ship_frame = self.create_frame(size_policy=SMINMIN)
         ship_layout = GridLayout(margins=0, spacing=csp)
@@ -568,17 +508,11 @@ class SETS():
         """
         Creates build areas
         """
-        log.info('setup_build_frames: setup_space_build_frame')
         self.setup_space_build_frame()
-        log.info('setup_build_frames: setup_ground_build_frame')
         self.setup_ground_build_frame()
-        log.info('setup_build_frames: cache_skills')
         cache_skills(self.cache.skills, self.app_dir)
-        log.info('setup_build_frames: setup_space_skill_frame')
         self.setup_space_skill_frame()
-        log.info('setup_build_frames: setup_ground_skill_frame')
         self.setup_ground_skill_frame()
-        log.info('setup_build_frames: DONE')
 
     def setup_space_build_frame(self):
         """
@@ -707,7 +641,7 @@ class SETS():
         layout = GridLayout(margins=isp, spacing=isp)
         layout.setColumnStretch(0, 1)
         layout.setColumnStretch(8, 1)
-        layout.setRowStretch(6, 1)
+        layout.setRowStretch(5, 1)
 
         # Equipment
         modules_layout = self.create_build_section('Kit Modules:', 6, 'ground', 'kit_modules', True)
@@ -895,7 +829,6 @@ class SETS():
         )
         sep_height = self.theme['hr']['height'] * self.config['ui_scale']
         for rank, skill_groups in enumerate(self.cache.skills['space']):
-            log.info(f'setup_space_skill_frame: rank={rank}')
             header_layout = GridLayout(spacing=isp)
             left_sep = self.create_frame('hr', size_policy=SMINMAX)
             left_sep.setFixedHeight(sep_height)
@@ -1084,8 +1017,8 @@ class SETS():
     def setup_splash(self, frame: QFrame):
         """
         Splash screen:
-          banner_frame  1000x600  — orange border 8px  (logo)
-          progress_frame 1000x500 — blue border 8px    (status/bar/counter/retry)
+          banner_frame  1000x600  — logo
+          progress_frame 1000x500 — status/bar/counter
           Both centered, 100px from top.
         """
         from PySide6.QtWidgets import (
@@ -1111,12 +1044,10 @@ class SETS():
         BANNER_W, BANNER_H = 1000, 600
         banner_frame = _QF()
         banner_frame.setFixedSize(BANNER_W, BANNER_H)
-        banner_frame.setStyleSheet(
-            'QFrame { border: none; background: transparent; }')
+        banner_frame.setStyleSheet('QFrame { border: none; background: transparent; }')
         banner_inner = _VBL(banner_frame)
         banner_inner.setContentsMargins(8, 8, 8, 8)
         banner_inner.setSpacing(0)
-        # Plain QLabel with scaled pixmap — predictable size, no resizeEvent magic
         from PySide6.QtWidgets import QLabel as _QL
         logo_label = _QL()
         logo_label.setAlignment(ACENTER)
@@ -1136,8 +1067,7 @@ class SETS():
         PROG_W, PROG_H = 1000, 500
         prog_frame = _QF()
         prog_frame.setFixedSize(PROG_W, PROG_H)
-        prog_frame.setStyleSheet(
-            'QFrame { border: none; background: transparent; }')
+        prog_frame.setStyleSheet('QFrame { border: none; background: transparent; }')
         prog_inner = _VBL(prog_frame)
         prog_inner.setContentsMargins(16, 16, 16, 16)
         prog_inner.setSpacing(8)
@@ -1178,13 +1108,8 @@ class SETS():
         self.widgets.progress_detail = progress_detail
         prog_inner.addWidget(progress_detail)
 
-        # retry/failed frame removed — failures logged to sets_debug.log
-
         root.addLayout(_center_row(prog_frame))
-
         frame.setLayout(root)
-
-
 
     def create_context_menu(self) -> ContextMenu:
         """
@@ -1267,15 +1192,14 @@ class SETS():
         picker_rel_combo.currentIndexChanged.connect(
                 lambda new_i: self.settings.setValue('picker_relative', new_i))
         sec_1.addWidget(picker_rel_combo, 3, 2, alignment=ALEFT | AVCENTER)
-        # Default Save Format — removed; both JSON and PNG are always saved together
-        # picker_rel_label = self.create_label('Default Save Format')
-        # sec_1.addWidget(picker_rel_label, 4, 0, alignment=ALEFT)
-        # picker_rel_combo = self.create_combo_box(style_override={'font': '@small_text'})
-        # picker_rel_combo.addItems(('JSON', 'PNG'))
-        # picker_rel_combo.setCurrentText(self.settings.value('default_save_format'))
-        # picker_rel_combo.currentTextChanged.connect(
-        #         lambda new_t: self.settings.setValue('default_save_format', new_t))
-        # sec_1.addWidget(picker_rel_combo, 4, 2, alignment=ALEFT | AVCENTER)
+        picker_rel_label = self.create_label('Default Save Format')
+        sec_1.addWidget(picker_rel_label, 4, 0, alignment=ALEFT)
+        picker_rel_combo = self.create_combo_box(style_override={'font': '@small_text'})
+        picker_rel_combo.addItems(('JSON', 'PNG'))
+        picker_rel_combo.setCurrentText(self.settings.value('default_save_format'))
+        picker_rel_combo.currentTextChanged.connect(
+                lambda new_t: self.settings.setValue('default_save_format', new_t))
+        sec_1.addWidget(picker_rel_combo, 4, 2, alignment=ALEFT | AVCENTER)
         backup_label = self.create_label('Preferred Backup')
         sec_1.addWidget(backup_label, 5, 0, alignment=ALEFT)
         backup_combo = self.create_combo_box(style_override={'font': '@small_text'})
@@ -1393,5 +1317,3 @@ class SETS():
         stocd_label.setPixmap(self.cache.icons['STOCD'])
         footer_layout.addWidget(stocd_label, 0, 1, alignment=ARIGHT | ABOTTOM)
         footer_frame.setLayout(footer_layout)
-
-

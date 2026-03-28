@@ -20,8 +20,6 @@ AHCENTER = Qt.AlignmentFlag.AlignHCenter
 SCROLLON = Qt.ScrollBarPolicy.ScrollBarAlwaysOn
 SCROLLOFF = Qt.ScrollBarPolicy.ScrollBarAlwaysOff
 
-SEVEN_DAYS_IN_SECONDS = 60 * 60 * 24 * 7
-
 WIKI_URL = 'https://stowiki.net/wiki/'
 WIKI_IMAGE_URL = WIKI_URL + 'Special:FilePath/'
 SHIP_QUERY_URL = (
@@ -41,6 +39,8 @@ TRAIT_QUERY_URL = (
     WIKI_URL + 'Special:CargoExport?tables=Traits&fields=_pageName%3DPage,name,type,'
     'environment,description,icon_name=icon_name&limit=2500&format=json'
 )
+SEVEN_DAYS_IN_SECONDS = 60 * 60 * 24 * 7
+GITHUB_CACHE_URL = 'https://github.com/STOCD/SETS-Data/raw/refs/heads/main'
 STARSHIP_TRAIT_QUERY_URL = (
     WIKI_URL + 'Special:CargoExport?tables=StarshipTraits&fields=_pageName%3DPage,name,short,type,'
     'detailed,obtained,basic&limit=2500&format=json&where=name%20IS%20NOT%20NULL'
@@ -58,8 +58,6 @@ MODIFIER_QUERY = (
     WIKI_URL + 'Special:CargoExport?tables=Modifiers&fields=_pageName,modifier,type,stats,'
     'available,isunique,isepic,info&format=json&limit=1000'
 )
-
-GITHUB_CACHE_URL = 'https://github.com/STOCD/SETS-Data/raw/refs/heads/main'
 
 EQUIPMENT_TYPES = {
     'Body Armor': 'armor', 'EV Suit': 'ev_suit', 'Experimental Weapon': 'experimental',

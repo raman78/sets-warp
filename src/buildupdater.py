@@ -21,12 +21,11 @@ def load_build(self):
         self.widgets.ship['button'].setText('<Pick Ship>')
         self.widgets.ship['tier'].clear()
         self.widgets.ship['image'].set_image(self.cache.empty_image)
-        self.widgets.ship['dc'].hide()
     else:
         self.widgets.ship['button'].setText(ship)
         ship_data = self.cache.ships[ship]
         exec_in_thread(
-                self, self.images.get_ship_image, ship_data['image'][5:],
+                self, get_ship_image, self, ship_data['image'],
                 result=lambda img: self.widgets.ship['image'].set_image(*img))
         tier = self.build['space']['tier']
         ship_tier = ship_data['tier']
@@ -38,10 +37,6 @@ def load_build(self):
         else:
             self.widgets.ship['tier'].addItem(f'T{ship_tier}')
         self.widgets.ship['tier'].setCurrentText(tier)
-        if ship_data['equipcannons'] == 'yes':
-            self.widgets.ship['dc'].show()
-        else:
-            self.widgets.ship['dc'].hide()
     self.widgets.ship['name'].setText(self.build['space']['ship_name'])
     self.widgets.ship['desc'].setPlainText(self.build['space']['ship_desc'])
 
@@ -504,8 +499,7 @@ def load_boff_stations(self, environment: str):
                                     if not isinstance(old_ability, dict):
                                         continue
                                     if ability['item'] == old_ability['item']:
-                                        self.build['ground']['boffs'][boff_id][id]['item'] = (
-                                            new_name)
+                                        self.build['ground']['boffs'][boff_id][id]['item'] = new_name
                                         break
                     else:
                         slot.set_item_full(image(self, ability['item']), None, tooltip)
@@ -525,8 +519,6 @@ def slot_equipment_item(self, item: dict, environment: str, build_key: str, buil
     """
     self.build[environment][build_key][build_subkey] = item
     item_image = image(self, item['item'])
-    log.info(f'slot_equipment: [{environment}][{build_key}][{build_subkey}] = {item["item"]!r} '
-             f'| image null={item_image.isNull()} size={item_image.width()}x{item_image.height()}')
     overlay = getattr(self.cache.overlays, item['rarity'].lower().replace(' ', ''))
     tooltip = add_equipment_tooltip_header(
             self, item, self.cache.equipment[build_key][item['item']]['tooltip'], build_key)
@@ -545,15 +537,7 @@ def slot_trait_item(self, item: dict, environment: str, build_key: str, build_su
     - :param build_subkey: index of the item within its build_key (category)
     """
     self.build[environment][build_key][build_subkey] = item
-    alt_image_key = f"{item['item']}__{environment}__{build_key}"
-    if alt_image_key in self.cache.alt_images:
-        image_name = self.cache.alt_images[alt_image_key]
-    else:
-        image_name = item['item']
-    item_image = image(self, image_name)
-    log.info(f'slot_trait: [{environment}][{build_key}][{build_subkey}] = {item["item"]!r} '
-             f'| image_name={image_name!r} null={item_image.isNull()} '
-             f'size={item_image.width()}x{item_image.height()}')
+    item_image = image(self, item['item'])
     self.widgets.build[environment][build_key][build_subkey].set_item_full(
             item_image, None, get_tooltip(self, item['item'], build_key, environment))
 
@@ -700,7 +684,6 @@ def clear_ship(self):
     self.widgets.ship['button'].setText('<Pick Ship>')
     self.build['space']['ship'] = '<Pick Ship>'
     self.widgets.ship['tier'].clear()
-    self.widgets.ship['dc'].hide()
     self.widgets.ship['name'].setText('')
     self.build['space']['ship_name'] = ''
     self.widgets.ship['desc'].setPlainText('')

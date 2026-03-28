@@ -15,6 +15,13 @@ from .widgets import exec_in_thread
 
 from PySide6.QtCore import Qt
 
+_EQUIPMENT_CATS = (
+    'fore_weapons', 'aft_weapons', 'experimental', 'devices', 'hangars',
+    'sec_def', 'deflector', 'engines', 'core', 'shield',
+    'uni_consoles', 'eng_consoles', 'sci_consoles', 'tac_consoles',
+)
+_TRAIT_CATS = ('traits', 'starship_traits', 'rep_traits', 'active_rep_traits')
+
 
 def switch_main_tab(self, index):
     """
@@ -195,28 +202,10 @@ def get_boff_abilities(
     return abilities
 
 
-# ---------------------------------------------------------------------------
-# Session slot memory — persists across ship / tier changes within one session
-# ---------------------------------------------------------------------------
-
-_EQUIPMENT_CATS = (
-    'fore_weapons', 'aft_weapons', 'experimental', 'devices', 'hangars',
-    'sec_def', 'deflector', 'engines', 'core', 'shield',
-    'uni_consoles', 'eng_consoles', 'sci_consoles', 'tac_consoles',
-)
-_TRAIT_CATS = ('traits', 'starship_traits', 'rep_traits', 'active_rep_traits')
-
-
 def _save_session_slots(self):
     """
     Snapshot the current space build slots into self._session_slots.
     Called before align_space_frame(clear=True) so we can restore after.
-    Structure:
-        _session_slots = {
-            'equipment': { build_key: [item_or_None, ...] },
-            'traits':    { build_key: [item_or_None, ...] },
-            'boffs':     [ {'spec': (rank, profession, spec), 'abilities': [item_or_None, ...]} ],
-        }
     """
     import copy
     s = self.build['space']
@@ -226,10 +215,9 @@ def _save_session_slots(self):
         if isinstance(val, list):
             equip[key] = copy.deepcopy(val)
         elif isinstance(val, dict):
-            # deflector/engines/core/shield are stored as {0: item}
             equip[key] = copy.deepcopy(val)
         else:
-            equip[key] = val  # '' or None
+            equip[key] = val
     traits = {}
     for key in _TRAIT_CATS:
         val = s.get(key)
@@ -240,32 +228,23 @@ def _save_session_slots(self):
         spec = tuple(s['boff_specs'][boff_id]) if boff_id < len(s['boff_specs']) else None
         abilities = copy.deepcopy(s['boffs'][boff_id]) if boff_id < len(s['boffs']) else []
         boffs.append({'spec': spec, 'abilities': abilities})
-    self._session_slots = {
-        'equipment': equip,
-        'traits': traits,
-        'boffs': boffs,
-    }
-    log.info(f'_save_session_slots: snapshot saved')
+    self._session_slots = {'equipment': equip, 'traits': traits, 'boffs': boffs}
+    log.info('_save_session_slots: snapshot saved')
 
 
 def _restore_session_slots(self):
     """
     Restore previously saved session slots into the current build.
     Only fills slots that are currently empty (user changes take priority).
-    For boffs: only restores stations whose (profession, spec) matches saved spec.
-    Called after align_space_frame(clear=True) or after tier change opens new slots.
     """
     if not hasattr(self, '_session_slots') or not self._session_slots:
         return
     saved = self._session_slots
     s = self.build['space']
-
-    # ── equipment & single-slot items ─────────────────────────────────────
     for key, saved_val in saved['equipment'].items():
         current = s.get(key)
         if isinstance(current, list) and isinstance(saved_val, list):
             for i in range(min(len(current), len(saved_val))):
-                # Only fill if slot is currently empty and we have saved data
                 if (current[i] == '' or current[i] is None) and saved_val[i] not in ('', None):
                     slot_equipment_item(self, saved_val[i], 'space', key, i)
         elif isinstance(current, dict) and isinstance(saved_val, dict):
@@ -274,8 +253,6 @@ def _restore_session_slots(self):
                     slot_equipment_item(self, item, 'space', key, i)
         elif (current == '' or current is None) and saved_val not in ('', None):
             slot_equipment_item(self, saved_val, 'space', key, 0)
-
-    # ── traits & starship traits ───────────────────────────────────────────
     for key, saved_list in saved['traits'].items():
         current = s.get(key)
         if not isinstance(current, list) or not isinstance(saved_list, list):
@@ -283,8 +260,6 @@ def _restore_session_slots(self):
         for i in range(min(len(current), len(saved_list))):
             if (current[i] == '' or current[i] is None) and saved_list[i] not in ('', None):
                 slot_trait_item(self, saved_list[i], 'space', key, i)
-
-    # ── boffs — only restore stations with matching profession/spec ────────
     for boff_id, saved_boff in enumerate(saved['boffs']):
         if boff_id >= len(s['boffs']):
             break
@@ -295,21 +270,10 @@ def _restore_session_slots(self):
         current_spec = s['boff_specs'][boff_id] if boff_id < len(s['boff_specs']) else []
         current_prof = current_spec[0] if len(current_spec) > 0 else ''
         current_specialization = current_spec[1] if len(current_spec) > 1 else ''
-        # Match: profession and specialization must be identical
-        # Universal seats always accept (they can hold any profession)
-        widgets_label = self.widgets.build['space']['boff_labels'][boff_id]
-        seat_is_universal = not widgets_label.isEnabled() is False  # Universal = combobox enabled
-        prof_matches = (
-            current_prof == saved_prof
-            or current_prof == 'Universal'
-        )
+        prof_matches = current_prof == saved_prof or current_prof == 'Universal'
         spec_matches = current_specialization == saved_spec
         if not (prof_matches and spec_matches):
-            log.info(
-                f'_restore_session_slots: boff {boff_id} spec mismatch '
-                f'saved=({saved_prof}/{saved_spec}) current=({current_prof}/{current_specialization}) — skipping')
             continue
-        # Restore abilities that are currently empty
         for ability_idx, saved_ability in enumerate(saved_boff['abilities']):
             if ability_idx >= len(s['boffs'][boff_id]):
                 break
@@ -318,12 +282,7 @@ def _restore_session_slots(self):
                 s['boffs'][boff_id][ability_idx] = saved_ability
                 ability_image = image(self, saved_ability['item'])
                 self.widgets.build['space']['boffs'][boff_id][ability_idx].set_item(ability_image)
-                log.info(
-                    f'_restore_session_slots: boff[{boff_id}][{ability_idx}] = '
-                    f'{saved_ability["item"]!r}')
-
     log.info('_restore_session_slots: done')
-
 
 
 def picker(
@@ -342,43 +301,26 @@ def picker(
     - :param boff_id: id of the boff; only set when picking boff abilities! (optional)
     """
     modifiers = {}
-    image_suffix = ''
     if equipment:
         items = self.cache.equipment[build_key].keys()
         modifiers = self.cache.modifiers[build_key]
     elif build_key == 'boffs':
         items = get_boff_abilities(self, environment, build_subkey, boff_id)
     elif build_key == 'traits':
-        items = self.cache.traits[environment]['traits'].keys()
-        image_suffix = f'__{environment}__{build_key}'
+        items = self.cache.traits[environment]['personal'].keys()
     elif build_key == 'starship_traits':
         items = self.cache.starship_traits.keys()
     elif build_key == 'rep_traits':
-        items = self.cache.traits[environment]['rep_traits'].keys()
-        image_suffix = f'__{environment}__{build_key}'
+        items = self.cache.traits[environment]['rep'].keys()
     elif build_key == 'active_rep_traits':
-        items = self.cache.traits[environment]['active_rep_traits'].keys()
-        image_suffix = f'__{environment}__{build_key}'
+        items = self.cache.traits[environment]['active_rep'].keys()
     else:
         items = []
     if self.settings.value('picker_relative', type=int) == 1:
         pos = button.parent().mapToGlobal(button.pos())
     else:
         pos = None
-    # Read current slot value to pre-fill the picker
-    if boff_id is not None:
-        current = self.build[environment]['boffs'][boff_id][build_subkey]
-    else:
-        current = self.build[environment].get(build_key, {})
-        if isinstance(current, (list, dict)) and build_subkey is not None:
-            try:
-                current = current[build_subkey]
-            except (IndexError, KeyError):
-                current = None
-    if not isinstance(current, dict) or not current.get('item'):
-        current = None
-    new_item = self.picker_window.pick_item(
-        items, pos, equipment, modifiers, image_suffix, current_item=current)
+    new_item = self.picker_window.pick_item(items, pos, equipment, modifiers)
     if new_item is not None:
         widget_storage = self.widgets.build[environment]
         if equipment:
@@ -397,9 +339,6 @@ def picker(
                     'item': new_item['item']
                 }
                 item_image = image(self, new_item['item'])
-                log.info(f'slot_boff: [{environment}][boffs][{boff_id}][{build_subkey}] = '
-                         f'{new_item["item"]!r} | null={item_image.isNull()} '
-                         f'size={item_image.width()}x{item_image.height()}')
                 widget_storage['boffs'][boff_id][build_subkey].set_item(item_image)
                 widget_storage['boffs'][boff_id][build_subkey].tooltip = (
                         self.cache.boff_abilities['all'][new_item['item']])
@@ -466,22 +405,13 @@ def select_ship(self):
     """
     new_ship = self.ship_selector_window.pick_ship()
     if new_ship is None:
-        log.info('select_ship: cancelled')
         return
-    log.info(f'select_ship: selected {new_ship!r}')
     self.building = True
     self.widgets.ship['button'].setText(new_ship)
     ship_data = self.cache.ships[new_ship]
-    image_filename = ship_data['image'][5:]
-    log.info(f'select_ship: loading ship image {image_filename!r}')
-
-    def _on_ship_image(img):
-        ship_img = img[0]
-        log.info(f'select_ship: image loaded null={ship_img.isNull()} '
-                 f'size={ship_img.width()}x{ship_img.height()}')
-        self.widgets.ship['image'].set_image(ship_img)
-
-    exec_in_thread(self, self.images.get_ship_image, image_filename, result=_on_ship_image)
+    exec_in_thread(
+            self, get_ship_image, self, ship_data['image'],
+            result=lambda img: self.widgets.ship['image'].set_image(*img))
     tier = ship_data['tier']
     self.widgets.ship['tier'].clear()
     if tier == 6:
@@ -492,10 +422,6 @@ def select_ship(self):
         self.widgets.ship['tier'].addItem(f'T{tier}')
     self.build['space']['ship'] = new_ship
     self.build['space']['tier'] = f'T{tier}'
-    if ship_data['equipcannons'] == 'yes':
-        self.widgets.ship['dc'].show()
-    else:
-        self.widgets.ship['dc'].hide()
     _save_session_slots(self)
     align_space_frame(self, ship_data, clear=True)
     _restore_session_slots(self)
@@ -578,7 +504,6 @@ def clear_space_skills(self):
     for career in ('eng', 'sci', 'tac'):
         for skill_button in self.widgets.build['space_skills'][career]:
             skill_button.clear_overlay()
-            skill_button.highlight = False
         self.build['skill_unlocks'][career] = [None] * 5
         for bar_segment in self.widgets.skill_bonus_bars[career]:
             bar_segment.setChecked(False)
@@ -604,7 +529,6 @@ def clear_ground_skills(self):
     for skill_subtree in self.widgets.build['ground_skills']:
         for skill_button in skill_subtree:
             skill_button.clear_overlay()
-            skill_button.highlight = False
     for unlock_button in self.widgets.build['skill_unlocks']['ground']:
         unlock_button.clear()
     for bar_segment in self.widgets.skill_bonus_bars['ground']:
@@ -643,7 +567,7 @@ def load_build_callback(self):
     """
     load_path = browse_path(
             self, self.config['config_subfolders']['library'],
-            'SETS Build (*.json *.png)')
+            'SETS Files (*.json *.png);;JSON file (*.json);;PNG image (*.png);;Any File (*.*)')
     if load_path != '':
         load_build_file(self, load_path)
 
@@ -654,39 +578,14 @@ def load_skills_callback(self):
     """
     load_path = browse_path(
             self, self.config['config_subfolders']['library'],
-            'SETS Build (*.json *.png)')
+            'SETS Files (*.json *.png);;JSON file (*.json);;PNG image (*.png);;Any File (*.*)')
     if load_path != '':
         load_skill_tree_file(self, load_path)
 
 
-def _save_both_formats(self, base_path: str, save_fn) -> bool:
-    """
-    Save build/skills as both .json and .png under the same base name.
-    Warns the user if either file already exists.
-    Returns True if saved, False if cancelled.
-    """
-    from PySide6.QtWidgets import QMessageBox
-    json_path = base_path + '.json'
-    png_path  = base_path + '.png'
-    existing = [p for p in (json_path, png_path) if os.path.exists(p)]
-    if existing:
-        names = '\n'.join(f'  • {os.path.basename(p)}' for p in existing)
-        reply = QMessageBox.question(
-            self.window, 'Overwrite files?',
-            f'The following files will be overwritten:\n{names}\n\nContinue?',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return False
-    save_fn(self, json_path)
-    save_fn(self, png_path)
-    return True
-
-
 def save_build_callback(self):
     """
-    Saves build to file — always writes both .json and .png under the same name.
+    Saves build to file
     """
     if self.widgets.ship['button'].text() == '<Pick Ship>':
         proposed_filename = '(Ship Template)'
@@ -695,25 +594,27 @@ def save_build_callback(self):
     if self.widgets.ship['name'].text() != '':
         proposed_filename = f"{self.widgets.ship['name'].text()} {proposed_filename}"
     default_path = os.path.join(self.config['config_subfolders']['library'], proposed_filename)
-    save_path = browse_path(self, default_path, 'SETS Build (*.json *.png)', save=True)
-    if not save_path:
-        return
-    base, _, ext = save_path.rpartition('.')
-    base_path = base if ext.lower() in ('json', 'png') and base else save_path
-    _save_both_formats(self, base_path, save_build_file)
+    if self.settings.value('default_save_format') == 'PNG':
+        file_types = 'PNG image (*.png);;JSON file (*.json);;Any File (*.*)'
+    else:
+        file_types = 'JSON file (*.json);;PNG image (*.png);;Any File (*.*)'
+    save_path = browse_path(self, default_path, file_types, save=True)
+    if save_path != '':
+        save_build_file(self, save_path)
 
 
 def save_skills_callback(self):
     """
-    Saves skill tree to file — always writes both .json and .png under the same name.
+    Save skills to file
     """
     default_path = os.path.join(self.config['config_subfolders']['library'], 'Skill Tree')
-    save_path = browse_path(self, default_path, 'SETS Build (*.json *.png)', save=True)
-    if not save_path:
-        return
-    base, _, ext = save_path.rpartition('.')
-    base_path = base if ext.lower() in ('json', 'png') and base else save_path
-    _save_both_formats(self, base_path, save_skill_tree_file)
+    if self.settings.value('default_save_format') == 'PNG':
+        file_types = 'PNG image (*.png);;JSON file (*.json);;Any File (*.*)'
+    else:
+        file_types = 'JSON file (*.json);;PNG image (*.png);;Any File (*.*)'
+    save_path = browse_path(self, default_path, file_types, save=True)
+    if save_path != '':
+        save_skill_tree_file(self, save_path)
 
 
 def ship_info_callback(self):
@@ -733,15 +634,13 @@ def open_wiki_context(self):
         boff_id = self.context_menu.clicked_boff_station
         item = self.build[slot.environment][slot.type][boff_id][slot.index]
         if item is not None and item != '':
-            open_wiki_page(f"{item['item']}_(ability)")
+            open_wiki_page(f"Ability: {item['item']}")
         return
     item = self.build[slot.environment][slot.type][slot.index]
     if item is None or item == '':
         return
-    if slot.type == 'starship_traits':
-        open_wiki_page(f"{item['item']}_(starship_trait)")
-    elif 'traits' in slot.type:
-        open_wiki_page(f"{item['item']}_({slot.environment}_trait)")
+    if 'traits' in slot.type:
+        open_wiki_page(f"Trait: {item['item']}")
     else:
         open_wiki_page(f"{self.cache.equipment[slot.type][item['item']]['Page']}#{item['item']}")
 
