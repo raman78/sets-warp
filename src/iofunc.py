@@ -17,18 +17,17 @@ from lxml import html as lxml_html
 from lxml.cssselect import CSSSelector
 
 from .constants import WIKI_IMAGE_URL, WIKI_URL
-from .textedit import compensate_json
 from .setsdebug import log
+from .textedit import compensate_json
 
 
 class ReturnValueThread(Thread):
     def __init__(self, target, args: tuple = tuple()):
-        super().__init__(target=target, args=args)
+        super().__init__(target=target, args=args, daemon=True)
         self._return = None
 
     def run(self):
-        if self._target is not None:
-            self._return = self._target(*self._args)
+        self._return = self._target(*self._args)
 
     def join(self):
         super().join()
@@ -38,10 +37,6 @@ class ReturnValueThread(Thread):
 def browse_path(self, default_path: str = None, types: str = 'Any File (*.*)', save=False) -> str:
     """
     Opens file dialog prompting the user to select a file.
-
-    Uses Qt's own (non-native) dialog so that:
-    - Ctrl+L opens a path bar for typing / pasting a directory path directly
-    - Hidden directories (starting with .) are toggleable via Ctrl+H
 
     Parameters:
     - :param default_path: path that the file dialog opens at
@@ -55,70 +50,13 @@ def browse_path(self, default_path: str = None, types: str = 'Any File (*.*)', s
     default_path = os.path.abspath(default_path)
     if not os.path.exists(os.path.dirname(default_path)):
         default_path = self.app_dir
-
-    # Use QFileDialog instance so DontUseNativeDialog works on Wayland too.
-    # Static methods (getSaveFileName/getOpenFileName) may ignore the flag
-    # when QT_QPA_PLATFORM=wayland; instantiating directly always works.
-    from PySide6.QtCore import QDir
-    dialog = QFileDialog(self.window)
-    dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-    dialog.setOption(QFileDialog.Option.HideNameFilterDetails, True)
-    # Always show hidden files and dirs (e.g. .config on NTFS or any mount)
-    dialog.setFilter(QDir.Filter.AllEntries | QDir.Filter.Hidden | QDir.Filter.NoDotAndDotDot)
-    dialog.setNameFilter(types)
-
-    # When there is only one filter: hide the entire "Files of type" row
-    # (label + combo) so the grid layout doesn't shift the filename field.
-    if ';;' not in types:
-        from PySide6.QtWidgets import QComboBox, QLabel
-        from PySide6.QtCore import QTimer
-
-        def _hide_row():
-            c = dialog.findChild(QComboBox, 'fileTypeCombo')
-            if c is None:
-                cs = dialog.findChildren(QComboBox)
-                c = cs[-1] if cs else None
-            if c:
-                c.setVisible(False)
-            for lbl in dialog.findChildren(QLabel):
-                if 'type' in lbl.text().lower():
-                    lbl.setVisible(False)
-                    break
-
-        QTimer.singleShot(0, _hide_row)
-
-    # Restore last used directory (shared between save and open)
-    last_dir = self.settings.value('last_dialog_dir', '')
-    if last_dir and os.path.isdir(last_dir):
-        dialog.setDirectory(last_dir)
-    else:
-        dialog.setDirectory(os.path.dirname(default_path))
-
     if save:
-        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
-        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
-        dialog.selectFile(os.path.basename(default_path))
-        if dialog.exec():
-            files = dialog.selectedFiles()
-            file = files[0] if files else ''
-            if file:
-                self.settings.setValue('last_dialog_dir', os.path.dirname(file))
-                filter = dialog.selectedNameFilter()
-                selected_extension = filter.rpartition('.')[2][:-1]
-                if selected_extension and file.rpartition('.')[2].lower() != selected_extension:
-                    file += f".{selected_extension}"
-        else:
-            file = ''
+        file, filter = QFileDialog.getSaveFileName(self.window, 'Save...', default_path, types)
+        selected_extension = filter.rpartition('.')[2][:-1]
+        if file.rpartition('.')[2].lower() != selected_extension:
+            file += f".{selected_extension}"
     else:
-        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
-        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
-        if dialog.exec():
-            files = dialog.selectedFiles()
-            file = files[0] if files else ''
-            if file:
-                self.settings.setValue('last_dialog_dir', os.path.dirname(file))
-        else:
-            file = ''
+        file, _ = QFileDialog.getOpenFileName(self.window, 'Open...', default_path, types)
     return file
 
 
@@ -146,28 +84,19 @@ def get_cargo_data(self, filename: str, url: str, ignore_cache_age=False) -> dic
 
     # download cargo data if loading from cache failed or data should be updated
     try:
-        cargo_data = self.downloader.download_cargo_table(url, filename)
-        if cargo_data is not None:
-            auto_backup_cargo_file(self, filename)
-            store_json(cargo_data, filepath)
-            return cargo_data
-    except (requests.exceptions.RequestException, json.JSONDecodeError):
+        cargo_data = fetch_json(url)
+        store_json(cargo_data, filepath)
+        return cargo_data
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, json.JSONDecodeError):
         if ignore_cache_age:
             backup_path = os.path.join(self.config['config_subfolders']['backups'], filename)
-            auto_backup_path = os.path.join(
-                    self.config['config_subfolders']['auto_backups'], filename)
-            if self.settings.value('pref_backup', type=int) == 0:
-                backup_paths = (auto_backup_path, backup_path)
-            else:
-                backup_paths = (backup_path, auto_backup_path)
-            for path in backup_paths:
-                if os.path.exists(path) and os.path.isfile(path):
-                    try:
-                        cargo_data = load_json(path)
-                        store_json(cargo_data, filepath)
-                        return cargo_data
-                    except json.JSONDecodeError:
-                        pass
+            if os.path.exists(backup_path) and os.path.isfile(backup_path):
+                try:
+                    cargo_data = load_json(backup_path)
+                    store_json(cargo_data, filepath)
+                    return cargo_data
+                except json.JSONDecodeError:
+                    pass
             sys.stderr.write(f'[Error] Cargo table could not be retrieved ({filename})\n')
             sys.exit(1)
         else:
@@ -218,14 +147,11 @@ def retrieve_image(
     """
     filename = get_image_file_name(name)
     filepath = os.path.join(image_folder_path, filename)
-    # log.debug(f'retrieve_image: {name!r} -> {filepath}')
     image = QImage(filepath)
     if image.isNull():
-        log.info(f'retrieve_image: cache miss, downloading {name!r}')
         if signal is not None:
             signal.emit(f'Downloading Image: {name}')
         image = download_image(self, name, image_folder_path, url_override)
-        log.info(f'retrieve_image: download done {name!r} null={image.isNull()}')
     return image
 
 
@@ -240,71 +166,38 @@ def download_image(self, name: str, image_folder_path: str, url_override: str = 
     """
     filepath = os.path.join(image_folder_path, get_image_file_name(name))
     if url_override == '':
-        image_url = f'{WIKI_IMAGE_URL}{name.replace(" ", "_")}_icon.png'
+        image_url = f'{WIKI_IMAGE_URL}{name.replace(' ', '_')}_icon.png'
     else:
         image_url = url_override
     image_response = requests.get(image_url)
+    image = QImage()
     if image_response.ok:
-        content = image_response.content
-        if len(content) >= _MIN_PNG_SIZE and content[:8] == _PNG_HEADER:
-            with open(filepath, 'wb') as f:
-                f.write(content)
-            img = QImage(filepath)
-            if not img.isNull():
-                return img
-            log.info(f'download_image: {name!r} saved but QImage could not load it')
-        else:
-            log.info(f'download_image: {name!r} response OK but not a valid PNG '
-                     f'(size={len(content)}, header={content[:8]!r})')
+        image.loadFromData(image_response.content, 'png')
+        image.save(filepath)
     else:
-        log.info(f'download_image: {name!r} HTTP {image_response.status_code}')
-    self.cache.images_failed[name] = int(datetime.now().timestamp())
-    return QImage()
+        self.cache.images_failed[name] = int(datetime.now().timestamp())
+    return image
 
 
 def get_ship_image(self, image_name: str, threaded_worker):
     """
     Tries to fetch ship image from local filesystem, downloads it otherwise. Returns the image.
-    Handles special characters (apostrophes etc.) in ship names correctly.
 
     Parameters:
-    - :image_name: filename of the image (e.g. "Ar'kala Tactical Warbird.jpg")
+    - :image_name: filename of the image
     - :param threaded_worker: thread object supplying signals
     """
-    from urllib.parse import quote as url_quote
+    image_url = WIKI_IMAGE_URL + image_name.replace(' ', '_')
     image_path = os.path.join(
             self.config['config_subfolders']['ship_images'], quote_plus(image_name))
-    log.debug(f'get_ship_image: {image_name!r} -> {image_path}')
-
-    # Try loading from disk first
+    _, _, fmt = image_name.rpartition('.')
     image = QImage(image_path)
-    if not image.isNull():
-        log.debug(f'get_ship_image: loaded from disk OK size={image.width()}x{image.height()}')
-        threaded_worker.result.emit((image,))
-        return
-
-    # Build wiki URL: spaces → underscores, special chars properly encoded
-    encoded_name = url_quote(image_name.replace(' ', '_'), safe='._-')
-    image_url = WIKI_IMAGE_URL + encoded_name
-    log.info(f'get_ship_image: not on disk, downloading {image_url!r}')
-    try:
-        image_response = requests.get(image_url, timeout=15)
+    if image.isNull():
+        image_response = requests.get(image_url)
         if image_response.ok:
-            raw = image_response.content
-            log.info(f'get_ship_image: response {image_response.status_code} '
-                     f'size={len(raw)} header={raw[:8]!r}')
-            with open(image_path, 'wb') as f:
-                f.write(raw)
-            image = QImage(image_path)
-            if image.isNull():
-                log.info(f'get_ship_image: saved but QImage cannot load it '
-                         f'(possibly not a supported format)')
-            else:
-                log.info(f'get_ship_image: download OK size={image.width()}x{image.height()}')
-        else:
-            log.info(f'get_ship_image: HTTP {image_response.status_code} for {image_url!r}')
-    except Exception as e:
-        log.info(f'get_ship_image: exception {e!r}')
+            image.loadFromData(image_response.content, fmt)
+            image.save(image_path)
+        # else: returns null image
     threaded_worker.result.emit((image,))
 
 
@@ -323,69 +216,29 @@ def load_image(image_name: str, image: QImage, image_folder_path: str) -> QImage
 
 def image(self, image_name: str) -> QImage:
     """
-    Returns image from cache if cached, loads from disk if null, downloads if missing.
-    Returns N/A placeholder if image cannot be found or downloaded.
+    Returns image from cache if cached, loads and returns image if not cached.
 
     Parameters:
     - :param image_name: name of the image
     """
-    def _na():
-        na = getattr(self.cache, 'na_image', None)
-        return na if na is not None else (
-            self.cache.empty_image if hasattr(self.cache, 'empty_image') else QImage())
+    img = self.cache.images[image_name]
+    if img.isNull():
+        img_folder = self.config['config_subfolders']['images']
+        load_image(image_name, img, img_folder)
+    return img
 
-    img = self.cache.images.get(image_name)
-    if img is None:
-        log.info(f'image: {image_name!r} not in cache at all, returning N/A')
-        return _na()
-    if not img.isNull():
-        return img
 
-    # Image slot is null — try loading from disk by creating a fresh QImage
-    # (QImage.load() in-place is unreliable in PySide6 — always use QImage(path))
+def get_downloaded_images(self) -> set:
+    """
+    Returns set containing all images currently in the images folder.
+    """
     img_folder = self.config['config_subfolders']['images']
-    img_path = os.path.join(img_folder, get_image_file_name(image_name))
-    if os.path.exists(img_path):
-        loaded = QImage(img_path)
-        if not loaded.isNull():
-            self.cache.images[image_name] = loaded
-            log.debug(f'image: {image_name!r} loaded from disk OK')
-            return loaded
-
-    # File not on disk — attempt download (synchronous, user-triggered action)
-    log.info(f'image: {image_name!r} not on disk, downloading...')
-    loaded = retrieve_image(self, image_name, img_folder)
-    if not loaded.isNull():
-        self.cache.images[image_name] = loaded
-        log.info(f'image: {image_name!r} downloaded OK')
-        return loaded
-
-    # Download failed — return N/A placeholder
-    log.info(f'image: {image_name!r} not available, returning N/A placeholder')
-    return _na()
-
-
-def alt_image(self, image_name: str, image_suffix: str) -> QImage:
-    """
-    Returns image from cache if cached, loads and returns image if not cached. If `image_suffix` is
-    not empty, tries to get alternate image first.
-
-    Parameters:
-    - :param image_name: name of the image
-    - :param image_suffix: suffix to check in self.cache.alt_images
-    """
-    if image_name + image_suffix in self.cache.alt_images:
-        return image(self, self.cache.alt_images[image_name + image_suffix])
-    else:
-        return image(self, image_name)
+    return set(map(lambda x: unquote_plus(x)[:-4], os.listdir(img_folder)))
 
 
 def auto_backup_cargo_file(self, filename: str):
     """
-    Backs up given cargo data file to the auto backups folder
-
-    Parameters:
-    - :param filename: name of the file to back up
+    Backs up given cargo data file to the auto backups folder.
     """
     source_path = os.path.join(self.config['config_subfolders']['cargo'], filename)
     if os.path.exists(source_path):
@@ -397,10 +250,9 @@ def auto_backup_cargo_file(self, filename: str):
 # static functions
 # --------------------------------------------------------------------------------------------------
 
-
-# Minimum valid PNG file size in bytes (PNG header 8 + IHDR chunk 25 + IEND 12 = 45)
+# Minimum valid PNG file size in bytes
 _PNG_HEADER = b'\x89PNG\r\n\x1a\n'
-_MIN_PNG_SIZE = 67  # smallest valid 1x1 PNG
+_MIN_PNG_SIZE = 67
 
 
 def _is_valid_png(filepath: str) -> bool:
@@ -433,7 +285,6 @@ def get_downloaded_icons(images_dir: Path) -> set:
         if _is_valid_png(filepath):
             valid.add(unquote_plus(filename)[:-4])
         else:
-            # corrupt / empty / HTML error page — remove so it gets re-downloaded
             try:
                 os.remove(filepath)
                 log.info(f'get_downloaded_icons: removed corrupt image {filename!r}')
@@ -505,10 +356,7 @@ def load_icon(filename: str, app_directory: str) -> QIcon:
 
 def load_json__new(file_path: Path) -> dict | list | None:
     """
-    Loads json from path and returns dictionary or list. Returns `None` if no data could be found.
-
-    Parameters:
-    - :param path: path to json file
+    Loads json from Path and returns dictionary or list. Returns None if no data found.
     """
     try:
         with file_path.open() as json_file:
@@ -597,7 +445,6 @@ def fetch_html(url: str) -> _LxmlElement:
     Fetches html from url and returns an element wrapper compatible with requests_html API.
     Uses lxml + requests — no Chromium, thread-safe.
     """
-    import requests as _requests
     headers = {
         'User-Agent': (
             'Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0'
@@ -605,7 +452,7 @@ def fetch_html(url: str) -> _LxmlElement:
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
     }
-    response = _requests.get(url, timeout=30, headers=headers)
+    response = requests.get(url, timeout=30, headers=headers)
     response.raise_for_status()
     doc = lxml_html.fromstring(response.content)
     return _LxmlElement(doc)
@@ -684,11 +531,7 @@ def open_wiki_page(page_name: str):
 
 def read_env_file(path: Path, names: list[str]) -> dict[str, str]:
     """
-    Reads given `names` from env file at `path` and returns dictionary containing them.
-
-    Parameters:
-    - :param path: path to env file
-    - :param names: variables to read from env file
+    Reads given names from env file at path and returns dictionary containing them.
     """
     env_variables = dict()
     if not path.exists():
@@ -697,22 +540,15 @@ def read_env_file(path: Path, names: list[str]) -> dict[str, str]:
         for line in env_file:
             for identifier in names:
                 if line.startswith(f'{identifier}='):
-                    if line[-1] == '\n':
-                        env_variables[identifier] = line[len(identifier) + 1:-1]
-                    else:
-                        env_variables[identifier] = line[len(identifier) + 1:]
+                    value = line[len(identifier) + 1:]
+                    env_variables[identifier] = value.rstrip('\n')
                     break
     return env_variables
 
 
 def cache_cargo_data(cache_file: Path, url: str, session: requests.Session) -> bool:
     """
-    Obtains cargo data from `url` and stores it. Returns `True` on success, `False` on failure.
-
-    Parameters:
-    - :param cache_file: path to file that the cargo data should be stored to
-    - :param url: url to request data from
-    - :param session: request session to use for the request
+    Obtains cargo data from url and stores it. Returns True on success, False on failure.
     """
     try:
         response = session.get(url, timeout=10)
@@ -735,7 +571,7 @@ def download_image_session(
         session: requests.Session, name: str, image_folder_path: Path,
         failed_images: dict[str, int], image_suffix: str = '_icon.png'):
     """
-    Downloads image and saves raw bytes to disk. No QImage — safe to call from any thread.
+    Downloads image and saves raw bytes to disk. Safe to call from any thread.
     """
     if image_suffix == '':
         filepath = image_folder_path / quote_plus(name)
@@ -754,17 +590,17 @@ def download_images_list(
         images_list: list[str], env_variables: dict[str, str], images_path: Path,
         image_suffix: str = '_icon.png') -> dict[str, int]:
     """
+    Downloads a list of images sequentially using a single session.
     """
-    requests_session = requests.Session()
+    session = requests.Session()
     if 'SETS_CF_CLEARANCE' in env_variables:
-        requests_session.cookies.set_cookie(
+        session.cookies.set_cookie(
             requests__create_cookie(name='cf_clearance', value=env_variables['SETS_CF_CLEARANCE']))
     if 'SETS_USER_AGENT' in env_variables:
-        requests_session.headers['User-Agent'] = env_variables['SETS_USER_AGENT']
+        session.headers['User-Agent'] = env_variables['SETS_USER_AGENT']
     failed_images = dict()
     for image_name in images_list:
-        download_image_session(
-            requests_session, image_name, images_path, failed_images, image_suffix)
+        download_image_session(session, image_name, images_path, failed_images, image_suffix)
     return failed_images
 
 
@@ -789,7 +625,5 @@ def download_images_fast(
             target=download_images_list, args=(images, env_variables, images_dir, image_suffix))
         thread.start()
         threads.append(thread)
-    failed_images = dict()
     for thread in threads:
-        failed_images.update(thread.join())
-    print(failed_images)
+        thread.join()

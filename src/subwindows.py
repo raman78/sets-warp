@@ -5,7 +5,7 @@ from PySide6.QtGui import QMouseEvent, QTextOption
 from PySide6.QtWidgets import QAbstractItemView, QDialog, QListView, QPlainTextEdit
 
 from .constants import AHCENTER, ALEFT, ATOP, MARKS, RARITIES, SMAXMAX, SMINMAX, SMINMIN
-from .iofunc import alt_image
+from .iofunc import image
 from .widgetbuilder import (
     create_button, create_button_series, create_combo_box, create_entry, create_frame,
     create_item_button, create_label)
@@ -123,11 +123,10 @@ class Picker(BasePicker):
         self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setMinimumSize(10, 10)
         self.setSizePolicy(SMAXMAX)
-        self._sets = sets
+        self._image_getter = lambda image_name: image(sets, image_name)
         self._item = self.empty_item
         self._result = None
         self._modifiers = {}
-        self._image_suffix = ''
         ui_scale = sets.config['ui_scale']
         spacing = sets.theme['defaults']['isp'] * ui_scale
         layout = VBoxLayout(margins=(spacing, 0, spacing, spacing), spacing=0)
@@ -225,19 +224,10 @@ class Picker(BasePicker):
         """
         new_item = str(new_index.data(Qt.ItemDataRole.DisplayRole))
         self._item['item'] = new_item
+        self._item_button.set_item(self._image_getter(new_item))
         self._item_label.setText(new_item)
         for i in range(5):
             self._mod_combos[i].setCurrentText('')
-        # Load preview image asynchronously to avoid blocking UI thread
-        # (synchronous download in alt_image() would delay doubleClicked signal)
-        from .widgets import exec_in_thread
-        suffix = self._image_suffix
-        button = self._item_button
-        def _load_img(threaded_worker=None):
-            img = alt_image(self._sets, new_item, suffix)
-            if threaded_worker is not None:
-                threaded_worker.result.emit((img,))
-        exec_in_thread(self._sets, _load_img, result=lambda r: button.set_item(r[0]))
 
     def select_item(self, new_index):
         """
@@ -249,10 +239,9 @@ class Picker(BasePicker):
 
     def pick_item(
             self, items: Iterable, button_pos: QPoint | None, equipment: bool = False,
-            modifiers: dict = {}, image_suffix: str = '', current_item: dict | None = None):
+            modifiers: dict = {}):
         """
         Executes picker, returns selected item. Returns None when picker is closed without saving.
-        If current_item is provided, pre-fills the picker with the existing selection.
         """
         window = self.parentWidget()
         if button_pos is None:
@@ -275,43 +264,11 @@ class Picker(BasePicker):
         self._items_list.scrollToTop()
         if equipment:
             self.insert_modifiers(modifiers)
+            self._mark_combo.setCurrentText(self._get_default_mark())
+            self._rarity_combo.setCurrentText(self._get_default_rarity())
             self._prop_frame.show()
         else:
             self._prop_frame.hide()
-        self._image_suffix = image_suffix
-        # Pre-fill with current item if provided
-        if current_item and current_item.get('item'):
-            name = current_item['item']
-            self._item['item'] = name
-            self._item_label.setText(name)
-            if equipment:
-                self._mark_combo.setCurrentText(current_item.get('mark', self._get_default_mark()))
-                self._rarity_combo.setCurrentText(
-                    current_item.get('rarity', self._get_default_rarity()))
-                for i, mod_combo in enumerate(self._mod_combos):
-                    mod_val = current_item.get('modifiers', [''] * 5)
-                    mod_combo.setCurrentText(mod_val[i] if i < len(mod_val) else '')
-            # Pre-select in list and scroll to it
-            matches = self._sort_model.match(
-                self._sort_model.index(0, 0), Qt.ItemDataRole.DisplayRole,
-                name, 1, Qt.MatchFlag.MatchExactly)
-            if matches:
-                self._items_list.setCurrentIndex(matches[0])
-                self._items_list.scrollTo(matches[0])
-            # Load preview image
-            suffix = image_suffix
-            button = self._item_button
-            from .widgets import exec_in_thread
-            from .iofunc import alt_image
-            def _load_img(threaded_worker=None):
-                img = alt_image(self._sets, name, suffix)
-                if threaded_worker is not None:
-                    threaded_worker.result.emit((img,))
-            exec_in_thread(self._sets, _load_img, result=lambda r: button.set_item(r[0]))
-        else:
-            if equipment:
-                self._mark_combo.setCurrentText(self._get_default_mark())
-                self._rarity_combo.setCurrentText(self._get_default_rarity())
         self._search_bar.setFocus()
         action = self.exec()
         if action == 1 and self._item['item'] != '':
@@ -386,9 +343,7 @@ class ShipSelector(QDialog):
         self._ship_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._ship_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._ship_list.setModel(sort_model)
-        self._selected_ship = None
-        self._ship_list.clicked.connect(self._on_ship_clicked)
-        self._ship_list.doubleClicked.connect(self._on_ship_double_clicked)
+        self._ship_list.doubleClicked.connect(self.accept)
         layout.addWidget(self._ship_list)
         csp = sets.theme['defaults']['csp'] * ui_scale
         control_layout = HBoxLayout(spacing=csp)
@@ -406,17 +361,6 @@ class ShipSelector(QDialog):
     def set_ships(self, ships: Iterable):
         self._ship_data_model.setStringList(ships)
 
-    def _on_ship_clicked(self, index):
-        name = index.data(Qt.ItemDataRole.DisplayRole)
-        if name:
-            self._selected_ship = name
-
-    def _on_ship_double_clicked(self, index):
-        name = index.data(Qt.ItemDataRole.DisplayRole)
-        if name:
-            self._selected_ship = name
-            self.accept()
-
     def pick_ship(self):
         """
         Executes Picker, returns selected ship, returns None when cancelled.
@@ -426,13 +370,13 @@ class ShipSelector(QDialog):
         pos = (window.x() + size[0] / 4, window.y() + size[1] / 18)
         self.setFixedSize(*size)
         self.move(*pos)
-        self._selected_ship = None
-        self._ship_list.clearSelection()
         self._ship_list.scrollToTop()
         action = self.exec()
         self._search_bar.clear()
-        if action == 1 and self._selected_ship:
-            return self._selected_ship
+        if action == 1:
+            ship_name = self._ship_list.currentIndex().data(Qt.ItemDataRole.DisplayRole)
+            if ship_name != '':
+                return ship_name
         return None
 
     def mousePressEvent(self, event: QMouseEvent):
