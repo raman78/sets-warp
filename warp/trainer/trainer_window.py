@@ -1668,6 +1668,24 @@ class WarpCoreWindow(QMainWindow):
                             _slog.info(f'add_bbox: P1 slot suggestion → {suggested!r}')
                         from warp.recognition.icon_matcher import SETSIconMatcher
                         _current_slot = self._slot_combo.currentText()
+                        # If current slot is a NON_ICON_SLOT already confirmed for this image,
+                        # advance to the next unconfirmed NON_ICON_SLOT to prevent
+                        # SINGLE_INSTANCE step from silently deleting the earlier annotation.
+                        if _current_slot in NON_ICON_SLOTS and self._current_idx >= 0:
+                            _confirmed_slots = {
+                                ann.slot for ann in self._data_mgr.get_annotations(path)
+                                if ann.state == AnnotationState.CONFIRMED
+                            }
+                            if _current_slot in _confirmed_slots:
+                                for _next in ('Ship Name', 'Ship Type', 'Ship Tier'):
+                                    if _next not in _confirmed_slots:
+                                        _current_slot = _next
+                                        self._slot_combo.blockSignals(True)
+                                        self._slot_combo.setCurrentText(_next)
+                                        self._slot_combo.blockSignals(False)
+                                        log.info(f'add_bbox: {_current_slot!r} already confirmed '
+                                                 f'→ advanced slot to {_next!r}')
+                                        break
                         if _current_slot not in NON_ICON_SLOTS:
                             _candidates = set(self._build_search_candidates(_current_slot)) or None
                             # Pass 1: match with slot-restricted candidates
