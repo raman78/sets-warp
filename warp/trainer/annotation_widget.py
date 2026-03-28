@@ -128,6 +128,11 @@ class AnnotationWidget(QWidget):
         self.setFocus()
         self.update()
 
+    def refresh_annotations(self, path: Path):
+        """Reload confirmed annotations from data manager (call after add_annotation)."""
+        self._annotations = self._data_mgr.get_annotations(path)
+        self.update()
+
     def confirm_current(self, slot: str, name: str):
         if self._pending_bbox is not None:
             self._data_mgr.add_annotation(image_path=self._img_path, bbox=self._pending_bbox, slot=slot, name=name, state=AnnotationState.CONFIRMED)

@@ -2263,6 +2263,7 @@ class WarpCoreWindow(QMainWindow):
                     ml_name=ri.get('orig_name', ''),
                 )
                 ri['ann_id'] = saved.ann_id  # track for future edits on this bbox
+                self._ann_widget.refresh_annotations(path)
             litem = self._review_list.item(row)
             if litem:
                 litem.setText(f'{slot}  ->  {name or "—"}  [confirmed]')
