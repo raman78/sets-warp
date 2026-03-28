@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## v2.0 (2026-03-28) — Official release, beta phase complete
+
+First non-beta release. Consolidates v2.0b + v2.1b (see entries below) and adds:
+
+- **`scripts/upstream_sync.py`** — semi-automated upstream SETS merge helper:
+  auto-applies 9 documented patches, flags manual review items with instructions
+- **`docs/src_patches.md`** — complete re-application guide for future upstream merges
+- **Phase 5 upstream PRs** — 3 fixes contributed back to `Shinga13/SETS`:
+  item normalization, Intel Holoship uni_consoles, species sets expansion
+- **Shift anchor cursors fixed** — `_set_mod_cursor()` now used in `mouseMoveEvent`
+  Shift section so handle resize cursors update correctly via `changeOverrideCursor`
+
+---
+
 ## v2.1b (2026-03-28) — WARP CORE NON_ICON_SLOT fixes + docs
 
 ### WARP CORE — NON_ICON_SLOT annotation workflow fixes (10 commits)

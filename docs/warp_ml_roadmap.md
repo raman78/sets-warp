@@ -1,7 +1,7 @@
 # WARP ML Roadmap — Layout + Content Recognition
 
-**Analysis date:** 2026-03-25
-**Status:** Beta v1.5 / ML Implementation Phase
+**Updated:** 2026-03-28
+**Status:** v2.0 — P0–P5 complete. Pending: P2, P6, P7, P8, P9.
 
 ---
 
@@ -111,38 +111,10 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 ### 🟢 P5 — Icon to Layout Feedback Loop (COMPLETED)
 
 **Mechanism:** Layout recalibration based on high-confidence icon matches.
-*   **Dynamic Anchoring**: When an anchor item (Deflector, Engines, Core) is matched with high confidence (>0.85), the system calculates the delta between the predicted and actual icon position.
-*   **Real-time Shift**: The entire layout grid is shifted on-the-fly for the current image, ensuring 100% accurate crops even if the game window moved or scaled slightly.
+- When an anchor item (Deflector, Engines, Core) is matched with confidence > 0.85, the delta between predicted and actual icon position is calculated.
+- The entire layout grid is shifted on-the-fly for the current image — resistant to small UI shifts or scaling differences.
 
-**Files:** `warp_importer.py`.
-
-**Files:** `layout_detector.py`.
-
----
-
-### 🟡 P4 — Real ML for layout detection (IN PROGRESS)
-
-**Progress:**
-*   Created `warp/trainer/layout_dataset_builder.py` for extracting training samples from `annotations.json`.
-*   Defined `LayoutRegressor` architecture in `warp/trainer/layout_trainer.py` based on **MobileNetV3-Small**.
-*   Model is designed for 224x224 grayscale input and outputs 56-length vector (14 slots * x,y,w,h).
-
-**Next steps:**
-*   Implement training loop in `LayoutTrainWorker`.
-*   Integrate ONNX inference as Strategy 0 in `LayoutDetector`.
-
-**Files:** `warp/trainer/layout_dataset_builder.py`, `warp/trainer/layout_trainer.py`.
-
----
-
-### 🟢 P5 — Feedback Loop: Dynamic Anchoring (COMPLETED)
-
-**Implementation:**
-*   Added dynamic recalibration in `warp_importer.py` during Image Processing.
-*   Once a high-confidence anchor icon (Deflector, Engines, etc.) is found, its displacement is used to shift the rest of the layout for that specific image.
-*   This makes auto-detection highly resistant to small UI shifts or scaling differences.
-
-**Files:** `warp_importer.py` (`_process_image`), `_find_anchor_recalibration` helper.
+**Files:** `warp_importer.py` (`_process_image`, `_find_anchor_recalibration`).
 
 ---
 
@@ -153,25 +125,107 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 **What to do:**
 - In `_on_bbox_drawn` when entering the matching/OCR path:
   - Show a small `QProgressBar` (indeterminate / busy) in the bottom panel
-  - Run the OCR + matching in a `QThread` (similar pattern to `RecognitionWorker`)
+  - Run OCR + matching in a `QThread` (similar pattern to `RecognitionWorker`)
   - Hide progress bar when done, populate fields
-- Only needed if > 500ms — add a simple timer check.
+- Only show if > 500ms — add a simple timer check before displaying.
+
+**Testing:** Claude verifies spinner appears and disappears correctly. No user test needed.
 
 **Files:** `trainer_window.py`.
 
 ---
 
-## Dependency order
+### P2 — Cross-validation: layout vs content
+
+**Why:** Layout detection and icon matching are completely independent. If layout places a bbox in the wrong slot and icon matcher returns an item whose type doesn't match, nothing catches this.
+
+**What to do:**
+- After icon matching returns `(name, conf)` for a slot:
+  - Look up `name` in `cache.equipment` → get `item['type']` (e.g., `"Engineering Console"`)
+  - Check against `SLOT_VALID_TYPES` from `warp_importer.py`
+  - If mismatch → flag in review list with warning colour, log the conflict
+- Apply in `RecognitionWorker.run()` and in `_on_bbox_drawn`
+- Also covers fore/aft weapon validation (fore-only weapons in aft slots)
+
+**Testing:** Claude tests with a build screenshot, verifies warnings appear for cross-type mismatches. No user test needed.
+
+**Files:** `trainer_window.py`, `warp_importer.py` (re-export `SLOT_VALID_TYPES`).
+
+---
+
+### P7 — Training data augmentation (EfficientNet)
+
+**Why:** Current EfficientNet fine-tune uses crops as-is. With small datasets (< 1000 crops per class) the model overfits. Adding augmentation during training improves generalization across different in-game UI scales, brightness settings, and display gammas without collecting more data.
+
+**What to do:**
+- In `local_trainer.py` training transform pipeline, add:
+  - `transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2)`
+  - `transforms.RandomHorizontalFlip(p=0.3)` — icons are mostly symmetric
+  - `transforms.RandomAffine(degrees=5, translate=(0.05, 0.05))` — small positional noise
+- Keep validation transform clean (no augmentation) for accurate val_acc reporting
+
+**Testing:** Claude compares val_acc before and after on a fixed held-out set. Expects ≥ same or better val_acc with less overfitting (train_acc − val_acc gap narrows).
+
+**Files:** `warp/trainer/local_trainer.py`.
+
+---
+
+### P8 — Confidence fusion: template + ML combined score
+
+**Why:** Current pipeline is strict fallback — template matching wins if it fires, ML is only used if template fails. When template score is borderline (0.5–0.7) and ML score is high (0.8+), ML should win. Combining both signals gives a more accurate final confidence.
+
+**What to do:**
+- After template match and ML inference both run, compute:
+  `final_conf = max(template_conf, 0.4 * template_conf + 0.6 * ml_conf)`
+  when `template_conf < 0.75` — otherwise template result stands unchanged
+- Threshold for accept remains `MIN_ACCEPT_CONF = 0.40`
+- Log both individual scores at DEBUG level for tuning
+
+**Testing:** Claude runs recognition on 5–10 test crops with known labels, compares accuracy before/after. No user test needed unless recognition results look wrong.
+
+**Files:** `warp/recognition/icon_matcher.py`.
+
+---
+
+### P9 — Hard negatives mining for EfficientNet
+
+**Why:** The model confuses visually similar items (e.g., consoles of the same set). Standard random training doesn't focus on these hard cases. Mining confusing pairs and over-sampling them during training directly improves the most common failure mode.
+
+**What to do:**
+- After each training epoch, run inference on the training set
+- Collect samples where `predicted != label AND conf > 0.5` (confident but wrong)
+- Double-weight these samples in the next epoch's sampler (`WeightedRandomSampler`)
+- Cap hard negative weight at 3× to avoid instability
+
+**Testing:** Claude compares confusion matrix before/after on val set. Expects reduction in high-confidence errors for the top-5 most confused class pairs.
+
+**Files:** `warp/trainer/local_trainer.py`.
+
+---
+
+## Dependency order (updated)
 
 ```
-P0 (OCR on text slots)    — standalone, low risk, high UX value
-P1 (slot from position)   — depends on anchors.json being populated (P3 helps)
-P6 (progress indicator)   — prerequisite for P0 and P1 if run in thread
-P3 (layout multi-config)  — improves P1 accuracy
-P2 (cross-validation)     — standalone, depends on SLOT_VALID_TYPES (already exists)
-P5 (auto-detect feedback) — depends on P2 logic
-P4 (layout ML)            — largest effort; P3 + P5 first to get cleaner training data
+✅ P0 (OCR on text slots)       — DONE
+✅ P1 (slot from position)      — DONE
+✅ P3 (layout multi-config)     — DONE
+✅ P4 (CNN layout regression)   — DONE
+✅ P5 (dynamic anchoring)       — DONE
+── P6 (progress indicator)      — UX, standalone, low risk
+── P2 (cross-validation)        — standalone, high value, uses existing SLOT_VALID_TYPES
+── P7 (data augmentation)       — standalone, improves EfficientNet with no extra data
+── P8 (confidence fusion)       — depends on both template + ML running (already do)
+── P9 (hard negatives)          — depends on P7 training loop changes
 ```
+
+---
+
+## Testing policy
+
+Each point specifies who tests and how:
+- **Claude tests:** static analysis + log inspection + running app in background
+- **User tests:** only when visual confirmation is required (e.g., "does the spinner look right?", "does the warning colour show for this screenshot?")
+- User tests are always described with exact steps: what to launch, what to click, what to look for, what to report
 
 ---
 
@@ -181,17 +235,17 @@ P4 (layout ML)            — largest effort; P3 + P5 first to get cleaner train
 - MobileNetV3 screen classifier — works well
 - Session examples / seed from training data — effective fallback
 - pHash community knowledge — works when populated
-- `learn_layout()` save mechanism — correct, just needs better retrieval (P3)
+- `learn_layout()` save mechanism — correct
 - `SLOT_VALID_TYPES` enforcement — already in place in `warp_importer.py`
 
 ---
 
 ## Files involved summary
 
-| File | Changes needed |
-|------|---------------|
-| `warp/trainer/trainer_window.py` | P0, P1, P2, P6 |
-| `warp/recognition/layout_detector.py` | P3, P4 (new strategy 0), P5 |
-| `warp/warp_importer.py` | P2 (expose SLOT_VALID_TYPES), P5 |
-| `warp/trainer/layout_trainer.py` | P4 (new file) |
-| `warp/recognition/text_extractor.py` | P0 (reuse RE_TIER, extract_ship_info) |
+| File | Pending changes |
+|------|----------------|
+| `warp/trainer/trainer_window.py` | P2, P6 |
+| `warp/recognition/layout_detector.py` | — |
+| `warp/warp_importer.py` | P2 (re-export SLOT_VALID_TYPES) |
+| `warp/recognition/icon_matcher.py` | P8 |
+| `warp/trainer/local_trainer.py` | P7, P9 |
