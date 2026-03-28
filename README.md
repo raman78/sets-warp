@@ -2,7 +2,7 @@
 
 A build planning and screenshot recognition tool for Star Trek Online.
 
-> **Status:** v1.3b — tested on **Linux** and **Windows**. macOS support is present but untested.
+> **Status:** v2.0b — tested on **Linux** and **Windows**. macOS support is present but untested.
 
 ---
 

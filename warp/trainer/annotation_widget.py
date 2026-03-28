@@ -395,7 +395,7 @@ class AnnotationWidget(QWidget):
         if mods & Qt.KeyboardModifier.ShiftModifier:
             handle, target_row = self._handle_hit_test_all_reviews(pos)
             if handle:
-                self.setCursor(self._cursor_for_handle(handle))
+                self._set_mod_cursor(self._cursor_for_handle(handle))
                 self._cancel_hover_timer()
                 from PySide6.QtWidgets import QToolTip
                 QToolTip.hideText()
@@ -403,7 +403,7 @@ class AnnotationWidget(QWidget):
 
             hit_row = self._hit_test_review(pos)
             if hit_row >= 0:
-                self.setCursor(self._make_edit_cursor())
+                self._set_mod_cursor(self._make_edit_cursor())
                 self._cancel_hover_timer()
                 from PySide6.QtWidgets import QToolTip
                 QToolTip.hideText()
@@ -419,11 +419,11 @@ class AnnotationWidget(QWidget):
             else:
                 from PySide6.QtWidgets import QToolTip
                 QToolTip.hideText()
-        
+
         # Restore appropriate cursor if not over anything special
         if hovered < 0:
             if mods & Qt.KeyboardModifier.ShiftModifier:
-                self.setCursor(self._make_edit_cursor())
+                self._set_mod_cursor(self._make_edit_cursor())
             else:
                 self.unsetCursor()
 
