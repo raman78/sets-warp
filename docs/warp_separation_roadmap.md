@@ -160,7 +160,9 @@ These are SETS improvements (preserve equipment on ship switch), not WARP-exclus
 
 ---
 
-### Phase 3 — Upstream merge
+### Phase 3 — Upstream merge ✅ DONE (2026-03-28)
+
+Commit: `b263f6d` — all 19 conflicting files resolved, merge committed to `main`.
 
 **This is the big step. Do not rush. One file at a time.**
 
