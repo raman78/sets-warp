@@ -1406,7 +1406,9 @@ class WarpCoreWindow(QMainWindow):
                 if idx >= 0:
                     self._slot_combo.setCurrentIndex(idx)
                 # Populate completer for this slot without triggering clear on name_edit
-                self._populate_name_completer(slot)
+                # NON_ICON_SLOTS use their own widgets — skip completer (avoids iterating all equipment)
+                if slot not in NON_ICON_SLOTS:
+                    self._populate_name_completer(slot)
                 # Set name field directly (slot already set above, skip _on_slot_changed clear)
                 self._name_edit.blockSignals(True)
                 self._name_edit.setText(ri['name'])
