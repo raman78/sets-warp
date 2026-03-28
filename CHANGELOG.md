@@ -1,8 +1,8 @@
 # CHANGELOG
 
-## v2.0b (2026-03-28) — Upstream SETS merge (Phase 3)
+## v2.0b (2026-03-28) — Upstream SETS merge (Phase 3 + 4)
 
-### Architecture — Phase 3: upstream merge complete
+### Architecture — Phase 3 + 4: upstream merge + stabilization
 
 Integrated 738 commits from upstream SETS into SETS-WARP. All SETS-WARP features preserved.
 
@@ -22,6 +22,13 @@ Integrated 738 commits from upstream SETS into SETS-WARP. All SETS-WARP features
 - `src/callbacks.py`: `_save/_restore_session_slots`, `log`
 - `src/buildupdater.py`: DC ship support (`equipcannons`), item normalization (`mark`/`modifiers` defaults), boff ability alias resolution, Intel Holoship `uni_consoles` fix
 - `src/constants.py`: `SEVEN_DAYS_IN_SECONDS`, `GITHUB_CACHE_URL`, expanded SPECIES (Caitian, Klingon, Talaxian, Ferasan), `TRAIT_QUERY_URL` with `icon_name` field
+
+---
+
+### Architecture — Phase 4: stabilization
+
+- **`warp/app.py` overrides verified** — all 5 overrides compatible with merged `src/app.py`, no code changes needed
+- **`warp_dialog.py` → `src/` dependencies verified** — all 8 functions still present with unchanged signatures
 
 ---
 

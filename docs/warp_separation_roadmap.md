@@ -259,7 +259,19 @@ After all file merges, test integration of our exclusive files:
 
 ---
 
-### Phase 4 — Stabilization after merge
+### Phase 4 — Stabilization after merge ✅ DONE (2026-03-28)
+
+All `warp/app.py` overrides verified compatible with merged `src/app.py`. No code changes needed.
+
+| Override | Result |
+|----------|--------|
+| `WarpSETS.__init__(theme, args, path, config, versions)` | ✅ signature unchanged |
+| `create_main_window(argv=[])` | ✅ app name override works after super() |
+| `setup_main_layout()` | ✅ `self.widgets.menu_layout` hook present (src/app.py L374) |
+| `setup_settings_frame()` | ✅ `settings_scroll_layout` (L1221) + `settings_scroll_frame` (L1273) hooks present |
+| `_add_warp_settings_sections()` + `adjustSize()` | ✅ scroll frame hook present |
+
+`warp_dialog.py` → `src/` dependencies verified: `_save/_restore_session_slots`, `align_space_frame`, `slot_equipment_item`, `slot_trait_item`, `get_boff_spec`, `clear_ship`, `load_boff_stations`, `ImageManager.get_ship_image` — all present.
 
 #### 4.1 Update `warp/app.py` overrides
 
