@@ -293,28 +293,20 @@ between our `src/` and upstream SETS, including re-application instructions for 
 
 ---
 
-### Phase 5 — Upstream contribution (after Phase 4 stable)
+### Phase 5 — Upstream contribution ✅ DONE (2026-03-28)
 
-Offer our `src/` improvements back to upstream SETS via Pull Request.
+Three PRs opened to `Shinga13/SETS` from fork `raman78/SETS`:
 
-**Candidates for upstream PR — genuine SETS fixes/features:**
-| Our change | Why upstream would want it |
-|-----------|--------------------------|
-| DC ship support (`equipcannons` in buildupdater) | Genuine missing ship feature |
-| Item normalization (`mark`/`modifiers` defaults) | Bug fix for legacy builds |
-| Boff ability alias resolution | Bug fix |
-| `GITHUB_CACHE_URL` fallback for Cloudflare-blocked stowiki | Useful for all SETS users on Linux |
+| PR | Branch | Change |
+|----|--------|--------|
+| [#1](https://github.com/Shinga13/SETS/pull/1) | `fix/item-normalization-legacy-builds` | `setdefault` guards for `mark`/`modifiers` in `load_equipment_cat` — fixes crash on legacy saves |
+| [#2](https://github.com/Shinga13/SETS/pull/2) | `fix/intel-holoship-uni-console` | Intel Holoship `uni_consoles += 1` — fixes missing Universal Console slot |
+| [#3](https://github.com/Shinga13/SETS/pull/3) | `fix/species-sets-expansion` | Caitian, Ferasan, Talaxian, Klingon cross-faction added to SPECIES dict |
 
-**NOT appropriate for upstream (SETS-WARP exclusive):**
-- `syncmanager.py`, `cargomanager.py`, `imagemanager.py`, `downloader.py`
-- `setsdebug.py`
-- Anything in `warp/`
-
-**Process for each PR:**
-1. Create a branch FROM `upstream/main` (not our main)
-2. Add only the specific change — nothing else
-3. Open PR to `STOCD/SETS` with clear description of the fix
-4. Do not merge upstream's response into our main until they accept/reject
+**NOT submitted (SETS-WARP exclusive or requires our infrastructure):**
+- DC ship support — logic lives in `warp/`, requires our `TooltipLabel` + `dual_cannons` icon
+- Boff ability alias resolution — requires `item_aliases` infrastructure we built
+- `GITHUB_CACHE_URL` fallback — requires `syncmanager.py`
 
 ---
 
