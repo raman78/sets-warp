@@ -1146,10 +1146,15 @@ class WarpCoreWindow(QMainWindow):
         self._screen_type_badge.setText(f'Screen: {icon} {label}')
         self._refresh_slot_combo(stype)
 
-    def _refresh_slot_combo(self, stype: str):
+    def _refresh_slot_combo(self, stype: str, keep_slot: str = ''):
+        """Rebuild slot combo for screen type, hiding confirmed NON_ICON_SLOTS.
+
+        keep_slot: slot of the currently displayed item — always kept visible
+        so the user can read/edit an already-confirmed Ship Name/Type/Tier bbox.
+        """
         group_key = SCREEN_TO_SLOT_GROUP.get(stype, 'SPACE_EQ')
         slots = SLOT_GROUPS.get(group_key, ALL_SLOTS)
-        # Hide NON_ICON_SLOTS already confirmed for this image (one per image max)
+        # Hide confirmed NON_ICON_SLOTS, but always show the currently active one
         confirmed_non_icon: set[str] = set()
         if self._current_idx >= 0:
             path = self._screenshots[self._current_idx]
@@ -1157,6 +1162,7 @@ class WarpCoreWindow(QMainWindow):
                 ann.slot for ann in self._data_mgr.get_annotations(path)
                 if ann.state == AnnotationState.CONFIRMED and ann.slot in NON_ICON_SLOTS
             }
+        confirmed_non_icon.discard(keep_slot)
         current_slot = self._slot_combo.currentText()
         self._slot_combo.blockSignals(True)
         self._slot_combo.clear()
@@ -1408,14 +1414,13 @@ class WarpCoreWindow(QMainWindow):
                 #     self._btn_edit_bbox.setChecked(False)
                 #     self._ann_widget.set_draw_mode(False)
                 slot = ri['slot']
+                # Ensure this slot is visible in combo (confirmed NON_ICON_SLOTS
+                # are normally hidden, but must show when the item is selected)
+                if self._current_idx >= 0:
+                    _stype = self._screen_types.get(
+                        self._screenshots[self._current_idx].name, 'UNKNOWN')
+                    self._refresh_slot_combo(_stype, keep_slot=slot)
                 idx = self._slot_combo.findText(slot)
-                if idx < 0:
-                    self._slot_combo.blockSignals(True)
-                    self._slot_combo.clear()
-                    for s in ALL_SLOTS:
-                        self._slot_combo.addItem(s)
-                    self._slot_combo.blockSignals(False)
-                    idx = self._slot_combo.findText(slot)
                 if idx >= 0:
                     self._slot_combo.setCurrentIndex(idx)
                 # Populate completer for this slot without triggering clear on name_edit
@@ -2157,6 +2162,11 @@ class WarpCoreWindow(QMainWindow):
                     self._set_review_buttons_enabled(True)
                     break
 
+        # Ensure slot is visible in combo (confirmed NON_ICON_SLOTS may be hidden)
+        if self._current_idx >= 0:
+            _stype = self._screen_types.get(
+                self._screenshots[self._current_idx].name, 'UNKNOWN')
+            self._refresh_slot_combo(_stype, keep_slot=slot)
         # Set slot without triggering _on_slot_changed's clear() on name_edit
         self._slot_combo.blockSignals(True)
         self._slot_combo.setCurrentText(slot)
