@@ -1566,7 +1566,7 @@ class WarpCoreWindow(QMainWindow):
                 f'Remove confirmed bbox for "{name}"?\n\n'
                 f'This will delete the saved annotation for this slot.',
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
