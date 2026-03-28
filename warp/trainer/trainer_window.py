@@ -1413,6 +1413,8 @@ class WarpCoreWindow(QMainWindow):
                 self._name_edit.blockSignals(False)
                 if ri.get('bbox'):
                     self._ann_widget.set_highlighted_row(row)
+                else:
+                    self._ann_widget.clear_highlight()
                 if is_confirmed:
                     self._review_list.setFocus()
         finally:
