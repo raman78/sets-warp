@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## v2.0.1 (2026-03-28) — Bug fixes & sync optimization
+
+### Bug fixes
+- **updater.py** — `git fetch --tags` added before `git pull` in `_do_git_update()`;
+  fixes continuous update popup loop when a tag was created after the commit was already
+  on the remote (affected v2.0 release on test installs)
+- **trainer_window.py** — Wayland `QCompleter` popup fix: install event filter on popup
+  widget, set `windowHandle().setTransientParent()` on first `Show` event so Qt can
+  create the `xdg_popup` surface (fixes "Failed to create popup" warning)
+
+### Performance
+- **sync.py** — HF upload deduplication: uploaded crop hashes now cached in
+  `.sync_uploaded_hashes.json`; `list_repo_files()` called once to bootstrap, then
+  skipped on all subsequent 5-minute sync ticks
+
+### Docs
+- **warp_ml_roadmap.md** — P2 cross-validation marked as complete (was already
+  implemented, roadmap had stale status); duplicate P2 section removed
+
+---
+
 ## v2.0 (2026-03-28) — Official release, beta phase complete
 
 First non-beta release. Consolidates v2.0b + v2.1b (see entries below) and adds:
