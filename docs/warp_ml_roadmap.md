@@ -1,7 +1,7 @@
 # WARP ML Roadmap — Layout + Content Recognition
 
 **Updated:** 2026-03-28
-**Status:** v2.0 — P0–P5 complete. Pending: P2, P6, P7, P8, P9.
+**Status:** v2.0 — P0–P5, P2 complete. Pending: P6, P7, P8, P9.
 
 ---
 
@@ -34,7 +34,7 @@ Four strategies, tried in order:
 
 ### Cross-validation between layout and content
 
-**Currently zero.** Layout detection and icon matching are completely independent pipelines. There is no feedback loop: if layout places a bbox in the wrong row and icon matcher returns an item whose type doesn't match the slot, nobody catches this.
+**Implemented (P2 complete).** After icon matching, item type is checked against `SLOT_VALID_TYPES`. Mismatches are flagged in the review list with ⚠️ warning colour and tooltip.
 
 ### Ship Name / Type / Tier bbox — drawn manually
 
@@ -70,7 +70,7 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 
 ---
 
-### P2 — Cross-validation: layout vs content
+### 🟢 P2 — Cross-validation: layout vs content (COMPLETED)
 
 **Why:** The two main signals (where the icon is vs what the icon is) currently never talk to each other. The cross-check is the most powerful tool for catching errors.
 
@@ -135,7 +135,7 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 
 ---
 
-### P2 — Cross-validation: layout vs content
+### 🟢 P2 — Cross-validation: layout vs content (COMPLETED)
 
 **Why:** Layout detection and icon matching are completely independent. If layout places a bbox in the wrong slot and icon matcher returns an item whose type doesn't match, nothing catches this.
 
@@ -212,7 +212,7 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 ✅ P4 (CNN layout regression)   — DONE
 ✅ P5 (dynamic anchoring)       — DONE
 ── P6 (progress indicator)      — UX, standalone, low risk
-── P2 (cross-validation)        — standalone, high value, uses existing SLOT_VALID_TYPES
+✅ P2 (cross-validation)        — DONE
 ── P7 (data augmentation)       — standalone, improves EfficientNet with no extra data
 ── P8 (confidence fusion)       — depends on both template + ML running (already do)
 ── P9 (hard negatives)          — depends on P7 training loop changes
@@ -244,8 +244,8 @@ Each point specifies who tests and how:
 
 | File | Pending changes |
 |------|----------------|
-| `warp/trainer/trainer_window.py` | P2, P6 |
+| `warp/trainer/trainer_window.py` | P6 |
 | `warp/recognition/layout_detector.py` | — |
-| `warp/warp_importer.py` | P2 (re-export SLOT_VALID_TYPES) |
+| `warp/warp_importer.py` | — |
 | `warp/recognition/icon_matcher.py` | P8 |
 | `warp/trainer/local_trainer.py` | P7, P9 |
