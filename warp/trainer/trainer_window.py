@@ -2355,10 +2355,14 @@ class WarpCoreWindow(QMainWindow):
         # Update learned layout for this screenshot after each confirm
         if self._current_idx >= 0:
             self._learn_layout_for(self._screenshots[self._current_idx])
-        # Remove confirmed NON_ICON_SLOTS from slot combo
+        # Refresh slot combo: hide confirmed NON_ICON_SLOTS except the one
+        # currently displayed (after advance, so keep_slot reflects new row)
         if self._current_idx >= 0:
             _stype = self._screen_types.get(self._screenshots[self._current_idx].name, 'UNKNOWN')
-            self._refresh_slot_combo(_stype)
+            _cur = self._review_list.currentRow()
+            _keep = (self._recognition_items[_cur]['slot']
+                     if 0 <= _cur < len(self._recognition_items) else '')
+            self._refresh_slot_combo(_stype, keep_slot=_keep)
         # Deferred focus — after all signals settle, return focus to list
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._review_list.setFocus)
