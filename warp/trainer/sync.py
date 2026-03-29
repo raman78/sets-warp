@@ -360,6 +360,8 @@ class SyncWorker(QThread):
 
         for entry in learned:
             build_type = entry.get('type', '')
+            if not build_type:
+                continue
             slots = entry.get('slots', {})
             # Keep only icon slots (skip NON_ICON_SLOTS text labels)
             icon_slots = {k: v for k, v in slots.items() if k not in NON_ICON_SLOTS}

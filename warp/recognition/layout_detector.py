@@ -74,7 +74,7 @@ class LayoutDetector:
     def __init__(self):
         self._ocr = None
         self._calibration = self._load_calibration()
-        self._community_anchors: list | None = None  # cache for community_anchors.json (P11)
+        self._community_anchors: list | None = None  # instance cache for community_anchors.json (P11)
 
     def detect(self, img: np.ndarray, build_type: str, ship_profile: dict | None = None) -> dict[str, list[tuple[int, int, int, int]]]:
         if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
@@ -347,6 +347,15 @@ class LayoutDetector:
             _slog.debug(f'LayoutDetector: community anchors unavailable: {e}')
             self._community_anchors = []
         return self._community_anchors
+
+    @staticmethod
+    def reset_community_anchors_cache() -> None:
+        """Invalidate in-memory community anchors cache on all instances (called by ModelUpdater)."""
+        # Walk all live LayoutDetector instances via gc — simpler than a class-level ref
+        import gc
+        for obj in gc.get_objects():
+            if type(obj).__name__ == 'LayoutDetector' and hasattr(obj, '_community_anchors'):
+                obj._community_anchors = None
 
     def _detect_traits(self, img, build_type):
         h, w = img.shape[:2]
