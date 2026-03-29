@@ -2096,42 +2096,19 @@ class WarpCoreWindow(QMainWindow):
             self._populate_name_completer(slot)
 
         # Set name fields
+        self._configure_name_field(slot)
         if slot == 'Ship Tier':
-            self._tier_combo.setVisible(True)
-            self._ship_type_combo.setVisible(False)
-            self._name_edit.setVisible(False)
-            self._name_label.setText('Tier:')
             idx = self._tier_combo.findText(name)
             if idx >= 0:
                 self._tier_combo.setCurrentIndex(idx)
         elif slot == 'Ship Type':
-            self._ship_type_combo.setVisible(True)
-            self._tier_combo.setVisible(False)
-            self._name_edit.setVisible(False)
-            self._name_label.setText('Ship Type:')
             self._populate_ship_type_combo()
             idx = self._ship_type_combo.findText(name)
             if idx >= 0:
                 self._ship_type_combo.setCurrentIndex(idx)
             else:
                 self._ship_type_combo.lineEdit().setText(name)
-        elif slot == 'Ship Name':
-            self._tier_combo.setVisible(False)
-            self._ship_type_combo.setVisible(False)
-            self._name_edit.setVisible(True)
-            self._name_edit.setEnabled(False)
-            self._name_edit.setPlaceholderText('Position only — OCR reads this automatically')
-            self._name_label.setText('Ship Name:')
-            self._name_edit.blockSignals(True)
-            self._name_edit.setText(name)
-            self._name_edit.blockSignals(False)
         else:
-            self._tier_combo.setVisible(False)
-            self._ship_type_combo.setVisible(False)
-            self._name_edit.setVisible(True)
-            self._name_edit.setEnabled(True)
-            self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
-            self._name_label.setText('Item name:')
             self._name_edit.blockSignals(True)
             self._name_edit.setText(name)
             self._name_edit.blockSignals(False)
@@ -2516,26 +2493,37 @@ class WarpCoreWindow(QMainWindow):
         for name in all_names:
             self._completer_model.appendRow(QStandardItem(name))
 
-    def _on_slot_changed(self, slot: str):
-        is_tier = (slot == 'Ship Tier')
+    def _configure_name_field(self, slot: str) -> None:
+        """Single point of truth for name-input widget state.
+
+        Controls visibility, editability, label and placeholder based on slot.
+        Call from both _on_slot_changed and _on_item_selected so the rules
+        are never duplicated.
+        """
+        is_tier      = (slot == 'Ship Tier')
         is_ship_type = (slot == 'Ship Type')
-        is_ship_name = (slot == 'Ship Name')
+        is_non_icon  = slot in NON_ICON_SLOTS  # Ship Name / Type / Tier
+
         self._tier_combo.setVisible(is_tier)
         self._ship_type_combo.setVisible(is_ship_type)
         self._name_edit.setVisible(not is_tier and not is_ship_type)
-        self._name_edit.setEnabled(True)
+        self._name_edit.setEnabled(not is_non_icon)
+
         if is_tier:
             self._name_label.setText('Tier:')
         elif is_ship_type:
             self._name_label.setText('Ship Type:')
-            self._populate_ship_type_combo()
-        elif is_ship_name:
+        elif is_non_icon:
             self._name_label.setText('Ship Name:')
             self._name_edit.setPlaceholderText('Position only — OCR reads this automatically')
-            self._name_edit.setEnabled(False)
         else:
             self._name_label.setText('Item name:')
             self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
+
+    def _on_slot_changed(self, slot: str):
+        self._configure_name_field(slot)
+        if slot == 'Ship Type':
+            self._populate_ship_type_combo()
         # Clear item name field and reset completer state whenever slot changes
         self._suppress_next_focus_popup = True
         self._name_edit.blockSignals(True)
