@@ -2354,18 +2354,18 @@ class WarpCoreWindow(QMainWindow):
             # Second pass: traits — check all buckets with correct cache structure
             # cache.traits[environment][trait_type][name]
             # environment: 'space' | 'ground'
-            # trait_type:  'traits' | 'rep_traits' | 'active_rep_traits'
+            # trait_type:  'personal' | 'rep' | 'active_rep'  (migrated by datafunctions.py at load)
             if hasattr(self._sets.cache, 'starship_traits') and item_name in self._sets.cache.starship_traits:
                 return _allowed('Starship Traits')
             if hasattr(self._sets.cache, 'traits'):
                 t = self._sets.cache.traits
                 trait_slot_map = [
-                    ('space',  'rep_traits',        'Space Reputation'),
-                    ('space',  'active_rep_traits', 'Active Space Rep'),
-                    ('ground', 'rep_traits',        'Ground Reputation'),
-                    ('ground', 'active_rep_traits', 'Active Ground Rep'),
-                    ('space',  'traits',            'Personal Space Traits'),
-                    ('ground', 'traits',            'Personal Ground Traits'),
+                    ('space',  'rep',        'Space Reputation'),
+                    ('space',  'active_rep', 'Active Space Rep'),
+                    ('ground', 'rep',        'Ground Reputation'),
+                    ('ground', 'active_rep', 'Active Ground Rep'),
+                    ('space',  'personal',   'Personal Space Traits'),
+                    ('ground', 'personal',   'Personal Ground Traits'),
                 ]
                 for env, ttype, slot_name in trait_slot_map:
                     try:
@@ -2468,32 +2468,32 @@ class WarpCoreWindow(QMainWindow):
                 pass
         elif slot == 'Active Space Rep':
             try:
-                candidates.extend(self._sets.cache.traits['space']['active_rep_traits'].keys())
+                candidates.extend(self._sets.cache.traits['space']['active_rep'].keys())
             except Exception:
                 pass
         elif slot == 'Space Reputation':
             try:
-                candidates.extend(self._sets.cache.traits['space']['rep_traits'].keys())
+                candidates.extend(self._sets.cache.traits['space']['rep'].keys())
             except Exception:
                 pass
         elif slot == 'Active Ground Rep':
             try:
-                candidates.extend(self._sets.cache.traits['ground']['active_rep_traits'].keys())
+                candidates.extend(self._sets.cache.traits['ground']['active_rep'].keys())
             except Exception:
                 pass
         elif slot == 'Ground Reputation':
             try:
-                candidates.extend(self._sets.cache.traits['ground']['rep_traits'].keys())
+                candidates.extend(self._sets.cache.traits['ground']['rep'].keys())
             except Exception:
                 pass
         elif slot == 'Personal Space Traits':
             try:
-                candidates.extend(self._sets.cache.traits['space']['traits'].keys())
+                candidates.extend(self._sets.cache.traits['space']['personal'].keys())
             except Exception:
                 pass
         elif slot == 'Personal Ground Traits':
             try:
-                candidates.extend(self._sets.cache.traits['ground']['traits'].keys())
+                candidates.extend(self._sets.cache.traits['ground']['personal'].keys())
             except Exception:
                 pass
         else:
