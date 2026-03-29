@@ -580,8 +580,10 @@ def download_image_session(
     image_url = WIKI_IMAGE_URL + name.replace(' ', '_') + image_suffix
     image_response = session.get(image_url)
     if image_response.ok:
-        with open(filepath, 'wb') as f:
-            f.write(image_response.content)
+        img = QImage()
+        image_type = None if image_suffix == '' else 'png'
+        img.loadFromData(image_response.content, image_type)
+        img.save(str(filepath))
     else:
         failed_images[name] = int(datetime.now().timestamp())
 
@@ -625,5 +627,7 @@ def download_images_fast(
             target=download_images_list, args=(images, env_variables, images_dir, image_suffix))
         thread.start()
         threads.append(thread)
+    failed_images = dict()
     for thread in threads:
-        thread.join()
+        failed_images.update(thread.join())
+    return failed_images
