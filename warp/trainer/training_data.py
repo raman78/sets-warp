@@ -266,6 +266,20 @@ class TrainingDataManager:
         self._dirty = False
         logger.info(f"Training data saved to {self._dir}")
 
+    def _migrate_clear_ship_name_text(self) -> None:
+        """One-time migration: clear stored text from Ship Name annotations.
+        Ship Name is position-only — content was never meant to be persisted.
+        """
+        changed = False
+        for anns in self._annotations.values():
+            for ann in anns:
+                if ann.get('slot') == 'Ship Name' and ann.get('name', '').strip():
+                    ann['name'] = ''
+                    changed = True
+        if changed:
+            logger.info(f'Migrated {sum(1 for a in (ann for anns in self._annotations.values() for ann in anns) if ann.get("slot") == "Ship Name")} Ship Name annotations — text cleared')
+            self.save()
+
     def _load(self):
         ann_path = self._dir / self.ANNOTATIONS_FILE
         if ann_path.exists():
@@ -274,6 +288,7 @@ class TrainingDataManager:
                     self._annotations = json.load(f)
             except Exception as e:
                 logger.warning(f"Could not load annotations: {e}")
+        self._migrate_clear_ship_name_text()
 
         idx_path = self._dir / self.CROP_INDEX_FILE
         if idx_path.exists():
