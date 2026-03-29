@@ -44,6 +44,7 @@ _MODEL_FILES          = [           # files to download from HF knowledge repo
     ('models/model_version.json',           'model_version.json'),
     ('models/screen_classifier.pt',          'screen_classifier.pt'),
     ('models/screen_classifier_labels.json', 'screen_classifier_labels.json'),
+    ('models/community_anchors.json',           'community_anchors.json'),        # P11 — optional
 ]
 # Used only for the one-time "download if missing" fallback
 _SCREEN_CLASSIFIER_FILES = [
