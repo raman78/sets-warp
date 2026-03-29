@@ -140,7 +140,6 @@ WARP CORE opens as a separate window with three panels.
 |--------|--------|
 | **Detect Screen Types** | Classifies every screenshot in the folder using the MobileNetV3-Small screen classifier (Equipment / Traits / Boffs / Specializations / Mixed). Runs automatically when you open a folder — use the button to re-run it manually if you rename or replace files. Files you have already confirmed with a checkmark are skipped. |
 | **Auto-Detect Slots** | Re-runs the full recognition pipeline on the **currently selected screenshot**. Items you have already confirmed are preserved and used as seeds for icon matching — only unconfirmed slots are re-processed. Use this after correcting a few items to let WARP retry the remaining ones with better context. |
-| **Train Model** | Fine-tunes the local EfficientNet-B0 icon classifier on all confirmed crops in `warp/training_data/`. See [Training the ML model](#6-training-the-ml-model). |
 
 ---
 
@@ -303,71 +302,51 @@ If you confirm an item into a slot that already has a confirmed item at the same
 
 ---
 
-## 6. Training the ML model
+## 6. Community model — how it works
 
-### What training does
+### Architecture
 
-WARP uses an **EfficientNet-B0** image classifier to recognise item icons. Every time you confirm an annotation in WARP CORE, the icon crop and its label are saved to `warp/training_data/`. Clicking **Train Model** fine-tunes the classifier on all confirmed crops so it recognises those icons more accurately in future imports.
+WARP uses a central **EfficientNet-B0** icon classifier trained on crops contributed by all users.
+There is no local training — the model is trained once per hour by the community pipeline and
+automatically downloaded to your installation.
 
-### When to train
+### Your contribution
 
-Train after accumulating a meaningful number of new confirmations — typically:
-- First time: after confirming 30–50 items across several screenshots
-- Ongoing: after each session where you corrected 10+ items
+Every time you confirm an item annotation in WARP CORE, the icon crop is queued for upload to
+HuggingFace (`sets-sto/sto-icon-dataset`). The upload happens automatically in the background
+every 5 minutes when a HuggingFace token is configured.
 
-There is no harm in training more often, but each training run takes 1–5 minutes (CPU-only).
+**What is sent:** Only the icon crop image (small PNG, ~64×64 px) and its label (item name +
+slot type). No screenshots, no ship names, no personal data.
 
-### How to run Train Model
+### Model update
 
-1. Click **Train Model** in the WARP CORE toolbar.
-2. A progress dialog shows: epoch number, loss, and validation accuracy.
-3. When training completes, a summary shows the final accuracy and number of classes.
-4. The updated model is saved to `warp/models/icon_classifier.pt` and used immediately for the next import.
+A new model is trained hourly on GitHub Actions using all community crops. Your installation
+checks for updates every 15 minutes (while WARP CORE is open) and downloads the new
+`icon_classifier.pt` automatically if a newer version is available.
 
-<!-- screenshot: WARP CORE Train Model progress dialog mid-training -->
-
-### Training parameters (internal)
-
-| Parameter | Value |
-|-----------|-------|
-| Architecture | EfficientNet-B0 |
-| Input size | 64×64 px (item icon crop) |
-| Epochs | 20 (early stop on plateau) |
-| Optimizer | Adam, lr=1e-4 |
-| Loss | Focal loss (handles class imbalance) |
-| Batch size | 32 |
-| Device | CPU (GPU if available) |
-
-### Local vs community model
-
-SETS-WARP has two model sources:
-
-| Source | File | Updated by |
-|--------|------|-----------|
-| **Local model** | `warp/models/icon_classifier.pt` | You, via Train Model |
-| **Community model** | Downloaded from HuggingFace | Automatically, from all users |
-
-The local model always takes priority after you train. It is personalised to your screenshot style, resolution, and the specific items in your builds.
-
-The community model is downloaded at startup if a newer version is available (checked once per 24 hours). It is used as the baseline before your local model exists, and as a fallback for items you have never confirmed.
+| File | Source | Update interval |
+|------|--------|----------------|
+| `warp/models/icon_classifier.pt` | Community pipeline (HuggingFace) | Every 15 min check |
+| `warp/models/screen_classifier.pt` | Community pipeline (HuggingFace) | Every 15 min check |
 
 ---
 
-## 7. Community model sync
+## 7. Community sync details
 
-### How it works
+### What is sent to HuggingFace
 
-When you confirm an item in WARP CORE, the icon crop is sent anonymously to a shared community server (`sets-warp-backend` on Render). The server collects contributions from all users and merges them using majority vote per icon hash. A central EfficientNet model is retrained hourly from the merged dataset and published to HuggingFace.
-
-Your SETS-WARP instance downloads the updated community model once per 24 hours in the background (8 seconds after launch) if a newer version is available.
-
-### What is sent
-
-- The icon crop image (64×64 px) — just the item icon, no screenshot, no personal data
-- The item name you confirmed
+- The icon crop image (small PNG, ~64×64 px) — just the item icon, cropped from your screenshot
+- The item name and slot type you confirmed
 - An anonymous installation ID (random UUID, generated at first launch, stored locally)
 
-No username, account information, or screenshot content is ever transmitted.
+No username, account information, full screenshots, or ship names are ever transmitted.
+
+### Privacy note for Ship Name bbox
+
+If you draw a bbox over the ship name text in WARP CORE, the **position** (coordinates) is saved
+locally in `annotations.json` for layout learning. The **text content** is never saved as a crop
+and never uploaded — ship names are treated as personal data.
 
 ---
 
@@ -409,7 +388,7 @@ After import, the ship dropdown in SETS shows what WARP detected. Click the drop
 
 ### Recognition accuracy is low on first use
 
-On a fresh install, WARP uses the community model. If you have unusual items, high-resolution screenshots, or a non-standard UI scale, accuracy may be lower initially. Run a few imports and confirm the results in WARP CORE — after training the local model, accuracy improves significantly.
+On a fresh install, WARP uses the community model. If you have unusual items, high-resolution screenshots, or a non-standard UI scale, accuracy may be lower initially. Run a few imports and confirm the results in WARP CORE — your confirmed crops are uploaded to the community dataset, and the model improves as more users contribute.
 
 ### "???" items after import
 
@@ -418,7 +397,7 @@ Items shown as "???" have a confidence below the minimum threshold (40%). They w
 2. Find the ??? item in the review list (shown in red).
 3. Type the correct item name in the Item field.
 4. Accept.
-5. Repeat for all ??? items, then run **Train Model**.
+5. Repeat for all ??? items — confirmed crops will be uploaded automatically and help improve future recognition.
 
 ### Import is slow
 
