@@ -4,8 +4,8 @@
 # Now with Dynamic Layout Learning — learns from user-confirmed data.
 #
 # Detection strategy:
-#   1. Image-analysis (primary): detect dark separators + right edge automatically
-#   2. Learned Layouts (secondary): Match current screen against known confirmed patterns
+#   1. Learned Layouts: Match current screen against known confirmed patterns (anchors.json)
+#   2. Pixel analysis: detect dark separators + right edge automatically
 #   3. OCR labels (fallback): if analysis fails, fall back to label positions
 #   4. Default Anchors (last resort): use calibrated relative positions
 
@@ -29,7 +29,6 @@ OCR_CONF_THRESHOLD = 0.40
 LABEL_FUZZY_CUTOFF = 0.68
 # Calibration file is stored in training_data
 CALIBRATION_FILE   = Path('warp') / 'training_data' / 'anchors.json'
-LAYOUT_MODEL_PATH  = Path('warp') / 'models' / 'layout_regressor.pt'
 
 # Slot order for space builds
 # Slot names must match warp_importer.py SPACE_SLOT_ORDER exactly
@@ -83,12 +82,6 @@ class LayoutDetector:
             return self._detect_boffs(img)
         if build_type == 'SPEC':
             return self._detect_spec(img)
-
-        # ── Strategy 0: CNN Layout Regression (P4) ────────────────────────────
-        cnn_layout = self._detect_via_cnn(img, build_type)
-        if cnn_layout:
-            _slog.info(f'LayoutDetector: Strategy 0 (CNN) found {len(cnn_layout)} slot groups')
-            return cnn_layout
 
         profile = ship_profile or {}
         if build_type == 'GROUND':
@@ -756,153 +749,3 @@ class LayoutDetector:
         if cfile:
             cfile.parent.mkdir(parents=True, exist_ok=True)
             cfile.write_text(json.dumps(self._calibration, indent=2))
-    def infer_build_type(self, img: np.ndarray) -> str | None:
-        """Use the CNN layout regressor to infer the most likely WarpImporter build_type.
-
-        Scores each candidate type by average slot presence score.  Returns the
-        winning build_type when its score >= 0.35, otherwise None (caller should
-        fall back to a sensible default).
-        """
-        if not LAYOUT_MODEL_PATH.exists():
-            return None
-        try:
-            import torch
-            import cv2
-            from warp.trainer.layout_trainer import LayoutRegressor, REGRESSOR_SLOTS
-
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            model = LayoutRegressor()
-            model.load_state_dict(
-                torch.load(str(LAYOUT_MODEL_PATH), map_location=device, weights_only=True))
-            model.to(device).eval()
-
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            blob = cv2.resize(gray, (224, 224)).astype(np.float32) / 255.0
-            t_inp = torch.from_numpy(blob).unsqueeze(0).unsqueeze(0).to(device)
-            with torch.no_grad():
-                pred = model(t_inp).squeeze(0).cpu().numpy()
-
-            # Representative slots for each WarpImporter build_type.
-            # These are the "signature" slots whose presence best distinguishes each type.
-            _TYPE_SLOTS = {
-                'SPACE':         ['Fore Weapons', 'Deflector', 'Engines', 'Warp Core', 'Shield',
-                                  'Aft Weapons', 'Universal Consoles', 'Engineering Consoles',
-                                  'Science Consoles', 'Tactical Consoles'],
-                'GROUND':        ['Body Armor', 'Personal Shield', 'Weapons', 'Kit', 'Kit Modules'],
-                'SPACE_TRAITS':  ['Personal Space Traits', 'Starship Traits', 'Space Reputation'],
-                'GROUND_TRAITS': ['Personal Ground Traits', 'Ground Reputation'],
-                'BOFFS':         ['Boff Tactical', 'Boff Engineering', 'Boff Science',
-                                  'Boff Operations', 'Boff Intelligence'],
-                'SPEC':          ['Primary Specialization', 'Secondary Specialization'],
-            }
-            slot_idx = {name: i for i, name in enumerate(REGRESSOR_SLOTS)}
-
-            best_type, best_score = None, 0.0
-            for bt, slots in _TYPE_SLOTS.items():
-                scores = [float(pred[slot_idx[s] * 5 + 4]) for s in slots if s in slot_idx]
-                if not scores:
-                    continue
-                score = sum(scores) / len(scores)
-                _slog.debug(f'LayoutDetector.infer: {bt} score={score:.2f}')
-                if score > best_score:
-                    best_score, best_type = score, bt
-
-            MIN_CONF = 0.35
-            if best_type and best_score >= MIN_CONF:
-                _slog.info(f'LayoutDetector.infer_build_type: {best_type!r} (score={best_score:.2f})')
-                return best_type
-            _slog.info(f'LayoutDetector.infer_build_type: below threshold '
-                       f'(best={best_type!r} score={best_score:.2f})')
-            return None
-        except Exception as e:
-            _slog.warning(f'LayoutDetector.infer_build_type: {e}')
-            return None
-
-    def _detect_via_cnn(
-        self,
-        img: np.ndarray,
-        build_type: str
-    ) -> dict[str, list[tuple[int, int, int, int]]] | None:
-        """
-        P4 Strategy: Use the MobileNetV3-Small regressor to predict all slots at once.
-        Requires layout_regressor.pt and torch.
-        """
-        if not LAYOUT_MODEL_PATH.exists():
-            return None
-
-        try:
-            import torch
-            import cv2
-            from warp.trainer.layout_trainer import LayoutRegressor, REGRESSOR_SLOTS, NUM_SLOTS
-            
-            # Load model (cached if possible in a real app, but for now we load)
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            model = LayoutRegressor()
-            model.load_state_dict(torch.load(str(LAYOUT_MODEL_PATH), map_location=device, weights_only=True))
-            model.to(device).eval()
-            
-            # Preprocess
-            h, w = img.shape[:2]
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            blob = cv2.resize(gray, (224, 224)).astype(np.float32) / 255.0
-            t_inp = torch.from_numpy(blob).unsqueeze(0).unsqueeze(0).to(device)
-            
-            # Inference
-            with torch.no_grad():
-                pred = model(t_inp).squeeze(0).cpu().numpy() # [NUM_SLOTS * 5]
-            
-            # Post-process: determine which slots to return
-            # If DEBUG, return everything the network thinks is there (presence > 0.5)
-            if build_type == 'DEBUG':
-                active_filter = REGRESSOR_SLOTS
-            else:
-                # Map WarpImporter build_type to SLOT_GROUPS key (trainer uses different names)
-                _BT_MAP = {
-                    'SPACE':        'SPACE_EQ',
-                    'GROUND':       'GROUND_EQ',
-                    'SPACE_TRAITS': 'TRAITS',
-                    'GROUND_TRAITS':'TRAITS',
-                    'BOFFS':        'BOFFS',
-                    'SPEC':         'SPECIALIZATIONS',
-                    'SPACE_MIXED':  'SPACE_MIXED',
-                    'GROUND_MIXED': 'GROUND_MIXED',
-                }
-                from warp.trainer.trainer_window import SLOT_GROUPS
-                active_filter = SLOT_GROUPS.get(_BT_MAP.get(build_type, build_type), REGRESSOR_SLOTS)
-            
-            result = {}
-            for i, slot_name in enumerate(REGRESSOR_SLOTS):
-                if slot_name not in active_filter:
-                    continue
-                
-                # Get [nx, ny, nw, nh, presence]
-                nx, ny, nw, nh, pres = pred[i*5 : i*5+5]
-                
-                # Primary filter: Network confidence (presence bit)
-                # We use 0.5 as threshold for binary classification
-                if pres < 0.5:
-                    continue
-                
-                # Safety fallback: skip tiny/degenerate boxes
-                if nw < 0.01 or nh < 0.01:
-                    continue
-                
-                # Denormalize to pixel coordinates
-                px = int(nx * w)
-                py = int(ny * h)
-                pw = int(nw * w)
-                ph = int(nh * h)
-                
-                # Simple validation: center must be within image
-                if px < 0 or py < 0 or px > w or py > h:
-                    continue
-
-                if slot_name not in result:
-                    result[slot_name] = []
-                result[slot_name].append((px, py, pw, ph))
-            
-            return result if result else None
-            
-        except Exception as e:
-            log.warning(f"Strategy 0 (CNN) failed: {e}")
-            return None

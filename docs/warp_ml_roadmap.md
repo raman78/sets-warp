@@ -1,7 +1,7 @@
 # WARP ML Roadmap — Layout + Content Recognition
 
-**Updated:** 2026-03-28
-**Status:** v2.2 — P0–P9 complete. All roadmap items done.
+**Updated:** 2026-03-29
+**Status:** v2.3 — P0–P10 complete. P11 planned (community anchors.json).
 
 ---
 
@@ -185,6 +185,161 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 
 ---
 
+---
+
+### 🔵 P10 — Remove layout CNN entirely
+
+**Why:** The MobileNetV3-Small layout regressor (P4, `layout_regressor.pt`) is trained only on the local user's confirmed annotations — typically 5–20 annotated screenshots. A regressor predicting 210 output values (105 slots × 2 coordinates) needs hundreds of training examples to generalise. With < 20 examples it simply memorises the pixel coordinates of screenshots it has already seen. This is identical to what `anchors.json` (Strategy 1) already does, but slower and less debuggable.
+
+**Critical limitation:** Layout data never reaches the central training pipeline. `SyncWorker` uploads only crops (icon images), not screenshots. So the CNN trains locally, stays locally, and produces no ecosystem benefit. Every user starts from scratch.
+
+**What to remove:**
+
+| File | Action |
+|------|--------|
+| `warp/trainer/layout_dataset_builder.py` | Delete entirely |
+| `warp/trainer/layout_trainer.py` | Delete entirely |
+| `warp/trainer/local_trainer.py` | Delete entirely (no icon training, no layout training) |
+| `warp/recognition/layout_detector.py` | Remove Strategy 0: `_detect_via_cnn()`, `_load_cnn()`, `_cnn_model` field |
+| `warp/trainer/trainer_window.py` | Remove "Train Layout Model" toolbar action + `_on_train`, `_on_train_finished`, `_on_train_cancelled`, `_TrainProgressDialog` |
+| `warp/models/layout_regressor.pt` | Delete if present |
+
+**What stays unchanged:**
+- Strategy 1 (`anchors.json` learned layouts) — still fully functional
+- Strategy 2 (pixel analysis)
+- Strategy 3 (OCR labels)
+- Strategy 4 (static fallback anchors)
+- P5 (anchor recalibration on high-conf icon matches) — still useful
+
+**Verification (Claude-side):**
+1. `grep -r "_detect_via_cnn\|layout_regressor\|LayoutDatasetBuilder\|LocalTrainWorker\|layout_trainer" warp/` → 0 results
+2. `python -c "from warp.recognition.layout_detector import LayoutDetector; print('OK')"` → no import error
+3. `python -c "from warp.trainer.trainer_window import WarpCoreWindow; print('OK')"` → no import error
+4. Verify `anchors.json` Strategy 1 still fires: add `log.debug("Strategy 1: learned layout")` if needed, confirm it appears in log on second run of same resolution screenshot
+
+**Cleanup:** Remove `_KEY_TRAIN_REPEATS` and any remaining `warp/trainer/model_updater.py` references to `layout_regressor.pt` if any exist.
+
+---
+
+### 🔵 P11 — Community anchors.json
+
+**Why:** Layout detection is currently the weakest link. Strategies 1–4 all fail in some scenario:
+- Strategy 1: only works if the exact same resolution was previously confirmed
+- Strategy 2: only counts icons, doesn't know slot order
+- Strategy 3: OCR is slow and unreliable on compressed screenshots
+- Strategy 4: static anchors are wrong for any non-standard window size
+
+**The key insight:** Bbox grid data (normalized [0,1] slot coordinates per build type and aspect ratio) contains **no visual content** — just numbers. It can be sent to the central server without privacy concerns. If 10 different users confirm layouts for `SPACE_EQ` at 16:9, we can aggregate their grids (slot-wise median) to produce a robust community layout that works for any new user with the same screen ratio.
+
+**Architecture:**
+
+```
+User confirms bboxes in WARP CORE
+  → SyncWorker uploads crop PNGs to HF (existing P-crops pipeline)
+  → SyncWorker ALSO uploads anchors_grid.json entry (new P11 addition)
+
+admin_train.py (hourly GitHub Actions)
+  → collects all anchors_grid.json entries from staging/<install_id>/
+  → groups by (build_type, aspect_ratio_bucket)
+  → computes slot-wise median per group (min 3 contributors)
+  → writes community_anchors.json
+  → uploads community_anchors.json to HF sets-sto/warp-knowledge
+
+model_updater.py (client, every 15 min check)
+  → downloads community_anchors.json alongside icon_classifier.pt
+  → saves to warp/models/community_anchors.json
+
+layout_detector.py Strategy 1 (updated)
+  → first checks local anchors.json (user's own confirmed layouts)
+  → if no local match → tries community_anchors.json (new)
+  → key format: "<build_type>_<aspect_w>x<aspect_h>" (e.g. "SPACE_EQ_16x9")
+```
+
+**Implementation steps:**
+
+1. **`sync.py` — upload anchors grid alongside crops**
+   - After collecting confirmed annotations, build a per-screenshot grid dict:
+     ```json
+     {
+       "build_type": "SPACE_EQ",
+       "aspect": "16x9",
+       "resolution": [1920, 1080],
+       "slots": {
+         "Fore Weapons 1": [0.123, 0.456, 0.045, 0.060],
+         "Deflector": [0.210, 0.320, 0.045, 0.060]
+       }
+     }
+     ```
+     All coords normalized to [0,1] relative to screenshot size. No image data.
+   - Upload as `staging/<install_id>/anchors_grid_<sha8>.json` to HF dataset
+   - Only upload if ≥ 3 distinct slots confirmed on that screenshot
+
+2. **`admin_train.py` — aggregate grids**
+   - After training (or independently), scan `staging/*/anchors_grid_*.json`
+   - Group by `(build_type, aspect)` — parse aspect from string `"16x9"` → bucket W:H
+   - For each group with ≥ 3 distinct `install_id` contributors:
+     - For each slot in the union, collect all [nx, ny, nw, nh] vectors
+     - Median per component (robust to outliers)
+   - Write `community_anchors.json`:
+     ```json
+     {
+       "generated_at": "2026-03-29T12:00:00Z",
+       "n_contributors": 7,
+       "grids": {
+         "SPACE_EQ_16x9": {
+           "Fore Weapons 1": [0.123, 0.456, 0.045, 0.060],
+           ...
+         }
+       }
+     }
+     ```
+   - Upload to `models/community_anchors.json` in HF
+
+3. **`model_updater.py` — add to download list**
+   - Add `('models/community_anchors.json', 'community_anchors.json')` to `_MODEL_FILES`
+   - File is optional (no crash if missing on HF — old installs still work)
+
+4. **`layout_detector.py` — use community anchors as Strategy 1b**
+   - In `_try_learned_layout()`, after failing local `anchors.json` lookup:
+     ```python
+     community = self._load_community_anchors()
+     if community:
+         grid = community.get(f"{build_type}_{aspect_key}")
+         if grid:
+             return self._grid_to_layout(grid, img_w, img_h)
+     ```
+   - `_load_community_anchors()`: reads `warp/models/community_anchors.json`, caches in-memory, returns None on any error
+
+**Verification (Claude-side):**
+
+1. After P11 `sync.py` change: `grep -n "anchors_grid" warp/trainer/sync.py` → finds upload call
+2. After `admin_train.py` change: dry-run locally against test staging data → prints `community_anchors.json` contents to stdout
+3. After `model_updater.py` change: `grep "community_anchors" warp/trainer/model_updater.py` → file in `_MODEL_FILES`
+4. After `layout_detector.py` change: mock `community_anchors.json` with known coords, run `LayoutDetector._try_learned_layout()` on a fresh install (no local `anchors.json`) → verify it returns the community coords
+
+**Learning speed analysis:**
+
+| Users with confirmed layouts | Aspect ratio coverage | Community anchor quality | Expected outcome |
+|-----------------------------|-----------------------|-------------------------|-----------------|
+| < 3 | Any | Not generated (min threshold) | Falls through to pixel analysis |
+| 3–5 | 16:9 only | Median of 3 grids — coarse but functional | ~80% correct slot placement for 16:9 users |
+| 5–10 | 16:9 + 16:10 | Median stable, outliers filtered | New user gets correct layout on first screenshot |
+| 10+ | Most common aspects | High-quality grid with good coverage | Near-zero layout errors for common resolutions |
+| 20+ | All aspects including ultrawide | Full coverage | Strategy 1b effectively solves layout detection |
+
+**At current scale (single developer):** 1 user = 0 community grids (need ≥ 3 distinct install_ids). Community anchors will not activate until the first beta users start confirming layouts. Local `anchors.json` (Strategy 1) remains the primary mechanism until then.
+
+**Privacy note:** Zero visual data. Slots are referenced by name (e.g., `"Fore Weapons 1"`), coordinates are normalized floats. No screenshot content, no filenames, no metadata that could identify the game state.
+
+**Aspect ratio buckets:**
+- 16:9 (1920×1080, 2560×1440, 3840×2160)
+- 16:10 (1920×1200, 2560×1600)
+- 21:9 (3440×1440, 2560×1080)
+- 4:3 (fallback for anything else)
+- Bucket key: reduce `gcd(w, h)` → `"WxH"` string (e.g., `"16x9"`)
+
+---
+
 ## Dependency order (updated)
 
 ```
@@ -198,6 +353,8 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 ✅ P7 (data augmentation)       — DONE
 ✅ P8 (confidence fusion)       — DONE
 ✅ P9 (hard negatives)          — DONE
+✅ P10 (remove layout CNN)      — DONE
+⬜ P11 (community anchors)      — PLANNED  (prerequisite: P10 cleanup)
 ```
 
 ---
@@ -213,21 +370,25 @@ Each point specifies who tests and how:
 
 ## What is NOT broken and should not be changed
 
-- EfficientNet icon classifier — works, improving with more training data
-- MobileNetV3 screen classifier — works well
-- Session examples / seed from training data — effective fallback
+- EfficientNet icon classifier — central training via `admin_train.py`, improving with community crops
+- MobileNetV3 screen classifier — central training only
+- Session examples / seed from `annotations.json` — effective fallback
 - pHash community knowledge — works when populated
-- `learn_layout()` save mechanism — correct
+- `learn_layout()` / `anchors.json` Strategy 1 — correct, stays as primary layout mechanism
+- P5 anchor recalibration on high-conf icon matches — still useful
 - `SLOT_VALID_TYPES` enforcement — already in place in `warp_importer.py`
 
 ---
 
 ## Files involved summary
 
-| File | Pending changes |
-|------|----------------|
-| `warp/trainer/trainer_window.py` | — |
-| `warp/recognition/layout_detector.py` | P8 |
-| `warp/warp_importer.py` | — |
-| `warp/recognition/icon_matcher.py` | P8 |
-| `warp/trainer/local_trainer.py` | P7, P9 |
+| File | P10 action | P11 action |
+|------|-----------|-----------|
+| `warp/trainer/layout_dataset_builder.py` | **DELETE** | — |
+| `warp/trainer/layout_trainer.py` | **DELETE** | — |
+| `warp/trainer/local_trainer.py` | **DELETE** | — |
+| `warp/recognition/layout_detector.py` | Remove Strategy 0 (CNN) | Add Strategy 1b (community anchors) |
+| `warp/trainer/trainer_window.py` | Remove Train Layout Model button | — |
+| `warp/trainer/sync.py` | — | Upload anchors_grid JSON per screenshot |
+| `warp/trainer/model_updater.py` | — | Add community_anchors.json to download list |
+| `sets-warp-backend/admin_train.py` | — | Aggregate grids → community_anchors.json |
