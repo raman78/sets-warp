@@ -287,16 +287,25 @@ class TextExtractor:
                 above.sort(key=lambda x: x[0], reverse=True)  # closest to tier first
 
                 # Ship type = line(s) just above tier + word before tier on same row.
-                # Only use above/same_row when prefix didn't already give us a type —
-                # prefix is more reliable (same OCR token as tier).
-                if not result['ship_type']:
-                    type_parts = []
-                    if above:
-                        type_parts.append(above[0][1])
+                # Strategy:
+                # - Filter above tokens: skip known screen section headers
+                #   (e.g. 'Personal Space Traits') that are never part of ship name.
+                # - If valid above token remains, prepend it to prefix (handles OCR
+                #   splitting a long ship name across multiple tokens).
+                # - If no valid above token, use prefix as-is (already set above).
+                # - If neither prefix nor valid above, fall back to same_row.
+                _SECTION_HEADER_RE = re.compile(
+                    r'\b(traits|reputation|abilities|bridge.?officer|boff|'
+                    r'equipment|consoles?|weapons?|devices?|kit\b|armor)\b',
+                    re.IGNORECASE
+                )
+                above_clean = [t for _, t in above if not _SECTION_HEADER_RE.search(t)]
+                prefix_type = result['ship_type']
+                if above_clean:
+                    result['ship_type'] = (above_clean[0] + ' ' + prefix_type).strip() if prefix_type else above_clean[0]
+                elif not prefix_type:
                     if same_row:
-                        type_parts.extend(same_row)
-                    if type_parts:
-                        result['ship_type'] = ' '.join(type_parts).strip()
+                        result['ship_type'] = ' '.join(same_row).strip()
 
                 # Ship name: look for U.S.S./I.S.S./R.R.W. pattern anywhere in band
                 # or topmost token if no pattern match

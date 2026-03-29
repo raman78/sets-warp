@@ -302,12 +302,12 @@ class WarpDialog(QDialog):
         n_detected   = len(result.items)
         n_imported   = sum(1 for i in result.items if i.name)
         n_unmatched  = n_detected - n_imported
-        ship_info    = result.ship_name or 'Unknown ship'
+        ship_info    = result.ship_type or 'Unknown ship'
         msg = (
             f"Detected {n_detected} item slot(s)\n"
             f"Identified and imported: {n_imported}\n"
             f"Unmatched (skipped): {n_unmatched}\n\n"
-            f"Ship: {ship_info} {result.ship_type} {result.ship_tier}"
+            f"Ship: {ship_info} {result.ship_tier}"
         )
         QMessageBox.information(self, "WARP — Import Complete", msg)
         self.accept()
@@ -341,10 +341,7 @@ class WarpDialog(QDialog):
             from src.buildupdater import clear_ship
             build   = self._sets.build['space']
             widgets = self._sets.widgets
-            # Always update free-text ship name from detection
-            if r.ship_name:
-                build['ship_name'] = r.ship_name
-                widgets.ship['name'].setText(r.ship_name)
+            # ship_name is privacy-sensitive (player-given name) — not written to SETS
             # Always select ship class from detection; clear if not recognized
             if r.ship_type:
                 from difflib import get_close_matches
