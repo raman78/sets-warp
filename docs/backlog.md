@@ -17,7 +17,7 @@ Items here are not yet scheduled. Each has a status and open questions to resolv
 - `SyncWorker._upload()` calls `get_confirmed_crops()` → Ship Name content is never uploaded to HF.
 - Bbox coordinates are saved locally in `annotations.json` for layout anchoring only.
 
-**Decision:** Keep bbox (position + OCR text available locally, content never leaves the device).
+**Decision:** Keep bbox (position used for P11 layout anchors). User cannot edit the name — field disabled, OCR reads it automatically. Implemented 2026-03-29.
 
 ---
 
