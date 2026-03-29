@@ -44,7 +44,6 @@ log = logging.getLogger(__name__)
 
 _KEY_LAST_DIR       = 'warp_core/last_dir'
 _KEY_HF_TOKEN       = 'warp_core/hf_token'
-_KEY_TRAIN_DLG_SIZE = 'warp_core/train_dlg_size'
 _KEY_AUTO_ACCEPT    = 'warp_core/auto_accept_enabled'
 _KEY_AUTO_CONF      = 'warp_core/auto_accept_conf'
 
@@ -439,21 +438,10 @@ class RecognitionWorker(QThread):
         }
         importer_type = _STYPE_MAP.get(self._stype)   # None → UNKNOWN
 
-        # CNN-based inference for UNKNOWN screens and to distinguish SPACE_TRAITS vs GROUND_TRAITS
-        if importer_type is None or self._stype == 'TRAITS':
-            try:
-                from warp.recognition.layout_detector import LayoutDetector
-                inferred = LayoutDetector().infer_build_type(img)
-                if importer_type is None:
-                    importer_type = inferred or 'SPACE'
-                    _slog.info(f'RecognitionWorker: UNKNOWN screen — CNN inferred {importer_type!r}')
-                elif inferred in ('SPACE_TRAITS', 'GROUND_TRAITS'):
-                    importer_type = inferred
-                    _slog.info(f'RecognitionWorker: TRAITS screen — CNN refined to {inferred!r}')
-            except Exception as _ie:
-                if importer_type is None:
-                    importer_type = 'SPACE'
-                _slog.debug(f'RecognitionWorker: infer_build_type failed: {_ie}')
+        # UNKNOWN screens default to SPACE; TRAITS screens stay as SPACE_TRAITS
+        if importer_type is None:
+            importer_type = 'SPACE'
+            _slog.info(f'RecognitionWorker: UNKNOWN screen — defaulting to SPACE')
 
         _slog.info(f'RecognitionWorker: start {self._path.name} stype={self._stype} → importer={importer_type}')
 
@@ -581,91 +569,6 @@ class _RecognitionProgressDialog(QWidget):
         lay.addWidget(bar)
         lay.addLayout(btn_row)
 
-class _TrainProgressDialog(QWidget):
-    cancelled = Signal()
-    def __init__(self, parent=None):
-        super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
-        self.setWindowTitle('WARP CORE — Training')
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self._settings = QSettings()
-        size = self._settings.value(_KEY_TRAIN_DLG_SIZE, QSize(620, 500))
-        self.resize(size)
-        self._finished = False
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(8)
-        apply_dark_style(self)
-        self._title = QLabel('Training in progress...')
-        self._title.setFont(QFont('', 11, QFont.Weight.Bold))
-        self._title.setStyleSheet(f'color:{ACCENT};')
-        self._status_lbl = QLabel('Starting...')
-        self._status_lbl.setStyleSheet(f'color:{MFG};font-size:10px;')
-        self._status_lbl.setWordWrap(True)
-        self._bar = QProgressBar()
-        self._bar.setRange(0, 100)
-        self._bar.setValue(0)
-        self._log = QPlainTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setStyleSheet(
-            f'color:{MFG};font-size:10px;font-family:monospace;'
-            f'background:{BG};border:1px solid {LBG};padding:3px;border-radius:2px;')
-        self._btn_cancel = QPushButton('Cancel')
-        self._btn_cancel.setFixedWidth(80)
-        self._btn_cancel.clicked.connect(self.cancelled.emit)
-        self._btn_close = QPushButton('Close')
-        self._btn_close.setFixedWidth(80)
-        self._btn_close.setEnabled(False)
-        self._btn_close.clicked.connect(self.close)
-        from warp.ui_helpers import time_spent_counter
-        self._time_lbl, self._clock = time_spent_counter(self)
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(self._time_lbl)
-        btn_row.addStretch()
-        btn_row.addWidget(self._btn_cancel)
-        btn_row.addWidget(self._btn_close)
-        lay.addWidget(self._title)
-        lay.addWidget(self._status_lbl)
-        lay.addWidget(self._bar)
-        lay.addWidget(self._log, 1)
-        lay.addLayout(btn_row)
-        self._clock.start(1000)
-
-    def update_progress(self, pct: int, message: str):
-        self._bar.setValue(pct)
-        self._status_lbl.setText(message)
-        self._log.appendPlainText(f'[{pct:3d}%] {message}')
-        self._log.ensureCursorVisible()
-        try:
-            from src.setsdebug import log as _sl; _sl.info(f'Train [{pct:3d}%] {message}')
-        except Exception: pass
-
-    def mark_finished(self, success: bool, message: str):
-        """Call when training is done — switches Cancel→Close, updates title."""
-        self._finished = True
-        self._clock.stop()
-        self._btn_cancel.setEnabled(False)
-        self._btn_close.setEnabled(True)
-        if success:
-            self._title.setText('✅ Training complete')
-            self._title.setStyleSheet(f'color:{C_SUCCESS};')
-        else:
-            self._title.setText('❌ Training failed')
-            self._title.setStyleSheet(f'color:{C_FAILURE};')
-        self._log.appendPlainText('')
-        self._log.appendPlainText('─' * 60)
-        self._log.appendPlainText(message)
-        self._log.ensureCursorVisible()
-        try:
-            from src.setsdebug import log as _sl; _sl.info(f'Train finished — {message}')
-        except Exception: pass
-
-    def closeEvent(self, event):
-        if not self._finished:
-            # Still running — treat as cancel
-            self.cancelled.emit()
-        self._settings.setValue(_KEY_TRAIN_DLG_SIZE, self.size())
-        super().closeEvent(event)
-
 class WarpCoreWindow(QMainWindow):
     BOFF_ABILITY_PROPERTIES: dict[str, tuple[str, str]] = {
         "Beams: Fire at Will": ("Tactical", "Space"), "Beams: Overload": ("Tactical", "Space"),
@@ -724,7 +627,6 @@ class WarpCoreWindow(QMainWindow):
         self._sync_client = None
         self._sync_timer = None
         self._init_sync_client()
-        self._train_worker = None
         self._detect_worker = None
         self._suppress_next_focus_popup = False  # set True after programmatic setFocus
         self._recog_worker = None
@@ -732,7 +634,6 @@ class WarpCoreWindow(QMainWindow):
         self._recog_dlg = None
         self._sync_worker  = None
         self._pending_sync = False   # set True when confirmed data changes; timer flushes
-        self._train_dlg = None
         self._selection_just_changed = False
         self.setWindowTitle('WARP CORE — ML Trainer')
         self.setMinimumSize(1280, 740)
@@ -979,14 +880,8 @@ class WarpCoreWindow(QMainWindow):
         self._btn_remove_item = QPushButton('- Remove BBox')
         self._btn_remove_item.setStyleSheet(danger_btn_style())
         self._btn_remove_item.clicked.connect(self._on_remove_item)
-        self._btn_debug_cnn = QPushButton('Layout View OFF')
-        self._btn_debug_cnn.setCheckable(True)
-        self._btn_debug_cnn.setStyleSheet(toggle_yellow_btn_style())
-        self._btn_debug_cnn.setToolTip('Show ghost overlay of CNN (P4) predicted slot positions')
-        self._btn_debug_cnn.clicked.connect(self._on_debug_cnn_toggle)
         mgmt.addWidget(self._btn_add_bbox)
         mgmt.addWidget(self._btn_remove_item)
-        mgmt.addWidget(self._btn_debug_cnn)
         pl.addLayout(mgmt)
         self._manual_mode_lbl = QLabel('')
         self._manual_mode_lbl.setStyleSheet(f'color:{C_WARNING};font-size:10px;background:{MBG};border:1px solid {LBG};border-radius:3px;padding:3px;')
@@ -1011,7 +906,6 @@ class WarpCoreWindow(QMainWindow):
         act('Open Folder', 'Open screenshots folder', self._on_open)
         act('Detect Screen Types', 'Re-classify screen types', self._on_detect_screen_types)
         act('Auto-Detect Slots', 'Auto-detect icons', self._on_auto_detect)
-        act('Train Layout Model', 'Train local layout regressor from confirmed annotations', self._on_train)
 
     def _on_open(self):
         last = self._settings.value(_KEY_LAST_DIR, '')
@@ -1408,11 +1302,6 @@ class WarpCoreWindow(QMainWindow):
         for ri in self._recognition_items:
             self._add_review_row(ri['name'], ri['slot'], ri.get('conf', 0.0), confirmed=(ri.get('state') == 'confirmed'), cross_check_failed=ri.get('cross_check_failed', False))
         self._ann_widget.set_review_items(self._recognition_items)
-        # Update CNN debug view if enabled
-        if getattr(self, '_btn_debug_cnn', None) and self._btn_debug_cnn.isChecked():
-            self._run_cnn_debug()
-        else:
-            self._ann_widget.set_cnn_debug_items({})
         self._ann_widget.set_selected_row(-1)
         n = len(self._recognition_items)
         matched = sum(1 for i in self._recognition_items if i.get('name'))
@@ -1598,47 +1487,6 @@ class WarpCoreWindow(QMainWindow):
             self._add_bbox_mode = False
             self._manual_mode_lbl.setVisible(False)
             self._ann_widget.set_draw_mode(False)
-
-    def _on_debug_cnn_toggle(self, checked: bool):
-        self._btn_debug_cnn.setText(f'Layout View {"ON" if checked else "OFF"}')
-        if checked:
-            self._run_cnn_debug()
-        else:
-            self._ann_widget.set_cnn_debug_items({})
-
-    def _run_cnn_debug(self):
-        """Run Strategy 0 (CNN) only and show result as ghost overlay."""
-        if self._current_idx < 0: return
-        path = self._screenshots[self._current_idx]
-        stype = self._screen_types.get(path.name, 'UNKNOWN')
-        build_type = self._STYPE_TO_BUILD.get(stype)
-        if not build_type:
-            self.statusBar().showMessage(f'CNN view: current screen type ({stype}) not supported for layout regressor.')
-            self._ann_widget.set_cnn_debug_items({})
-            return
-
-        try:
-            import cv2
-            from warp.recognition.layout_detector import LayoutDetector, LAYOUT_MODEL_PATH
-            if not LAYOUT_MODEL_PATH.exists():
-                self.statusBar().showMessage('Layout View: No model found. Please train (P4 CNN) first.')
-                self._ann_widget.set_cnn_debug_items({})
-                return
-
-            img = cv2.imread(str(path))
-            if img is not None:
-                detector = LayoutDetector()
-                # Run CNN only — strategy 0
-                cnn_layout = detector._detect_via_cnn(img, build_type)
-                if cnn_layout:
-                    self._ann_widget.set_cnn_debug_items(cnn_layout)
-                    self.statusBar().showMessage(f'CNN view: showing predicted bboxes for {build_type}')
-                else:
-                    self.statusBar().showMessage('CNN view: model not loaded or prediction failed.')
-                    self._ann_widget.set_cnn_debug_items({})
-        except Exception as e:
-            self.statusBar().showMessage(f'CNN view error: {e}')
-            self._ann_widget.set_cnn_debug_items({})
 
     def _on_remove_item(self):
         row = self._review_list.currentRow()
@@ -2806,53 +2654,6 @@ class WarpCoreWindow(QMainWindow):
         # Selection from dropdown = immediate confirm, no need to click Accept
         self._on_accept()
         self._review_list.setFocus()
-
-    def _on_train(self):
-        """Train local layout regressor from confirmed UI annotations."""
-        if self._train_worker and self._train_worker.isRunning():
-            return
-        self._train_dlg = _TrainProgressDialog(parent=self)
-        self._train_dlg.cancelled.connect(self._on_train_cancelled)
-        self._train_dlg.show()
-        from warp.trainer.local_trainer import LocalTrainWorker
-        self._train_worker = LocalTrainWorker(
-            data_mgr=self._data_mgr, sets_root=self._sets_root, parent=self)
-        self._train_worker.progress.connect(self._train_dlg.update_progress)
-        self._train_worker.finished.connect(self._on_train_finished)
-        self._train_worker.start()
-
-    def _on_train_cancelled(self):
-        if self._train_worker and self._train_worker.isRunning():
-            self._train_worker.requestInterruption()
-            self._train_worker.wait(3000)
-        if self._train_dlg:
-            self._train_dlg.mark_finished(False, 'Training cancelled by user.')
-            self._train_dlg = None
-        self.statusBar().showMessage('Training cancelled.')
-
-    def _on_train_finished(self, success: bool, message: str):
-        if success:
-            try:
-                self._learn_all_layouts()
-            except Exception as e:
-                log.warning(f"Layout learning failed: {e}")
-            self._recognition_cache.clear()
-            try:
-                from warp.recognition.icon_matcher import SETSIconMatcher
-                SETSIconMatcher.reset_ml_session()
-            except:
-                pass
-            if self._train_dlg:
-                self._train_dlg.mark_finished(True, message)
-                self._train_dlg = None
-            if self._screenshots:
-                from PySide6.QtCore import QTimer
-                QTimer.singleShot(200, lambda: self._start_screen_type_detection("train_finished"))
-        else:
-            if self._train_dlg:
-                self._train_dlg.mark_finished(False, message)
-                self._train_dlg = None
-        self._train_worker = None
 
     def _auto_sync(self):
         """Mark that confirmed data changed — actual upload happens on next timer tick."""

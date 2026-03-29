@@ -86,8 +86,6 @@ class AnnotationWidget(QWidget):
         self._review_items: list[dict] = []
         self._selected_row: int = -1      # row for full edit mode (with handles)
         self._highlighted_row: int = -1   # row for simple highlight (red dotted box)
-        self._cnn_debug_items: dict[str, list[tuple]] = {} # P4: Predicted bboxes
-
         # Hover tooltip state
         self._hover_row:   int   = -1
         self._hover_timer: object = None
@@ -160,9 +158,6 @@ class AnnotationWidget(QWidget):
     def clear_highlight(self):
         self._highlighted_row = -1; self.update()
 
-    def set_cnn_debug_items(self, items: dict[str, list[tuple]]):
-        self._cnn_debug_items = items; self.update()
-
     def clear_pending(self):
         self._pending_bbox = None; self._drawing = False; self._draw_start = None; self._draw_current = None; self.update()
 
@@ -208,12 +203,6 @@ class AnnotationWidget(QWidget):
             ri = self._review_items[self._selected_row]
             self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), True, False)
 
-        # 4. CNN Debug items (P4)
-        if self._cnn_debug_items:
-            for slot, boxes in self._cnn_debug_items.items():
-                for bbox in boxes:
-                    self._draw_cnn_debug_item(painter, bbox, slot)
-
         # In-progress drawing (while dragging)
         if self._drawing and self._draw_start and self._draw_current:
             pen = QPen(DRAW_BBOX_COLOR, DRAW_PEN_WIDTH, Qt.PenStyle.DashLine)
@@ -252,18 +241,6 @@ class AnnotationWidget(QWidget):
             painter.setBrush(QBrush(color))
             for hx, hy in self._handle_positions(rect):
                 painter.drawRect(QRect(hx - h // 2, hy - h // 2, h, h))
-
-    def _draw_cnn_debug_item(self, painter: QPainter, bbox: tuple, slot: str):
-        color = QColor(255, 120, 0, 180) # Orange
-        pen = QPen(color, 1, Qt.PenStyle.DashLine)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        rect = self._img_to_screen_rect(bbox)
-        painter.drawRect(rect)
-        
-        # Mini label
-        painter.setFont(QFont('', 7))
-        painter.drawText(rect.topLeft() + QPoint(2, 9), slot.split()[-1])
 
     # ---------------------------------------------------------------- mouse events
 
