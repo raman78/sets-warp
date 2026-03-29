@@ -74,6 +74,7 @@ class LayoutDetector:
     def __init__(self):
         self._ocr = None
         self._calibration = self._load_calibration()
+        self._community_anchors: list | None = None  # cache for community_anchors.json (P11)
 
     def detect(self, img: np.ndarray, build_type: str, ship_profile: dict | None = None) -> dict[str, list[tuple[int, int, int, int]]]:
         if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
@@ -241,7 +242,12 @@ class LayoutDetector:
                       if e['type'] == build_type and abs(e['aspect'] - aspect) < 0.05]
 
         if not candidates:
-            return None
+            # Strategy 1b: try community anchors (P11)
+            community = self._load_community_anchors()
+            candidates = [e for e in community
+                          if e.get('type') == build_type and abs(e.get('aspect', 0) - aspect) < 0.05]
+            if not candidates:
+                return None
 
         # ── Score each candidate by pixel brightness at predicted Y rows ─────
         # Convert to grayscale once for fast brightness sampling
@@ -324,6 +330,23 @@ class LayoutDetector:
         return result if result else None
 
     # ── Original Logic (truncated for brevity, but kept in final write) ────────
+
+    def _load_community_anchors(self) -> list:
+        """Load community_anchors.json (P11) from warp/models/, cached in-memory."""
+        if self._community_anchors is not None:
+            return self._community_anchors
+        try:
+            p = Path('warp') / 'models' / 'community_anchors.json'
+            if not p.exists():
+                self._community_anchors = []
+                return []
+            data = json.loads(p.read_text(encoding='utf-8'))
+            self._community_anchors = data.get('entries', [])
+            _slog.info(f'LayoutDetector: loaded {len(self._community_anchors)} community anchor entries')
+        except Exception as e:
+            _slog.debug(f'LayoutDetector: community anchors unavailable: {e}')
+            self._community_anchors = []
+        return self._community_anchors
 
     def _detect_traits(self, img, build_type):
         h, w = img.shape[:2]

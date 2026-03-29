@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QCheckBox
 )
 
-from warp.trainer.training_data import TrainingDataManager
+from warp.trainer.training_data import TrainingDataManager, NON_ICON_SLOTS
 
 logger = logging.getLogger(__name__)
 try:
@@ -132,6 +132,7 @@ class SyncWorker(QThread):
             if self._mode in ("upload", "both"):
                 self._upload()
                 self._upload_screen_types()
+                self._upload_anchors_grid()
             if self._mode in ("download", "both"):
                 self._download()
             self.finished.emit(True)
@@ -325,6 +326,80 @@ class SyncWorker(QThread):
             path_in_repo=path_in_repo,
             path_or_fileobj=io.BytesIO(content_bytes),
         ))
+
+    # ---------------------------------------------------------------- anchor grids (P11)
+
+    def _upload_anchors_grid(self):
+        """Upload normalized bbox grid entries from local anchors.json to HF staging (P11)."""
+        anchors_path = Path(self._mgr._dir) / 'anchors.json'
+        if not anchors_path.exists():
+            return
+        try:
+            data = json.loads(anchors_path.read_text(encoding='utf-8'))
+        except Exception:
+            return
+
+        learned = data.get('learned', [])
+        if not learned:
+            return
+
+        from huggingface_hub import HfApi, CommitOperationAdd
+        import io as _io
+        api = HfApi(token=self._token)
+        install_id  = _get_install_id()
+        staging_dir = f"{STAGING_ROOT}/{install_id}"
+
+        cache_file = Path(self._mgr._dir) / '.sync_uploaded_grids.json'
+        try:
+            uploaded_grids: set[str] = set(json.loads(cache_file.read_text()))
+        except Exception:
+            uploaded_grids = set()
+
+        operations: list = []
+        new_hashes:  set[str] = set()
+
+        for entry in learned:
+            build_type = entry.get('type', '')
+            slots = entry.get('slots', {})
+            # Keep only icon slots (skip NON_ICON_SLOTS text labels)
+            icon_slots = {k: v for k, v in slots.items() if k not in NON_ICON_SLOTS}
+            if len(icon_slots) < 3:
+                continue
+
+            payload = {
+                'build_type': build_type,
+                'aspect':     entry.get('aspect'),
+                'resolution': entry.get('res', ''),
+                'slots':      icon_slots,
+            }
+            payload_json = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+            sha8 = hashlib.sha256(payload_json.encode()).hexdigest()[:8]
+
+            if sha8 in uploaded_grids:
+                continue
+
+            operations.append(CommitOperationAdd(
+                path_in_repo=f"{staging_dir}/anchors_grid_{sha8}.json",
+                path_or_fileobj=_io.BytesIO(payload_json.encode()),
+            ))
+            new_hashes.add(sha8)
+
+        if not operations:
+            _slog.debug('HF Sync: no new anchor grids to upload')
+            return
+
+        api.create_commit(
+            repo_id=HF_DATASET_REPO,
+            repo_type=HF_REPO_TYPE,
+            operations=operations,
+            commit_message=f"WARP anchors: {len(operations)} grid entries",
+        )
+        uploaded_grids.update(new_hashes)
+        try:
+            cache_file.write_text(json.dumps(sorted(uploaded_grids)))
+        except Exception:
+            pass
+        _slog.info(f'HF Sync: uploaded {len(operations)} anchor grid entries')
 
     # ---------------------------------------------------------------- screen types
 

@@ -8,7 +8,7 @@ Items here are not yet scheduled. Each has a status and open questions to resolv
 
 ## 1. Ship name bbox — privacy & necessity
 
-**Status: VERIFIED — no action needed**
+**Status: COMPLETE (2026-03-29)**
 
 **Findings (2026-03-29):**
 - `Ship Name` is in `NON_ICON_SLOTS` (`training_data.py` line 48).
