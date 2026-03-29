@@ -2531,7 +2531,8 @@ class WarpCoreWindow(QMainWindow):
             self._populate_ship_type_combo()
         elif is_ship_name:
             self._name_label.setText('Ship Name:')
-            self._name_edit.setPlaceholderText('Ship name (or leave blank)')
+            self._name_edit.setPlaceholderText('Position only — OCR reads this automatically')
+            self._name_edit.setEnabled(False)
         else:
             self._name_label.setText('Item name:')
             self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
