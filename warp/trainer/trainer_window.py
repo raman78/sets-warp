@@ -1741,7 +1741,10 @@ class WarpCoreWindow(QMainWindow):
         if row < 0 or row >= len(self._recognition_items): return
         ri = self._recognition_items[row]
         slot = ri['slot']
-        
+
+        # Ship Name is position-only — discard OCR text, never store content
+        if slot == 'Ship Name':
+            text = ''
         ri['name'] = text
         ri['conf'] = conf
         ri['crop_bgr'] = crop_bgr
