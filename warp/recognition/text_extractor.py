@@ -286,14 +286,17 @@ class TextExtractor:
                          and len(t) > 3]  # skip noise
                 above.sort(key=lambda x: x[0], reverse=True)  # closest to tier first
 
-                # Ship type = line(s) just above tier + word before tier on same row
-                type_parts = []
-                if above:
-                    type_parts.append(above[0][1])
-                if same_row:
-                    type_parts.extend(same_row)
-                if type_parts:
-                    result['ship_type'] = ' '.join(type_parts).strip()
+                # Ship type = line(s) just above tier + word before tier on same row.
+                # Only use above/same_row when prefix didn't already give us a type —
+                # prefix is more reliable (same OCR token as tier).
+                if not result['ship_type']:
+                    type_parts = []
+                    if above:
+                        type_parts.append(above[0][1])
+                    if same_row:
+                        type_parts.extend(same_row)
+                    if type_parts:
+                        result['ship_type'] = ' '.join(type_parts).strip()
 
                 # Ship name: look for U.S.S./I.S.S./R.R.W. pattern anywhere in band
                 # or topmost token if no pattern match

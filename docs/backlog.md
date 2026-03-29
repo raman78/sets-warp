@@ -109,3 +109,54 @@ print('update result:', result)
 See `docs/warp_ml_roadmap.md` for full spec. Prerequisite: P10 (done).
 
 **Status:** Planned, not started.
+
+---
+
+## 7. Ship type recognition — community data collection (opt-in)
+
+**Status: Planned, design decided**
+
+**Context:**
+- OCR reads ship type reliably in most cases (text parsing bug fixed 2026-03-29).
+- When OCR fails entirely → fallback is `_GENERIC_PROFILE` (generic T6 slot counts).
+- Local `Ship Type` annotations in `annotations.json` help only locally — they don't feed
+  any central ML training → currently useless from an ecosystem perspective.
+- STO build screenshots are routinely shared publicly (Discord, Reddit, forums), so
+  privacy concern for ship type text is low. Ship name is the sensitive part.
+
+**Decision:** Add **opt-in** community upload of ship type text crops to HF.
+
+**Design:**
+- New opt-in checkbox in settings: "Contribute ship type recognition data" (default: off).
+- When enabled: `Ship Type` bbox crop (text area only, not full screenshot, not ship name)
+  is uploaded to HF alongside icon crops.
+- `Ship Type` stays in `NON_ICON_SLOTS` when opt-in is off.
+- Central `admin_train.py` uses these crops to improve OCR or train a lightweight
+  ship-type text classifier.
+- Local-only fallback usage of Ship Type annotations (`warp_importer.py` lines 911–928)
+  should be removed — it's cheating without training value.
+
+**Privacy boundary:**
+- Upload: ship type text crop only (e.g. `"Fleet Support Cruiser"`)
+- Never upload: ship name, character name, full screenshot
+
+**Prerequisite:** P11 infrastructure (SyncWorker extension for text crops).
+
+---
+
+## 8. Remove local-only Ship Type annotation fallback in warp_importer.py
+
+**Status: Planned**
+
+**Context:**
+- `warp_importer.py` lines 911–928 read `Ship Type` from local `annotations.json` and
+  use it to call `ShipDB.get_profile()` — bypassing OCR entirely.
+- This is a local-only shortcut that never feeds central training.
+- Philosophy: WARP learns autonomously from community data; local annotation cheats are
+  contrary to this goal.
+
+**Action:** Remove the `Ship Type` annotation read from `_get_ship_from_annotations()`.
+Keep `Ship Name` (used for display only, not for ML) and `Ship Tier` reads if present.
+
+**Prerequisite:** Item 7 (opt-in upload) should be in place first, so recognition quality
+doesn't regress for users who previously relied on this fallback.
