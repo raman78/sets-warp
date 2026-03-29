@@ -907,33 +907,13 @@ class WarpImporter:
             _NON_PROFILE = frozenset({'Ship Name', 'Ship Type', 'Ship Tier',
                                       'Primary Specialization', 'Secondary Specialization'})
             counts: dict[str, int] = {}
-            ship_name_ann = ''
-            ship_type_ann = ''
             for a in ann_list:
                 if a.get('state') != 'confirmed': continue
                 slot = a.get('slot', '')
-                name = a.get('name', '')
-                if slot == 'Ship Name' and name:
-                    ship_name_ann = name
-                elif slot == 'Ship Type' and name:
-                    ship_type_ann = name
-                elif slot and slot not in _NON_PROFILE:
+                if slot and slot not in _NON_PROFILE:
                     counts[slot] = counts.get(slot, 0) + 1
             if counts:
                 _slog.info(f'WarpImporter: confirmed profile from disk for {fname}: {counts}')
-            # If ship name/type found in annotations, try ShipDB for exact profile
-            if ship_name_ann or ship_type_ann:
-                _slog.info(f'WarpImporter: ship from annotations: {ship_name_ann!r} / {ship_type_ann!r}')
-                try:
-                    db_profile = self._get_shipdb().get_profile(ship_name_ann, ship_type_ann)
-                    _slog.info(f'WarpImporter: ShipDB profile from annotations: {dict((k,v) for k,v in db_profile.items() if v)}')
-                    # Merge: ShipDB for exact counts, confirmed annotations as minimum
-                    for slot, count in counts.items():
-                        if count > db_profile.get(slot, 0):
-                            db_profile[slot] = count
-                    return db_profile
-                except Exception as _dbe:
-                    _slog.debug(f'WarpImporter: ShipDB lookup failed: {_dbe}')
             return counts
         except Exception as e:
             _slog.debug(f'WarpImporter: _load_confirmed_profile error: {e}')
