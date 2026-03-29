@@ -3,7 +3,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: # <--- THIS IS THE KEY LINE
+  workflow_dispatch:
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -12,11 +12,23 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      - name: Extract changelog for this release
+        id: changelog
+        run: |
+          # Extract the first version section from CHANGELOG.md
+          # (everything between the first "## v" heading and the second one)
+          awk '/^## v/{if(found) exit; found=1; next} found{print}' CHANGELOG.md \
+            | sed '/^[[:space:]]*$/d' > /tmp/release_notes.md
+          {
+            echo "NOTES<<EOF"
+            cat /tmp/release_notes.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Release ${{ github.ref_name }}
-          body: "Automated release for version ${{ github.ref_name }}"
+          name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.NOTES }}
           prerelease: false
           make_latest: true
         env:
