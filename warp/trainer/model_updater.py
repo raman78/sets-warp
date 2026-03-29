@@ -152,6 +152,13 @@ class ModelUpdater:
                     log.info('ModelUpdater: icon matcher reloaded with new model')
                 except Exception as e:
                     log.warning(f'ModelUpdater: matcher reload failed: {e}')
+                # Reset layout detector community anchors cache (P11)
+                try:
+                    from warp.recognition.layout_detector import LayoutDetector
+                    LayoutDetector.reset_community_anchors_cache()
+                    log.debug('ModelUpdater: community anchors cache cleared')
+                except Exception:
+                    pass
 
                 if on_updated:
                     try:
