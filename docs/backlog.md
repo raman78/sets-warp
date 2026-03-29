@@ -154,17 +154,8 @@ See `docs/warp_ml_roadmap.md` for full spec. Prerequisite: P10 (done).
 
 ## 8. Remove local-only Ship Type annotation fallback in warp_importer.py
 
-**Status: Planned**
+**Status: COMPLETE (2026-03-29)**
 
-**Context:**
-- `warp_importer.py` lines 911–928 read `Ship Type` from local `annotations.json` and
-  use it to call `ShipDB.get_profile()` — bypassing OCR entirely.
-- This is a local-only shortcut that never feeds central training.
-- Philosophy: WARP learns autonomously from community data; local annotation cheats are
-  contrary to this goal.
-
-**Action:** Remove the `Ship Type` annotation read from `_get_ship_from_annotations()`.
-Keep `Ship Name` (used for display only, not for ML) and `Ship Tier` reads if present.
-
-**Prerequisite:** Item 7 (opt-in upload) should be in place first, so recognition quality
-doesn't regress for users who previously relied on this fallback.
+**Done:** Removed `ship_name_ann` / `ship_type_ann` reads and the ShipDB-via-annotations
+lookup from `_load_confirmed_profile()`. Function now returns only confirmed slot counts
+(which DO feed P11 community anchors). OCR handles ship type recognition autonomously.
