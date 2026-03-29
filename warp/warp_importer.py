@@ -565,16 +565,7 @@ class WarpImporter:
         # Priority 2: load from training_data/annotations.json on disk
         if not profile_override:
             profile_override = self._load_confirmed_profile(source)
-        # If ship_name was empty (trainer mode), try from annotations on disk
         ship_tier = text_info.get('ship_tier', '')
-        if not ship_name:
-            _ann_ship = self._load_ship_info_from_annotations(source)
-            if _ann_ship.get('ship_name'):
-                ship_name = _ann_ship['ship_name']
-                ship_type = _ann_ship.get('ship_type', '')
-                ship_tier = _ann_ship.get('ship_tier', '')
-                _slog.info(f'WarpImporter: ship info from annotations: '
-                           f'{ship_name!r} / {ship_type!r} / {ship_tier!r}')
         if profile_override:
             for slot, count in profile_override.items():
                 if count > profile.get(slot, 0):
@@ -822,32 +813,6 @@ class WarpImporter:
         )
         _slog.info(hist_str)
 
-    def _load_ship_info_from_annotations(self, source: str) -> dict:
-        """Read Ship Name, Ship Type, Ship Tier from confirmed annotations on disk."""
-        try:
-            here = Path(__file__).resolve().parent
-            for _ in range(6):
-                ann_path = here / 'warp' / 'training_data' / 'annotations.json'
-                if ann_path.exists(): break
-                here = here.parent
-            else:
-                return {}
-            import json
-            data = json.loads(ann_path.read_text(encoding='utf-8'))
-            fname = Path(source).name
-            result = {}
-            for a in data.get(fname, []):
-                if a.get('state') != 'confirmed': continue
-                slot = a.get('slot', '')
-                name = a.get('name', '').strip()
-                if not name: continue
-                if slot == 'Ship Name':  result['ship_name'] = name
-                elif slot == 'Ship Type': result['ship_type'] = name
-                elif slot == 'Ship Tier': result['ship_tier'] = name
-            return result
-        except Exception as e:
-            _slog.debug(f'WarpImporter: _load_ship_info_from_annotations error: {e}')
-            return {}
 
     def _load_confirmed_layout(self, source: str) -> dict[str, list] | None:
         """

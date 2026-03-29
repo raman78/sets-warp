@@ -267,17 +267,19 @@ class TrainingDataManager:
         logger.info(f"Training data saved to {self._dir}")
 
     def _migrate_clear_ship_name_text(self) -> None:
-        """One-time migration: clear stored text from Ship Name annotations.
-        Ship Name is position-only — content was never meant to be persisted.
+        """One-time migration: clear stored text from Ship Name and Ship Type annotations.
+        Ship Name: position-only, content was never meant to be persisted (privacy).
+        Ship Type: name field no longer used after removal of annotation-based ShipDB fallback.
         """
-        changed = False
+        _CLEAR_SLOTS = frozenset({'Ship Name', 'Ship Type'})
+        changed = 0
         for anns in self._annotations.values():
             for ann in anns:
-                if ann.get('slot') == 'Ship Name' and ann.get('name', '').strip():
+                if ann.get('slot') in _CLEAR_SLOTS and ann.get('name', '').strip():
                     ann['name'] = ''
-                    changed = True
+                    changed += 1
         if changed:
-            logger.info(f'Migrated {sum(1 for a in (ann for anns in self._annotations.values() for ann in anns) if ann.get("slot") == "Ship Name")} Ship Name annotations — text cleared')
+            logger.info(f'Migration: cleared name text from {changed} Ship Name/Type annotations')
             self.save()
 
     def _load(self):
