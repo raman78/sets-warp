@@ -108,7 +108,15 @@ print('update result:', result)
 
 See `docs/warp_ml_roadmap.md` for full spec. Prerequisite: P10 (done).
 
-**Status:** Planned, not started.
+**Status: IN PROGRESS (2026-03-29)**
+
+**Implemented:**
+- `sync.py` — `_upload_anchors_grid()`: uploads normalized slot grids to HF staging
+- `layout_detector.py` — Strategy 1b: community anchors fallback after local miss
+- `model_updater.py` — `community_anchors.json` in `_MODEL_FILES` (optional)
+- `admin_train.py` (backend) — `build_community_anchors()` + `upload_community_anchors()`
+
+**Pending:** Runtime test — requires >= 3 distinct users contributing confirmed layouts.
 
 ---
 
