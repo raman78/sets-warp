@@ -1,7 +1,7 @@
 # src/ patches — intentional differences from upstream SETS
 
-> Last updated: 2026-03-28
-> Upstream ref: `88c2d67` (Shinga13/SETS main)
+> Last updated: 2026-03-29
+> Upstream ref: `ae63ef1` (STOCD/SETS main)
 > Purpose: reference for future upstream syncs — every item here must be re-applied after the next merge.
 
 ---
