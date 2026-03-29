@@ -33,7 +33,7 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 _BACKEND_URL          = 'https://sets-warp-backend.onrender.com'
-_CHECK_INTERVAL_HOURS = 24          # minimum hours between remote checks
+_CHECK_INTERVAL_HOURS = 0.25        # minimum hours between remote checks (15 min)
 _VERSION_CACHE_FILE   = 'warp/models/model_version_remote_cache.json'
 _CONNECT_TIMEOUT      = 5           # seconds
 _READ_TIMEOUT         = 15          # seconds

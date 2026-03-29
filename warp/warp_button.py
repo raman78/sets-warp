@@ -82,17 +82,6 @@ def inject_warp_buttons(sets_app, menu_layout) -> None:
     from updater import schedule_update_check
     QTimer.singleShot(3000, lambda: schedule_update_check(sets_app))
 
-    # Background ML model update check (once per 24 h) — runs regardless of
-    # whether the user ever opens WARP CORE
-    def _bg_model_update():
-        try:
-            from warp.trainer.model_updater import ModelUpdater
-            from pathlib import Path as _Path
-            _root = _Path(__file__).resolve().parent.parent
-            ModelUpdater().check_and_update(_root)
-        except Exception:
-            pass
-    QTimer.singleShot(15_000, _bg_model_update)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
