@@ -1,5 +1,35 @@
 # CHANGELOG
 
+## v2.3 (2026-03-29) — Architecture: central-only training, 15-min model polling
+
+### Architecture change
+- **Local icon + screen-type training removed** — icon classifier and screen type classifier
+  are now trained exclusively by the central pipeline (`admin_train.py` on GitHub Actions).
+  Users contribute confirmed crops via HF sync; central trains on all community data and
+  distributes the model back. Local training was redundant and got overwritten by the
+  central model anyway.
+- **Layout regressor training kept local** (`local_trainer.py`) — layout data requires full
+  screenshots which are not uploaded; local-only training remains appropriate here.
+- **Central model augmentation parity** (`admin_train.py`): P7 (ColorJitter 0.3/0.3/0.2,
+  RandomHorizontalFlip p=0.3, RandomAffine) and P9 (WeightedRandomSampler hard negatives)
+  applied to central training — previously only in local trainer.
+
+### Model update polling
+- **15-minute polling** replaces 24-hour interval (`model_updater.py`): central model
+  checked every 15 min from the HF sync timer in WARP CORE.
+- **Removed Point 2** (`warp_button.py`): 15s background check after WARP button click.
+- **Removed Point 3** (`trainer_window.py`): ModelUpdater call on WARP CORE open.
+- Both removed — model update now driven solely by the 5-min sync timer (checks every
+  15 min due to internal rate limiting).
+- **Fixed duplicate `_on_sync_timer`** in `trainer_window.py`: dead `_init_sync_client`
+  timer and overridden method removed; knowledge refresh merged into main sync timer.
+
+### UI
+- **"Train Model" → "Train Layout Model"**: button renamed to reflect its actual scope.
+- Augmentation passes dialog removed (was for icon training only).
+
+---
+
 ## v2.2 (2026-03-28) — ML roadmap P7, P8, P9
 
 ### Improvements

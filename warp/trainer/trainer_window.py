@@ -44,7 +44,6 @@ log = logging.getLogger(__name__)
 
 _KEY_LAST_DIR       = 'warp_core/last_dir'
 _KEY_HF_TOKEN       = 'warp_core/hf_token'
-_KEY_TRAIN_REPEATS  = 'warp_core/train_repeats'
 _KEY_TRAIN_DLG_SIZE = 'warp_core/train_dlg_size'
 _KEY_AUTO_ACCEPT    = 'warp_core/auto_accept_enabled'
 _KEY_AUTO_CONF      = 'warp_core/auto_accept_conf'
@@ -750,12 +749,6 @@ class WarpCoreWindow(QMainWindow):
         self._sync_timer.timeout.connect(self._on_sync_timer)
         self._sync_timer.start()
 
-        # Check for centrally-trained model update in background (once per 24 h)
-        try:
-            from warp.trainer.model_updater import ModelUpdater
-            ModelUpdater().check_and_update(self._sets_root)
-        except Exception as _e:
-            log.debug(f'Model update check skipped: {_e}')
 
     def showEvent(self, event):
         """Ensure canvas has focus once window is shown."""
@@ -1018,7 +1011,7 @@ class WarpCoreWindow(QMainWindow):
         act('Open Folder', 'Open screenshots folder', self._on_open)
         act('Detect Screen Types', 'Re-classify screen types', self._on_detect_screen_types)
         act('Auto-Detect Slots', 'Auto-detect icons', self._on_auto_detect)
-        act('Train Model', 'Train icon + screen-type classifiers', self._on_train)
+        act('Train Layout Model', 'Train local layout regressor from confirmed annotations', self._on_train)
 
     def _on_open(self):
         last = self._settings.value(_KEY_LAST_DIR, '')
@@ -1524,21 +1517,9 @@ class WarpCoreWindow(QMainWindow):
     def _init_sync_client(self):
         try:
             from warp.knowledge.sync_client import WARPSyncClient
-            from PySide6.QtCore import QTimer
             self._sync_client = WARPSyncClient()
-            self._sync_timer = QTimer(self)
-            self._sync_timer.setInterval(15 * 60 * 1000)
-            self._sync_timer.timeout.connect(self._on_sync_timer)
-            self._sync_timer.start()
         except Exception as e:
             log.warning(f'WARP CORE: sync client init failed: {e}')
-
-    def _on_sync_timer(self):
-        if self._sync_client:
-            try:
-                self._sync_client.refresh_knowledge()
-            except Exception as e:
-                log.debug(f'WARP CORE: knowledge refresh error: {e}')
 
     def _contribute(self, ri: dict, confirmed_name: str):
         try:
@@ -2827,62 +2808,15 @@ class WarpCoreWindow(QMainWindow):
         self._review_list.setFocus()
 
     def _on_train(self):
+        """Train local layout regressor from confirmed UI annotations."""
         if self._train_worker and self._train_worker.isRunning():
             return
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QDialogButtonBox
-        last_repeats = int(self._settings.value(_KEY_TRAIN_REPEATS, 1))
-        dlg = QDialog(self)
-        dlg.setWindowTitle('Train Model')
-        vl = QVBoxLayout(dlg)
-        vl.addWidget(QLabel(
-            'Augmentation passes — each pass repeats the training set\n'
-            'with different random transforms (crop/brightness/contrast).\n'
-            'More passes = more variety, but longer training.'))
-        hl = QHBoxLayout()
-        hl.addWidget(QLabel('Passes:'))
-        spin = QSpinBox()
-        spin.setRange(1, 5)
-        spin.setValue(last_repeats)
-        hl.addWidget(spin)
-        vl.addLayout(hl)
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        vl.addWidget(bb)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        train_repeats = spin.value()
-        self._settings.setValue(_KEY_TRAIN_REPEATS, train_repeats)
         self._train_dlg = _TrainProgressDialog(parent=self)
         self._train_dlg.cancelled.connect(self._on_train_cancelled)
         self._train_dlg.show()
-        data_root = self._sets_root / 'warp' / 'training_data'
-        models_dir = self._sets_root / 'warp' / 'models'
-        data_mgr = self._data_mgr
-        sets_root = self._sets_root
-        aug_passes = train_repeats
-        class _CombinedTrainWorker(QThread):
-            progress = Signal(int, str)
-            finished = Signal(bool, str)
-            def run(self_):
-                interrupted = self_.isInterruptionRequested
-                from warp.trainer.screen_type_trainer import ScreenTypeTrainerWorker
-                w = ScreenTypeTrainerWorker(data_root, models_dir)
-                w.run(lambda p, m: self_.progress.emit(int(p*0.45), f'[Screen] {m}'), lambda ok, msg: None, interrupted)
-                from warp.trainer.local_trainer import LocalTrainWorker as _LTW
-                # Instantiate properly so QThread.__init__ is called
-                icon_worker = _LTW(data_mgr=data_mgr, sets_root=sets_root, aug_passes=aug_passes)
-                class _FakeSignal:
-                    def __init__(self2, cb): self2._cb = cb
-                    def emit(self2, *a): self2._cb(*a)
-                results = {}
-                icon_worker.progress = _FakeSignal(lambda pct, msg: self_.progress.emit(45 + int(pct * 0.55), f'[Icons] {msg}'))
-                icon_worker.finished = _FakeSignal(lambda ok, msg: results.update({'ok': ok, 'msg': msg}))
-                # Override isInterruptionRequested to propagate from parent thread
-                icon_worker.isInterruptionRequested = self_.isInterruptionRequested
-                icon_worker.run()
-                self_.finished.emit(results.get('ok', False), results.get('msg', 'Done'))
-        self._train_worker = _CombinedTrainWorker(parent=self)
+        from warp.trainer.local_trainer import LocalTrainWorker
+        self._train_worker = LocalTrainWorker(
+            data_mgr=self._data_mgr, sets_root=self._sets_root, parent=self)
         self._train_worker.progress.connect(self._train_dlg.update_progress)
         self._train_worker.finished.connect(self._on_train_finished)
         self._train_worker.start()
@@ -2925,7 +2859,21 @@ class WarpCoreWindow(QMainWindow):
         self._pending_sync = True
 
     def _on_sync_timer(self):
-        """Called every 5 minutes — uploads to HF if data changed since last sync."""
+        """Called every 5 minutes — uploads crops to HF and checks for a newer central model."""
+        # Refresh community knowledge (pHash overrides)
+        if self._sync_client:
+            try:
+                self._sync_client.refresh_knowledge()
+            except Exception as e:
+                log.debug(f'WARP CORE: knowledge refresh error: {e}')
+
+        # Check for newer central model (rate-limited to once per 15 min internally)
+        try:
+            from warp.trainer.model_updater import ModelUpdater
+            ModelUpdater().check_and_update(self._sets_root)
+        except Exception as e:
+            log.debug(f'WARP CORE: model update check error: {e}')
+
         if not self._pending_sync:
             return
         try:
