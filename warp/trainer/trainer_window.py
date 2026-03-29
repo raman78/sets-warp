@@ -2537,7 +2537,7 @@ class WarpCoreWindow(QMainWindow):
         # filter the new slot's list using the old slot's search text
         self._completer.setCompletionPrefix('')
         # Pre-populate completer with new slot's candidates
-        if not is_tier and not is_ship_type and slot not in NON_ICON_SLOTS:
+        if slot not in NON_ICON_SLOTS:
             self._populate_name_completer(slot)
         # Re-run icon matching or OCR with new slot's candidates (user-initiated change only)
         if not self._loading_row:

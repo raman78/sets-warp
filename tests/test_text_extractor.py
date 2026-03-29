@@ -12,6 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import re
 from warp.recognition.text_extractor import RE_TIER_LOOSE
 
+_SECTION_HEADER_RE = re.compile(
+    r'\b(traits|reputation|abilities|bridge.?officer|boff|'
+    r'equipment|consoles?|weapons?|devices?|kit\b|armor)\b',
+    re.IGNORECASE
+)
+
 
 def _extract_type_from_token(token: str, above_tokens: list[str]) -> str:
     """
@@ -29,13 +35,13 @@ def _extract_type_from_token(token: str, above_tokens: list[str]) -> str:
     if len(prefix) > 4:
         result_type = prefix
 
-    # Only use above tokens if prefix didn't give us a type (the fix)
-    if not result_type:
-        type_parts = []
-        if above_tokens:
-            type_parts.append(above_tokens[0])
-        if type_parts:
-            result_type = ' '.join(type_parts).strip()
+    # Filter above tokens: skip known screen section headers
+    above_clean = [t for t in above_tokens if not _SECTION_HEADER_RE.search(t)]
+    if above_clean:
+        result_type = (above_clean[0] + ' ' + result_type).strip() if result_type else above_clean[0]
+    elif not result_type and above_tokens:
+        # No clean above, no prefix — pass (same_row not modelled in this helper)
+        pass
 
     return result_type
 
@@ -70,6 +76,24 @@ class TestShipTypeExtraction(unittest.TestCase):
         above = ['Arbiter Battlecruiser']
         result = _extract_type_from_token(token, above)
         self.assertEqual(result, 'Arbiter Battlecruiser')
+
+    def test_above_prepended_to_short_prefix(self):
+        """
+        OCR splits long ship name across tokens:
+        above='Kardashev Command Dyson Science', tier token='Destroyer [T6-X2]'
+        → type='Kardashev Command Dyson Science Destroyer'
+        """
+        token = 'Destroyer [T6-X2]'
+        above = ['Kardashev Command Dyson Science']
+        result = _extract_type_from_token(token, above)
+        self.assertEqual(result, 'Kardashev Command Dyson Science Destroyer')
+
+    def test_section_header_above_not_prepended(self):
+        """Above token that is a section header must never be prepended to prefix."""
+        token = 'Fleet Support Cruiser [T6-X2]'
+        above = ['Personal Space Traits']
+        result = _extract_type_from_token(token, above)
+        self.assertEqual(result, 'Fleet Support Cruiser')
 
     def test_standalone_tier_token_no_above(self):
         """No prefix, no above → empty type."""
