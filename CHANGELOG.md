@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## v2.4 (2026-03-29) — Remove layout CNN; fix traits dropdown
+
+### Architecture: P10 — layout CNN removed
+- **Deleted** `layout_trainer.py`, `layout_dataset_builder.py`, `local_trainer.py` — the
+  MobileNetV3-Small layout regressor trained only on local data (5–20 screenshots), never
+  reached the central pipeline, and was functionally identical to `anchors.json` (Strategy 1).
+- **Removed** Strategy 0 (`_detect_via_cnn`, `infer_build_type`) from `layout_detector.py`.
+- **Removed** "Train Layout Model" toolbar action and `_TrainProgressDialog` from `trainer_window.py`.
+- **Removed** "Layout View" debug toggle and `set_cnn_debug_items` from `annotation_widget.py`.
+- Layout detection: Strategies 1–4 (anchors.json, pixel analysis, OCR, static anchors) unchanged.
+- UNKNOWN screen type defaults to SPACE (was CNN-inferred, always fell back to SPACE anyway).
+- Community anchors.json pipeline (P11) planned as replacement — privacy-safe bbox grids
+  aggregated from all users, distributed via ModelUpdater.
+
+### Bug fix: traits dropdown empty in WARP CORE
+- `datafunctions.py` migrates `cache.traits` keys at load time:
+  `'traits'→'personal'`, `'rep_traits'→'rep'`, `'active_rep_traits'→'active_rep'`.
+- `trainer_window.py` was using the old (pre-migration) key names → `KeyError` → silent
+  `except` → empty completer model → no dropdown for Space Reputation, Active Space Rep,
+  Personal Space/Ground Traits, Ground Reputation, Active Ground Rep.
+- Fixed in `_build_search_candidates` and `trait_slot_map` (6 keys each).
+
 ## v2.3 (2026-03-29) — Architecture: central-only training, 15-min model polling
 
 ### Architecture change
