@@ -55,36 +55,29 @@ dropdown in WARP CORE (stored in `screen_types/<TYPE>/<filename>.png`).
 
 ### Training process (icon classifier)
 
-File: `warp/trainer/local_trainer.py`
+File: `sets-warp-backend/admin_train.py` (runs on GitHub Actions, hourly)
 
 ```
-1. Load all confirmed crops from annotations.json + repair missing crops
-2. Stratified train/val split:
-     - classes with ≥ 2 samples → 1 sample to val, rest to train
-     - classes with 1 sample    → train only (never val-only)
-3. Load backbone weights from existing icon_classifier.pt (strict=False,
-   classifier.* keys stripped — backbone only, head rebuilt for n_classes)
-   Falls back to ImageNet weights if no .pt exists yet.
+1. Download all confirmed crops from HF staging/<install_id>/crops/
+2. Deduplicate by sha256 — one vote per install_id per crop hash
+3. Stratified train/val split (same as before)
 4. Fine-tune EfficientNet-B0:
      - Focal loss (handles class imbalance)
-     - AdamW, lr=3e-4 (or ×0.3 when fine-tuning from existing model)
-     - Cosine annealing LR schedule
-     - Early stopping: patience=5 epochs
-     - Backbone frozen for first half when < 50 training crops
-5. Save best checkpoint to warp/models/icon_classifier.pt
-6. Save warp/models/model_version.json with:
-     {"trained_at": "<ISO timestamp>", "source": "local", ...}
-     The trained_at timestamp is used by ModelUpdater to decide whether
-     the remote community model is newer — local always wins after training.
-7. Reload SETSIconMatcher ML session immediately
+     - AdamW + cosine LR, P7 augmentation (ColorJitter, Flip, Affine)
+     - P9 hard negatives: WeightedRandomSampler, cap 3×
+     - Skip if < 10 new crops since last run (--skip-if-unchanged)
+5. Upload icon_classifier.pt + model_version.json to HF sets-sto/warp-knowledge/models/
 ```
+
+Local training was removed in v2.3. Crops uploaded by users are the contribution;
+the central pipeline trains on all of them and distributes the result.
 
 ### Training process (screen classifier)
 
-File: `warp/trainer/screen_type_trainer.py`
+File: `warp/trainer/screen_type_trainer.py` (central only — not triggered locally)
 
-Identical flow but uses MobileNetV3-Small and full screenshot images resized
-to 224×224 px. Saved to `warp/models/screen_classifier.pt`.
+Uses MobileNetV3-Small and full screenshot images resized to 224×224 px.
+Saved to `warp/models/screen_classifier.pt` and distributed via ModelUpdater.
 
 ---
 

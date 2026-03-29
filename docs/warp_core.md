@@ -37,8 +37,7 @@ Splitter initial sizes: `[400, 700, 400]`
 | `trainer/trainer_window.py` | Main window (`WarpCoreWindow`), toolbar, progress dialogs |
 | `trainer/annotation_widget.py` | Canvas widget — zoom, bbox drawing, selection |
 | `trainer/training_data.py` | `TrainingDataManager`, `AnnotationState` |
-| `trainer/local_trainer.py` | `LocalTrainWorker` — EfficientNet fine-tune |
-| `trainer/screen_type_trainer.py` | `ScreenTypeTrainerWorker` — MobileNetV3 |
+| `trainer/screen_type_trainer.py` | `ScreenTypeTrainerWorker` — MobileNetV3 (central only) |
 | `trainer/sync.py` | HuggingFace crop upload (`SyncWorker`) |
 | `trainer/model_updater.py` | Background community model download check |
 
@@ -120,7 +119,7 @@ When confirming, checks if bbox overlaps (> 70%) any existing confirmed bbox of 
 
 | Model | File | Architecture | Trained by |
 |-------|------|-------------|-----------|
-| Icon classifier | `models/icon_classifier.pt` | EfficientNet-B0 | `local_trainer.py` / community pipeline |
+| Icon classifier | `models/icon_classifier.pt` | EfficientNet-B0 | Central pipeline (`admin_train.py` on GitHub Actions) |
 | Screen classifier | `models/screen_classifier.pt` | MobileNetV3-Small | `screen_type_trainer.py` |
 
 Both models use PyTorch native `.pt` state dicts (not ONNX — ONNX produced uniform-output models).
@@ -150,15 +149,14 @@ User confirms bbox in WARP CORE
   -> annotations.json + crop PNG saved to warp/training_data/
   -> SyncWorker uploads crop to HF (sets-sto/sto-icon-dataset)
 
-User clicks Train Model
-  -> LocalTrainWorker fine-tunes EfficientNet on all confirmed crops
-  -> icon_classifier.pt + model_version.json saved to warp/models/
-  -> icon_matcher.py loads new .pt on next import
+GitHub Actions (hourly, admin_train.py)
+  -> trains EfficientNet on all community crops from HF staging
+  -> uploads icon_classifier.pt + model_version.json to HF sets-sto/warp-knowledge
 
-Background (8s after launch)
-  -> ModelUpdater checks /model/version endpoint
-  -> If remote trained_at > local trained_at: downloads from HF
-  -> Skipped for 24h after bootstrap download
+Background (every 15 min via WARP CORE sync timer)
+  -> ModelUpdater checks remote model_version.json on HF
+  -> If remote trained_at > local trained_at: downloads new icon_classifier.pt
+  -> icon_matcher.py loads new .pt on next import
 ```
 
 ---
