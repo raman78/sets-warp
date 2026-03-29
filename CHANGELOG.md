@@ -1,5 +1,47 @@
 # CHANGELOG
 
+## v2.5 (2026-03-29) — P11 community anchors; OCR fixes; Ship Name privacy
+
+### Feature: P11 — Community anchors.json
+- `sync.py` — `_upload_anchors_grid()`: uploads normalized slot bbox grids to HF staging
+  after each sync (one JSON per install/screenshot, filtered to icon slots only).
+- `admin_train.py` (backend) — `build_community_anchors()`: aggregates grids from ≥3
+  distinct contributors, computes per-slot median x/y/w/h/step/count, uploads result as
+  `community_anchors.json` to `sets-sto/warp-knowledge`.
+- `layout_detector.py` — Strategy 1b: after local anchors miss, tries community anchors
+  as fallback before falling through to pixel analysis.
+- `model_updater.py` — downloads `community_anchors.json` alongside model files (optional).
+- `LayoutDetector.reset_community_anchors_cache()`: invalidates in-memory cache on all live
+  instances when ModelUpdater downloads a fresh file.
+
+### Bug fixes: OCR ship type recognition
+- **Section header overwrite**: ship type prefix extracted from the tier token
+  (e.g. `'Fleet Support Cruiser [T6-X2]'` → `'Fleet Support Cruiser'`) was being
+  overwritten by nearby screen headers like `'Personal Space Traits'`. Fixed by guarding
+  the above-token block with `if not result['ship_type']`.
+- **Split ship name**: when OCR breaks a long ship name across tokens (e.g.
+  `'Kardashev Command Dyson Science'` above + `'Destroyer [T6-X2]'` as tier token),
+  the above token is now prepended to the prefix — but only after filtering known section
+  headers (`traits`, `reputation`, `abilities`, etc.) to avoid the first bug.
+
+### Ship Name privacy (backlog items 1, 7, 8)
+- **WARP CORE**: Ship Name field disabled (position-only); placeholder explains it is OCR-read.
+  `_configure_name_field()` is the single source of truth for all NON_ICON_SLOT UI state.
+- **Annotations**: one-time migration clears stored text from `Ship Name` and `Ship Type`
+  annotation entries on first load (names were never meant to be persisted).
+- **Import pipeline**: ship_name no longer written to SETS build or displayed in import
+  summary — cosmetically private, only bbox position is used for layout anchors.
+- **Removed Ship Type annotation fallback** (`_load_ship_info_from_annotations`):
+  was a local-only shortcut that bypassed OCR and never fed central training. Removed
+  along with `_load_ship_info_from_annotations()` (dead code after Ship Name migration).
+  `_load_confirmed_profile()` now returns only confirmed slot counts (feed P11).
+
+### WARP CORE fixes
+- `_on_slot_changed`: `NameError: name 'is_tier' is not defined` — stale reference after
+  refactoring to `_configure_name_field()`; simplified to `if slot not in NON_ICON_SLOTS`.
+
+---
+
 ## v2.4 (2026-03-29) — Remove layout CNN; fix traits dropdown
 
 ### Architecture: P10 — layout CNN removed
