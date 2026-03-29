@@ -54,7 +54,7 @@ CROPS_DIR        = "data/crops"           # approved
 ANNOTATIONS_FILE = "data/annotations.jsonl"
 
 STAGING_ROOT     = "staging"              # user contributions land here
-MAX_DAILY_UPLOADS = 200                   # per install_id, per UTC day
+MAX_DAILY_UPLOADS = 1000                  # per install_id, per UTC day
 MAX_NAME_LEN      = 120
 MIN_CROP_PX       = 24
 
