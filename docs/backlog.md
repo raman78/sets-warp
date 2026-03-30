@@ -1,6 +1,6 @@
 # WARP / WARP CORE — Backlog & Open Questions
 
-**Updated:** 2026-03-29
+**Updated:** 2026-03-30
 
 Items here are not yet scheduled. Each has a status and open questions to resolve before implementation.
 
@@ -159,3 +159,42 @@ See `docs/warp_ml_roadmap.md` for full spec. Prerequisite: P10 (done).
 **Done:** Removed `ship_name_ann` / `ship_type_ann` reads and the ShipDB-via-annotations
 lookup from `_load_confirmed_profile()`. Function now returns only confirmed slot counts
 (which DO feed P11 community anchors). OCR handles ship type recognition autonomously.
+
+---
+
+## 9. Backend training logs — clearer section headers
+
+**Status: Planned**
+
+**Context:**
+GitHub Actions training output mixes PyTorch download progress, HF HTTP logs, and epoch
+lines without clear separators. Hard to tell which model is training, when it started,
+what data it used.
+
+**Example of current output (confusing):**
+```
+Downloading: "https://download.pytorch.org/models/mobilenet_v3_small-047dcff4.pth"
+  0%|  | 0.00/9.83M ...
+Loaded backbone from previous central screen_classifier — fine-tuning
+  Epoch  1/40  val_acc=71.4%  best=0.0%
+Processing Files (0 / 0) ...
+  Epoch  2/40  val_acc=85.7%  best=71.4%
+screen_classifier saved — 7 classes, val_acc=100.0%
+```
+
+**Desired improvement (`admin_train.py`):**
+- Add a clear header before each model's training block, e.g.:
+  ```
+  ── Training screen_classifier (MobileNetV3-Small) ──────────────────
+  Dataset : 223 screenshots, 7 classes
+  Backbone: fine-tuning from previous central model
+  Budget  : 8 min
+  ────────────────────────────────────────────────────────────────────
+  ```
+- Add a summary footer after saving:
+  ```
+  ✓ screen_classifier saved — 7 classes, val_acc=100.0%, 11 epochs
+  ```
+- Same pattern for icon_classifier (EfficientNet-B0).
+
+**Scope:** `admin_train.py` only — `train()` and `train_screen_classifier()` entry points.

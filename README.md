@@ -19,8 +19,8 @@ A build planning and screenshot recognition tool for Star Trek Online.
 
 **Autonomous Recognition Engine (P0-P5)** — WARP now features an intelligent inference pipeline that learns your window layout and ship configurations. It includes smart OCR for ship metadata (name/type/tier), slot position inference, multi-config layout memory, dynamic anchor recalibration, and a CNN-based layout regression model.
 
-→ See **[WARP_GUIDE.md](docs/WARP_GUIDE.md)** for a full usage guide with step-by-step instructions for WARP and WARP CORE.
-→ See **[SETS_GUIDE.md](docs/SETS_GUIDE.md)** for SETS build planner documentation.
+→ See **[WARP_GUIDE.md](docs/WARP_GUIDE.md)** for a full usage guide with step-by-step instructions for WARP and WARP CORE.  
+→ See **[SETS_GUIDE.md](docs/SETS_GUIDE.md)** for SETS build planner documentation.  
 
 ---
 
