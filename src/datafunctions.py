@@ -130,7 +130,7 @@ def _show_startup_dialog(self):
                 trained    = ver.get('trained_at', '?')[:10]
                 n_cls      = ver.get('n_classes', '?')
                 val_acc    = ver.get('val_acc', None)
-                downloaded = ver.get('downloaded_at', '')[:10]
+                downloaded = ver.get('downloaded_at', '')[:16].replace('T', ' ')
                 acc_txt = f'  •  acc {val_acc:.0%}' if isinstance(val_acc, float) else ''
                 dl_txt  = f'  •  downloaded {downloaded}' if downloaded else ''
                 model_txt = f'ML Model: {n_cls} classes  •  trained {trained}{acc_txt}{dl_txt}'
