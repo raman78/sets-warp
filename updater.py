@@ -109,7 +109,7 @@ def _check_worker(sets_app) -> None:
         if not remote_tag:
             return
         if remote_tag == current:
-            log.debug(f'WARP updater: up to date (v{current})')
+            log.info(f'WARP updater: up to date (v{current})')
             return
 
         # Check snooze

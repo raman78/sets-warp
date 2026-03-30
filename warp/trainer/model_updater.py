@@ -145,8 +145,9 @@ class ModelUpdater:
                 except Exception as e:
                     log.warning(f'ModelUpdater: could not update model_version.json: {e}')
 
+                _now = _dt.datetime.now(_dt.timezone.utc).strftime('%H:%M')
                 log.info(
-                    f'ModelUpdater: model updated — '
+                    f'ModelUpdater: model downloaded at {_now} UTC — '
                     f'{remote.get("n_classes")} classes, '
                     f'val_acc={remote.get("val_acc", 0):.1%}'
                 )
