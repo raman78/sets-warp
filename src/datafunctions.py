@@ -127,10 +127,13 @@ def _show_startup_dialog(self):
             ver_file = models_dir / 'model_version.json'
             if ver_file.exists():
                 ver = json.loads(ver_file.read_text(encoding='utf-8'))
-                trained = ver.get('trained_at', '?')[:10]
-                n_cls = ver.get('n_classes', '?')
-                src = ver.get('source', 'community')
-                model_txt = f'ML Model: {n_cls} item classes  •  trained {trained}  ({src})'
+                trained    = ver.get('trained_at', '?')[:10]
+                n_cls      = ver.get('n_classes', '?')
+                val_acc    = ver.get('val_acc', None)
+                downloaded = ver.get('downloaded_at', '')[:10]
+                acc_txt = f'  •  acc {val_acc:.0%}' if isinstance(val_acc, float) else ''
+                dl_txt  = f'  •  downloaded {downloaded}' if downloaded else ''
+                model_txt = f'ML Model: {n_cls} classes  •  trained {trained}{acc_txt}{dl_txt}'
             else:
                 model_txt = 'ML Model: not downloaded yet'
             lay.addWidget(QLabel(model_txt))

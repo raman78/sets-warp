@@ -30,7 +30,10 @@ import time
 from pathlib import Path
 from typing import Callable
 
-log = logging.getLogger(__name__)
+try:
+    from src.setsdebug import log
+except Exception:
+    log = logging.getLogger(__name__)
 
 _BACKEND_URL          = 'https://sets-warp-backend.onrender.com'
 _CHECK_INTERVAL_HOURS = 0.25        # minimum hours between remote checks (15 min)
@@ -126,19 +129,21 @@ class ModelUpdater:
             )
 
             if self._download_model(models_dir, remote, on_progress=on_progress):
-                # Ensure model_version.json exists — it may be absent from the HF repo.
-                # Write it from the backend metadata so the startup dialog shows info.
+                # Write/update model_version.json with download timestamp.
                 ver_path = models_dir / 'model_version.json'
-                if not ver_path.exists():
-                    try:
-                        ver_path.write_text(json.dumps({
-                            'trained_at': remote.get('trained_at', ''),
-                            'n_classes':  remote.get('n_classes', 0),
-                            'val_acc':    remote.get('val_acc', 0),
-                            'source':     remote.get('source', 'community'),
-                        }, indent=2), encoding='utf-8')
-                    except Exception as e:
-                        log.warning(f'ModelUpdater: could not write model_version.json: {e}')
+                try:
+                    import datetime as _dt
+                    ver = {}
+                    if ver_path.exists():
+                        ver = json.loads(ver_path.read_text(encoding='utf-8'))
+                    ver.setdefault('trained_at', remote.get('trained_at', ''))
+                    ver.setdefault('n_classes',  remote.get('n_classes', 0))
+                    ver.setdefault('val_acc',     remote.get('val_acc', 0))
+                    ver.setdefault('source',      remote.get('source', 'community'))
+                    ver['downloaded_at'] = _dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                    ver_path.write_text(json.dumps(ver, indent=2), encoding='utf-8')
+                except Exception as e:
+                    log.warning(f'ModelUpdater: could not update model_version.json: {e}')
 
                 log.info(
                     f'ModelUpdater: model updated — '
