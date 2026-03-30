@@ -209,6 +209,7 @@ class SyncWorker(QThread):
 
             crop_path = Path(item["path"])
             if not crop_path.exists():
+                _slog.warning(f'HF Sync: crop file missing, skipping: {crop_path.name}')
                 continue
 
             err = _validate_crop(crop_path)
@@ -221,7 +222,7 @@ class SyncWorker(QThread):
                 _slog.debug(f'HF Sync: skipping (already on HF): {crop_path.name}')
                 continue
 
-            _slog.info(f'HF Sync: queuing [{item["slot"]}] {item["name"]} → {sha[:12]}…')
+            _slog.debug(f'HF Sync: queuing [{item["slot"]}] {item["name"]} → {sha[:12]}…')
             operations.append(CommitOperationAdd(
                 path_in_repo=f"{staging_crop}/{sha}.png",
                 path_or_fileobj=str(crop_path),
@@ -419,8 +420,13 @@ class SyncWorker(QThread):
         install_id  = _get_install_id()
         staging_dir = f"{STAGING_ROOT}/{install_id}/screen_types"
 
-        existing = self._fetch_staging_screen_hashes(api, staging_dir)
-        _slog.info(f'HF Sync: {len(existing)} screen type screenshots already on HF')
+        screen_cache_file = self._mgr._dir / '.sync_uploaded_screen_hashes.json'
+        existing = self._load_screen_hashes_cache(screen_cache_file)
+        if existing:
+            _slog.info(f'HF Sync: {len(existing)} screen type screenshots in local cache (skipping HF listing)')
+        else:
+            existing = self._fetch_staging_screen_hashes(api, staging_dir)
+            _slog.info(f'HF Sync: bootstrapped {len(existing)} screen hashes from HF listing')
 
         operations: list = []
         for type_dir in sorted(type_dirs):
@@ -436,7 +442,7 @@ class SyncWorker(QThread):
                 existing.add(sha)
 
         if not operations:
-            _slog.info('HF Sync: no new screen type screenshots to upload')
+            _slog.debug('HF Sync: no new screen type screenshots to upload')
             return
 
         api.create_commit(
@@ -445,7 +451,18 @@ class SyncWorker(QThread):
             operations=operations,
             commit_message=f"WARP screen types: {len(operations)} screenshots",
         )
+        try:
+            screen_cache_file.write_text(json.dumps(sorted(existing)))
+        except Exception:
+            pass
         _slog.info(f'HF Sync: uploaded {len(operations)} screen type screenshot(s)')
+
+    @staticmethod
+    def _load_screen_hashes_cache(cache_file: Path) -> set[str]:
+        try:
+            return set(json.loads(cache_file.read_text()))
+        except Exception:
+            return set()
 
     def _fetch_staging_screen_hashes(self, api, staging_screen_dir: str) -> set[str]:
         try:
@@ -488,6 +505,108 @@ class SyncWorker(QThread):
             for chunk in iter(lambda: f.read(65536), b""):
                 sha.update(chunk)
         return sha.hexdigest()[:32]
+
+
+# ---------------------------------------------------------------------------
+# SyncManager — WARP-specific background sync task
+# ---------------------------------------------------------------------------
+
+class SyncManager:
+    """
+    WARP background sync — uploads confirmed crops / screen-types / anchors to HF Hub.
+
+    Designed to work with BackgroundTaskManager (src.background_tasks):
+        btm.register(sync_mgr.check_and_upload, interval_ms=10*60*1000, startup_delay_ms=15_000)
+        btm.on_stop(sync_mgr.stop)
+
+    check_and_upload() is a single sync cycle; safe to call from any periodic timer.
+    """
+
+    def __init__(self, sets_app) -> None:
+        self._sets_app = sets_app
+        self._worker: SyncWorker | None = None
+
+    # ---------------------------------------------------------------- public API
+
+    def check_and_upload(self) -> None:
+        """One sync cycle: upload pending crops if any. Called by BackgroundTaskManager."""
+        token = self._read_token()
+        if not token:
+            return
+
+        mgr = self._data_manager()
+        if mgr is None:
+            return
+
+        confirmed = [c for c in mgr.get_confirmed_crops() if Path(c['path']).exists()]
+        uploaded  = self._load_uploaded_hashes(mgr)
+        pending   = max(0, len(confirmed) - len(uploaded))
+
+        if pending == 0:
+            _slog.debug('SyncManager: timer tick — nothing pending')
+            return
+
+        if self._worker and self._worker.isRunning():
+            _slog.debug(f'SyncManager: {pending} crops pending, upload already running — skipping tick')
+            return
+
+        _slog.info(f'SyncManager: {pending} crops pending — starting upload…')
+        self._worker = SyncWorker(data_manager=mgr, hf_token=token, mode='upload')
+        self._worker.finished.connect(self._on_finished)
+        self._worker.start()
+
+    def stop(self) -> None:
+        """Wait for any in-progress upload to finish. Call on app quit."""
+        if self._worker and self._worker.isRunning():
+            self._worker.wait(5000)
+
+    # ---------------------------------------------------------------- private
+
+    def _on_finished(self, ok: bool) -> None:
+        mgr = self._data_manager()
+        remaining = 0
+        if mgr:
+            confirmed = [c for c in mgr.get_confirmed_crops() if Path(c['path']).exists()]
+            uploaded  = self._load_uploaded_hashes(mgr)
+            remaining = max(0, len(confirmed) - len(uploaded))
+        if ok:
+            _slog.info(f'SyncManager: upload OK — {remaining} crops still pending')
+        else:
+            _slog.warning(f'SyncManager: upload FAILED — {remaining} crops still pending')
+
+    def _data_manager(self):
+        """Return TrainingDataManager — prefer WARP CORE's live instance if window is open."""
+        win = getattr(self._sets_app, '_warp_core_window', None)
+        if win is not None and hasattr(win, '_data_mgr'):
+            return win._data_mgr
+        # WARP CORE not open — create a read-only instance from disk
+        try:
+            from warp.trainer.training_data import TrainingDataManager
+            data_dir = Path(__file__).resolve().parent.parent / 'training_data'
+            if data_dir.exists():
+                return TrainingDataManager(str(data_dir))
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _read_token() -> str:
+        try:
+            p = Path(__file__).resolve().parent.parent / 'hub_token.txt'
+            t = p.read_text().strip()
+            if t and t != 'YOUR_HF_TOKEN_HERE':
+                return t
+        except Exception:
+            pass
+        return ''
+
+    @staticmethod
+    def _load_uploaded_hashes(mgr) -> set[str]:
+        cache_file = mgr._dir / '.sync_uploaded_hashes.json'
+        try:
+            return set(json.loads(cache_file.read_text()))
+        except Exception:
+            return set()
 
 
 # ---------------------------------------------------------------------------

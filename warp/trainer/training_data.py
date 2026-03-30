@@ -80,10 +80,11 @@ class TrainingDataManager:
     Thread safety: not thread-safe — call from Qt main thread only.
     """
 
-    ANNOTATIONS_FILE = "annotations.json"
-    CROPS_DIR        = "crops"
-    CROP_INDEX_FILE  = "crops/crop_index.json"
-    SCREEN_TYPES_FILE = "screen_types.json"
+    ANNOTATIONS_FILE    = "annotations.json"
+    CROPS_DIR           = "crops"
+    CROP_INDEX_FILE     = "crops/crop_index.json"
+    SCREEN_TYPES_FILE   = "screen_types.json"
+    USER_CONFIRMED_FILE = "screen_types_user_confirmed.json"
 
     def __init__(self, data_dir: Path):
         self._dir       = Path(data_dir)
@@ -93,6 +94,7 @@ class TrainingDataManager:
         self._annotations:  dict[str, list[dict]] = {}   # filename → list of ann dicts
         self._crop_index:   dict[str, dict]       = {}   # crop_filename → metadata
         self._screen_types: dict[str, str]        = {}   # filename → screen type string
+        self._screen_types_user_confirmed: set[str] = set()  # filenames confirmed by user
         self._dirty = False
 
         self._load()
@@ -263,6 +265,9 @@ class TrainingDataManager:
         st_path = self._dir / self.SCREEN_TYPES_FILE
         with open(st_path, "w", encoding="utf-8") as f:
             json.dump(self._screen_types, f, indent=2)
+        uc_path = self._dir / self.USER_CONFIRMED_FILE
+        with open(uc_path, "w", encoding="utf-8") as f:
+            json.dump(sorted(self._screen_types_user_confirmed), f, indent=2)
         self._dirty = False
         logger.info(f"Training data saved to {self._dir}")
 
@@ -305,6 +310,13 @@ class TrainingDataManager:
             try:
                 with open(st_path, encoding='utf-8') as f:
                     self._screen_types = json.load(f)
+            except Exception:
+                pass
+        uc_path = self._dir / self.USER_CONFIRMED_FILE
+        if uc_path.exists():
+            try:
+                with open(uc_path, encoding='utf-8') as f:
+                    self._screen_types_user_confirmed = set(json.load(f))
             except Exception:
                 pass
 
@@ -497,7 +509,7 @@ class TrainingDataManager:
 
     # ---------------------------------------------------------------- screen type persistence
 
-    def set_screen_type(self, image_path: Path, screen_type: str) -> Path:
+    def set_screen_type(self, image_path: Path, screen_type: str, user_confirmed: bool = False) -> Path:
         """
         Records the screen type for a screenshot (persisted to screen_types.json)
         and copies it into the classifier training folder.
@@ -508,6 +520,8 @@ class TrainingDataManager:
         Returns the destination path of the training copy.
         """
         self._screen_types[image_path.name] = screen_type
+        if user_confirmed:
+            self._screen_types_user_confirmed.add(image_path.name)
         self.save()
         dest_dir = self._dir / 'screen_types' / screen_type
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -524,6 +538,19 @@ class TrainingDataManager:
         """Returns a copy of all persisted {filename: stype} labels."""
         return dict(self._screen_types)
 
+    def get_user_confirmed_set(self) -> set[str]:
+        """Returns filenames confirmed explicitly by the user (green checkmark)."""
+        return set(self._screen_types_user_confirmed)
+
+    def is_user_confirmed(self, image_path: Path) -> bool:
+        return image_path.name in self._screen_types_user_confirmed
+
+    def remove_user_confirmed(self, image_path: Path) -> None:
+        """Remove user-confirmed mark. Type label in screen_types.json is kept."""
+        if image_path.name in self._screen_types_user_confirmed:
+            self._screen_types_user_confirmed.discard(image_path.name)
+            self.save()
+
     def remove_screen_type(self, image_path: Path, screen_type: str) -> bool:
         """
         Removes a screenshot from a screen type training folder
@@ -531,11 +558,13 @@ class TrainingDataManager:
         Returns True if anything was removed.
         """
         removed = False
-        # Remove from persistent label dict
+        # Remove from persistent label dict and user-confirmed set
         if image_path.name in self._screen_types:
             del self._screen_types[image_path.name]
-            self.save()
             removed = True
+        self._screen_types_user_confirmed.discard(image_path.name)
+        if removed:
+            self.save()
         # Remove training copy from disk
         dest = self._dir / 'screen_types' / screen_type / image_path.name
         if dest.exists():

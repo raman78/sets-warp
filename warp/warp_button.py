@@ -82,6 +82,9 @@ def inject_warp_buttons(sets_app, menu_layout) -> None:
     from updater import schedule_update_check
     QTimer.singleShot(3000, lambda: schedule_update_check(sets_app))
 
+    # Background HF sync — only when hub_token.txt is present (full SETS-WARP install)
+    _start_background_sync(sets_app)
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -106,6 +109,48 @@ def _open_warp_core(sets_app) -> None:
     else:
         win.raise_()
         win.activateWindow()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Background sync
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _start_background_sync(sets_app) -> None:
+    """
+    Start WARP background sync (crop upload to HF Hub) at app launch.
+    Only activates when hub_token.txt is present (full SETS-WARP install).
+    Uses BackgroundTaskManager from src.background_tasks (upstream proposable layer).
+    """
+    token_path = Path(__file__).resolve().parent / 'hub_token.txt'
+    if not token_path.exists():
+        return
+    try:
+        token = token_path.read_text().strip()
+        if not token or token == 'YOUR_HF_TOKEN_HERE':
+            return
+    except Exception:
+        return
+
+    try:
+        from src.background_tasks import BackgroundTaskManager
+        from warp.trainer.sync import SyncManager
+
+        sync_mgr = SyncManager(sets_app)
+        sets_app._warp_sync_manager = sync_mgr
+
+        btm = BackgroundTaskManager()
+        btm.register(
+            sync_mgr.check_and_upload,
+            interval_ms=10 * 60 * 1000,   # every 10 minutes
+            startup_delay_ms=15_000,       # first run 15 s after startup
+        )
+        btm.on_stop(sync_mgr.stop)
+        btm.start()
+        sets_app._bg_tasks = btm
+
+        log.info('WARP SyncManager started (10-min interval, first run in 15 s)')
+    except Exception as e:
+        log.warning(f'WARP SyncManager could not start: {e}')
 
 
 # ──────────────────────────────────────────────────────────────────────────────

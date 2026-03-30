@@ -342,6 +342,31 @@ Also: parameter name kept as `keep_skills=False` (upstream naming).
 
 ---
 
+## src/export.py
+
+### BOFF rank index out of range — upstream bug fix
+
+**File:** `src/export.py`, function `get_build_markdown`, bridge officer section.
+
+**Bug:** `station.count(None)` returns 4 when a BOFF station has all ability slots empty (e.g.
+profession assigned but no abilities filled in). `BOFF_RANKS_MD` is a 4-element tuple (indices
+0–3), so index 4 raises `IndexError`.
+
+**Fix:**
+```python
+# before (upstream):
+station_name = BOFF_RANKS_MD[station.count(None)] + ' ' + specs[0]
+
+# after:
+station_name = BOFF_RANKS_MD[min(station.count(None), len(BOFF_RANKS_MD) - 1)] + ' ' + specs[0]
+```
+
+Clamps the index to the last element (Ensign) when all ability slots are None.
+
+**Upstream PR:** https://github.com/STOCD/SETS/pull/122
+
+---
+
 ## What to watch on next upstream merge
 
 | Area | Risk | Action |

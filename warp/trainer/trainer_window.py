@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QDoubleSpinBox, QStyledItemDelegate
 )
 from PySide6.QtCore import Qt, QSettings, QThread, Signal, QSortFilterProxyModel, QSize, QTimer
-from PySide6.QtGui import QFont, QAction, QColor, QStandardItemModel, QStandardItem, QKeySequence, QShortcut, QBrush, QPalette
+from PySide6.QtGui import QFont, QAction, QColor, QIcon, QStandardItemModel, QStandardItem, QKeySequence, QShortcut, QBrush, QPalette
 
 
 class _ColorPreservingDelegate(QStyledItemDelegate):
@@ -33,7 +33,6 @@ class _ColorPreservingDelegate(QStyledItemDelegate):
 
 from warp.trainer.annotation_widget import AnnotationWidget
 from warp.trainer.training_data      import TrainingDataManager, AnnotationState
-from warp.trainer.sync               import SyncWorker, HFTokenDialog
 from warp.style import (
     apply_dark_style, primary_btn_style, secondary_btn_style,
     warning_btn_style, danger_btn_style, toggle_yellow_btn_style,
@@ -43,7 +42,6 @@ from warp.style import (
 log = logging.getLogger(__name__)
 
 _KEY_LAST_DIR       = 'warp_core/last_dir'
-_KEY_HF_TOKEN       = 'warp_core/hf_token'
 _KEY_AUTO_ACCEPT    = 'warp_core/auto_accept_enabled'
 _KEY_AUTO_CONF      = 'warp_core/auto_accept_conf'
 
@@ -135,7 +133,9 @@ SLOT_GROUPS['ALL'] = ALL_SLOTS
 SPECIALIZATION_NAMES: list[str] = ['Command Officer', 'Intelligence Officer', 'Miracle Worker', 'Pilot', 'Temporal Operative', 'Constable', 'Commando', 'Strategist']
 
 class ScreenTypeDetectorWorker(QThread):
-    progress = Signal(int, int, str, str)
+    # progress: (idx, total, filename, stype, conf)
+    progress = Signal(int, int, str, str, float)
+    # finished: {filename: (stype, conf)}  — conf is raw ML confidence (0.0 if no model)
     finished = Signal(dict)
     def __init__(self, paths: list, models_dir=None, parent=None):
         super().__init__(parent)
@@ -153,7 +153,7 @@ class ScreenTypeDetectorWorker(QThread):
 
     def run(self):
         from src.setsdebug import log as _slog
-        results: dict[str, str] = {}
+        results: dict[str, tuple] = {}   # filename → (stype, conf)
         total = len(self._paths)
         classifier = None
 
@@ -179,33 +179,30 @@ class ScreenTypeDetectorWorker(QThread):
                 _slog.info('ScreenTypeDetector: interrupted')
                 break
             stype = 'UNKNOWN'
+            conf  = 0.0
             is_correct = False
             try:
                 img = cv2.imread(str(path))
                 if img is None:
                     _slog.warning(f'ScreenTypeDetector: cannot read {path.name}')
                 elif classifier is None:
-                    # _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → UNKNOWN (no classifier)')
-                    pass # Suppress per-file log
+                    pass
                 else:
                     ml_stype, ml_conf = classifier.classify(img)
+                    conf = ml_conf
                     if ml_stype and ml_conf >= 0.70:
                         stype = ml_stype
                         is_correct = True
-                        # _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → {stype} (conf={ml_conf:.2f})')
-                    else:
-                        # _slog.info(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → UNKNOWN (best={ml_stype!r} conf={ml_conf:.2f} < 0.70)')
-                        pass # Suppress per-file log
             except Exception as e:
                 _slog.warning(f'ScreenTypeDetector: [{idx+1}/{total}] {path.name} → error: {e}')
-            
-            results[path.name] = stype
+
+            results[path.name] = (stype, conf)
             stats_total_per_type[stype] = stats_total_per_type.get(stype, 0) + 1
             if is_correct:
                 stats_correct_per_type[stype] = stats_correct_per_type.get(stype, 0) + 1
                 overall_correct += 1
 
-            self.progress.emit(idx + 1, total, path.name, stype)
+            self.progress.emit(idx + 1, total, path.name, stype, conf)
         
         self._log_screen_type_stats(total, overall_correct, stats_total_per_type, stats_correct_per_type)
         _slog.info(f'ScreenTypeDetector: done — {len(results)} processed')
@@ -569,6 +566,39 @@ class _RecognitionProgressDialog(QWidget):
         lay.addWidget(bar)
         lay.addLayout(btn_row)
 
+def _make_dot_icon(color: str) -> 'QIcon':
+    """Small 14×14 filled circle icon for green/yellow confirmation state."""
+    from PySide6.QtGui import QPixmap, QPainter, QColor
+    pix = QPixmap(14, 14)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QColor(color))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(1, 1, 12, 12)
+    p.end()
+    from PySide6.QtGui import QIcon
+    return QIcon(pix)
+
+
+_ICON_USER_CONFIRMED: 'QIcon | None' = None   # green — created lazily
+_ICON_ML_AUTO:        'QIcon | None' = None   # yellow — created lazily
+
+
+def _get_user_icon() -> 'QIcon':
+    global _ICON_USER_CONFIRMED
+    if _ICON_USER_CONFIRMED is None:
+        _ICON_USER_CONFIRMED = _make_dot_icon('#44dd66')
+    return _ICON_USER_CONFIRMED
+
+
+def _get_ml_icon() -> 'QIcon':
+    global _ICON_ML_AUTO
+    if _ICON_ML_AUTO is None:
+        _ICON_ML_AUTO = _make_dot_icon('#ffcc00')
+    return _ICON_ML_AUTO
+
+
 class WarpCoreWindow(QMainWindow):
     BOFF_ABILITY_PROPERTIES: dict[str, tuple[str, str]] = {
         "Beams: Fire at Will": ("Tactical", "Space"), "Beams: Overload": ("Tactical", "Space"),
@@ -618,7 +648,9 @@ class WarpCoreWindow(QMainWindow):
         self._screenshots: list[Path] = []
         self._current_idx = -1
         self._screen_types: dict[str, str] = {}
-        self._screen_types_manual: set[str] = set()
+        self._screen_types_manual: set[str] = set()   # green — user confirmed
+        self._screen_types_ml_auto: set[str] = set()  # yellow — ML ≥95% auto-accepted
+        self._detect_trigger: str = 'unknown'
         self._recognition_cache: dict[str, list] = {}
         self._recognition_items: list[dict] = []
         self._manual_bbox_mode = False
@@ -632,8 +664,6 @@ class WarpCoreWindow(QMainWindow):
         self._recog_worker = None
         self._detect_dlg = None
         self._recog_dlg = None
-        self._sync_worker  = None
-        self._pending_sync = False   # set True when confirmed data changes; timer flushes
         self._selection_just_changed = False
         self.setWindowTitle('WARP CORE — ML Trainer')
         self.setMinimumSize(1280, 740)
@@ -663,7 +693,7 @@ class WarpCoreWindow(QMainWindow):
         """Wayland fix: attach completer popup QWindow to main window so xdg_popup works."""
         wh = popup.windowHandle()
         mwh = self.windowHandle()
-        if wh and mwh:
+        if wh and mwh and wh is not mwh:
             wh.setTransientParent(mwh)
 
     def _build_ui(self):
@@ -929,21 +959,26 @@ class WarpCoreWindow(QMainWindow):
             return
         self._screen_types.clear()
         self._screen_types_manual.clear()
+        self._screen_types_ml_auto.clear()
         self._recognition_cache.clear()
         self._recognition_items = []
         self._current_idx = -1
         self._file_list.clear()
-        # Restore persisted manual screen type labels from TrainingDataManager
-        persisted = self._data_mgr.get_all_screen_types()
+        # Restore persisted screen type labels and confirmation state
+        persisted      = self._data_mgr.get_all_screen_types()
+        user_confirmed = self._data_mgr.get_user_confirmed_set()
         for p in self._screenshots:
             saved = persisted.get(p.name, '')
             self._screen_types[p.name] = saved if saved else 'UNKNOWN'
-            if saved:
+            if p.name in user_confirmed:
                 self._screen_types_manual.add(p.name)
+            elif saved:
+                self._screen_types_ml_auto.add(p.name)
             self._file_list.addItem(self._make_file_list_item(p, self._screen_types[p.name]))
         self._start_screen_type_detection("open_folder")
 
     def _start_screen_type_detection(self, trigger: str = 'unknown'):
+        self._detect_trigger = trigger
         total = len(self._screenshots)
         self._detect_dlg = _DetectProgressDialog(total, parent=self)
         self._detect_dlg.cancelled.connect(self._on_detect_cancelled)
@@ -955,7 +990,8 @@ class WarpCoreWindow(QMainWindow):
         self._detect_worker.start()
         self.statusBar().showMessage(f'Detecting screen types for {total} screenshot(s)...')
 
-    def _on_detect_progress(self, idx: int, total: int, filename: str, stype: str):
+    def _on_detect_progress(self, idx: int, total: int, filename: str, stype: str, conf: float):
+        # During scan: only update UI for items without a user-confirmed type
         if filename in self._screen_types_manual:
             if self._detect_dlg:
                 self._detect_dlg.update_progress(idx, total, filename, self._screen_types.get(filename, 'UNKNOWN'))
@@ -965,11 +1001,12 @@ class WarpCoreWindow(QMainWindow):
             if p.name == filename:
                 item = self._file_list.item(row)
                 if item:
-                    icon  = SCREEN_TYPE_ICONS.get(stype, '?')
-                    label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
+                    sc_icon = SCREEN_TYPE_ICONS.get(stype, '?')
+                    label   = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
                     self._file_list.blockSignals(True)
-                    item.setText(f'{icon} {label}\n  {filename}')
-                    item.setCheckState(Qt.CheckState.Unchecked)  # auto-detected = unconfirmed
+                    item.setText(f'{sc_icon} {label}\n  {filename}')
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                    item.setIcon(QIcon())  # no dot yet — final state set in _on_detect_finished
                     self._file_list.blockSignals(False)
                     if self._data_mgr.has_annotations(p):
                         item.setForeground(QColor('#7effc8'))
@@ -982,25 +1019,79 @@ class WarpCoreWindow(QMainWindow):
             self._detect_dlg.update_progress(idx, total, filename, stype)
 
     def _on_detect_finished(self, results: dict):
-        for fname, stype in results.items():
-            if fname not in self._screen_types_manual:
-                self._screen_types[fname] = stype
+        """
+        Apply ML results with confirmation state logic:
+
+        re-detect trigger ('detect_screen_types_button'):
+          - green + ML conf ≥ 0.95 → override to yellow (show ML learning)
+          - green + ML conf < 0.95 → keep green + training signal if ML disagrees
+          - yellow / UNKNOWN + ML conf ≥ 0.95 → yellow (update type)
+          - yellow / UNKNOWN + ML conf < 0.95 → keep existing state
+
+        open_folder trigger:
+          - green items → never touched
+          - others → conf ≥ 0.95 → yellow; else keep UNKNOWN
+        """
+        import cv2
+        is_redetect = (self._detect_trigger == 'detect_screen_types_button')
+        training_signals: list[tuple] = []   # (path, user_stype) to feed to classifier
+
+        for fname, (ml_stype, ml_conf) in results.items():
+            path = next((p for p in self._screenshots if p.name == fname), None)
+            if path is None:
+                continue
+            is_user = fname in self._screen_types_manual
+            user_stype = self._screen_types.get(fname, 'UNKNOWN')
+
+            if is_user:
+                if is_redetect and ml_stype != 'UNKNOWN' and ml_conf >= 0.95:
+                    # ML confident enough → show as yellow (override green)
+                    self._screen_types[fname] = ml_stype
+                    self._screen_types_manual.discard(fname)
+                    self._screen_types_ml_auto.add(fname)
+                    self._data_mgr.set_screen_type(path, ml_stype, user_confirmed=False)
+                else:
+                    # Keep green; collect training signal if ML has a different opinion
+                    if ml_stype != 'UNKNOWN' and ml_stype != user_stype:
+                        training_signals.append((path, user_stype))
+            else:
+                if ml_stype != 'UNKNOWN' and ml_conf >= 0.95:
+                    self._screen_types[fname] = ml_stype
+                    self._screen_types_ml_auto.add(fname)
+                    self._data_mgr.set_screen_type(path, ml_stype, user_confirmed=False)
+                # conf < 0.95: keep whatever _on_detect_progress already set (or UNKNOWN)
+
+        # Update file list UI
         for row, p in enumerate(self._screenshots):
-            stype = self._screen_types.get(p.name, 'UNKNOWN')
+            stype     = self._screen_types.get(p.name, 'UNKNOWN')
+            is_user   = p.name in self._screen_types_manual
+            is_ml     = p.name in self._screen_types_ml_auto
             item = self._file_list.item(row)
             if item:
-                icon  = SCREEN_TYPE_ICONS.get(stype, '?')
-                label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
-                confirmed = p.name in self._screen_types_manual
+                sc_icon = SCREEN_TYPE_ICONS.get(stype, '?')
+                label   = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
                 self._file_list.blockSignals(True)
-                item.setText(f'{icon} {label}\n  {p.name}')
-                item.setCheckState(
-                    Qt.CheckState.Checked if confirmed else Qt.CheckState.Unchecked)
+                item.setText(f'{sc_icon} {label}\n  {p.name}')
+                item.setCheckState(Qt.CheckState.Checked if (is_user or is_ml) else Qt.CheckState.Unchecked)
+                item.setIcon(_get_user_icon() if is_user else (_get_ml_icon() if is_ml else QIcon()))
                 self._file_list.blockSignals(False)
                 if self._data_mgr.has_annotations(p):
                     item.setForeground(QColor('#7effc8'))
                 else:
                     item.setForeground(Qt.GlobalColor.white)
+
+        # Send training signals to classifier (green kept but ML disagreed)
+        if training_signals:
+            try:
+                from warp.recognition.screen_classifier import ScreenTypeClassifier
+                for path, user_stype in training_signals:
+                    img = cv2.imread(str(path))
+                    if img is not None:
+                        ScreenTypeClassifier.add_session_example(img, user_stype)
+                        log.debug(f'Screen type training signal: {path.name} → user={user_stype}')
+            except Exception as e:
+                log.debug(f'Screen type training signal error: {e}')
+
         if self._detect_dlg:
             self._detect_dlg.close()
             self._detect_dlg = None
@@ -1024,13 +1115,14 @@ class WarpCoreWindow(QMainWindow):
         self._update_progress()
 
     def _make_file_list_item(self, p: Path, stype: str) -> QListWidgetItem:
-        icon = SCREEN_TYPE_ICONS.get(stype, '?')
-        label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
-        item = QListWidgetItem(f'{icon} {label}\n  {p.name}')
-        confirmed = p.name in self._screen_types_manual
+        sc_icon = SCREEN_TYPE_ICONS.get(stype, '?')
+        label   = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
+        item = QListWidgetItem(f'{sc_icon} {label}\n  {p.name}')
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        item.setCheckState(
-            Qt.CheckState.Checked if confirmed else Qt.CheckState.Unchecked)
+        is_user = p.name in self._screen_types_manual
+        is_ml   = p.name in self._screen_types_ml_auto
+        item.setCheckState(Qt.CheckState.Checked if (is_user or is_ml) else Qt.CheckState.Unchecked)
+        item.setIcon(_get_user_icon() if is_user else (_get_ml_icon() if is_ml else QIcon()))
         if self._data_mgr.has_annotations(p):
             item.setForeground(QColor('#7effc8'))
         else:
@@ -1038,15 +1130,16 @@ class WarpCoreWindow(QMainWindow):
         return item
 
     def _update_file_item_check(self, row: int):
-        """Sync checkbox state of file list item at row with _screen_types_manual."""
+        """Sync checkbox state and dot icon with confirmation state."""
         item = self._file_list.item(row)
         if item is None or row >= len(self._screenshots):
             return
-        fname = self._screenshots[row].name
-        confirmed = fname in self._screen_types_manual
+        fname   = self._screenshots[row].name
+        is_user = fname in self._screen_types_manual
+        is_ml   = fname in self._screen_types_ml_auto
         self._file_list.blockSignals(True)
-        item.setCheckState(
-            Qt.CheckState.Checked if confirmed else Qt.CheckState.Unchecked)
+        item.setCheckState(Qt.CheckState.Checked if (is_user or is_ml) else Qt.CheckState.Unchecked)
+        item.setIcon(_get_user_icon() if is_user else (_get_ml_icon() if is_ml else QIcon()))
         self._file_list.blockSignals(False)
 
     def _on_file_item_changed(self, item: QListWidgetItem):
@@ -1058,15 +1151,16 @@ class WarpCoreWindow(QMainWindow):
         is_checked = item.checkState() == Qt.CheckState.Checked
         stype = self._screen_types.get(path.name, 'UNKNOWN')
         if is_checked:
-            # User confirms the current ML-detected type
+            # User confirms current type → green
             self._screen_types_manual.add(path.name)
-            self._save_screen_type_example(path, stype)
+            self._screen_types_ml_auto.discard(path.name)
+            self._data_mgr.set_screen_type(path, stype, user_confirmed=True)
         else:
-            # User un-confirms — remove from manual set
-            # (type label stays, but will be re-detectable by ML next time)
+            # User un-confirms — clear both confirmed states, remove type label
             self._screen_types_manual.discard(path.name)
+            self._screen_types_ml_auto.discard(path.name)
             self._data_mgr.remove_screen_type(path, stype)
-            # save() already called inside remove_screen_type
+        self._update_file_item_check(row)
 
     def _load_screenshot(self, row: int):
         if row < 0 or row >= len(self._screenshots): return
@@ -1147,36 +1241,24 @@ class WarpCoreWindow(QMainWindow):
         path = self._screenshots[self._current_idx]
         self._screen_types[path.name] = stype
         self._screen_types_manual.add(path.name)
+        self._screen_types_ml_auto.discard(path.name)
         self._recognition_cache.pop(path.name, None)
+        self._data_mgr.set_screen_type(path, stype, user_confirmed=True)
         item = self._file_list.item(self._current_idx)
         if item:
-            icon = SCREEN_TYPE_ICONS.get(stype, '?')
-            label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
+            sc_icon = SCREEN_TYPE_ICONS.get(stype, '?')
+            label   = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
             self._file_list.blockSignals(True)
-            item.setText(f'{icon} {label}\n  {path.name}')
+            item.setText(f'{sc_icon} {label}\n  {path.name}')
             item.setCheckState(Qt.CheckState.Checked)
+            item.setIcon(_get_user_icon())
             self._file_list.blockSignals(False)
         self._update_screen_type_ui(stype)
-        self._save_screen_type_example(path, stype)
+        self._update_progress()
+        log.info(f'Manual screen type override: {path.name} → {stype}')
 
-    def _save_screen_type_example(self, path: Path, stype: str):
-        """Zapisuje ręczne nadpisanie typu ekranu dla danego screenshotu."""
-        try:
-            # Informujemy menedżera danych o nowym typie ekranu
-            self._data_mgr.set_screen_type(path, stype)
-
-            # Aktualizujemy lokalny cache i oznaczamy jako manualnie zmienione
-            self._screen_types[path.name] = stype
-            self._screen_types_manual.add(path.name)
-
-            # Odświeżamy UI (listę plików i plakietkę typu ekranu)
-            self._update_progress()
-            self._update_screen_type_ui(stype)
-
-            log.info(f"Manual screen type override: {path.name} -> {stype}")
-        except Exception as e:
-            log.error(f"Failed to save screen type example: {e}")
-            QMessageBox.critical(self, "Error", f"Could not save screen type: {e}")
+    # _save_screen_type_example removed — logic consolidated into
+    # _on_type_override_changed (dropdown) and _on_file_item_changed (checkbox).
 
     def _seed_matcher_from_confirmed(self, path: Path):
         """
@@ -2648,11 +2730,12 @@ class WarpCoreWindow(QMainWindow):
         self._review_list.setFocus()
 
     def _auto_sync(self):
-        """Mark that confirmed data changed — actual upload happens on next timer tick."""
-        self._pending_sync = True
+        """Upload is now handled by SyncManager (app-level background timer). No-op."""
+        pass
 
     def _on_sync_timer(self):
-        """Called every 5 minutes — uploads crops to HF and checks for a newer central model."""
+        """Called every 5 minutes — refreshes community knowledge and checks for a newer model.
+        Crop upload is handled by SyncManager (started at app launch in warp_button.py)."""
         # Refresh community knowledge (pHash overrides)
         if self._sync_client:
             try:
@@ -2666,30 +2749,6 @@ class WarpCoreWindow(QMainWindow):
             ModelUpdater().check_and_update(self._sets_root)
         except Exception as e:
             log.debug(f'WARP CORE: model update check error: {e}')
-
-        if not self._pending_sync:
-            return
-        try:
-            token = (Path(__file__).parent.parent / 'hub_token.txt').read_text().strip()
-            if not token or token == 'YOUR_HF_TOKEN_HERE':
-                return
-            if self._sync_worker and self._sync_worker.isRunning():
-                log.debug('HF Sync: previous upload still running, will retry next tick')
-                return
-            log.info('HF Sync: timer tick — uploading pending changes to HuggingFace…')
-            self._pending_sync = False
-            self._sync_worker = SyncWorker(data_manager=self._data_mgr, hf_token=token, mode='upload')
-            self._sync_worker.progress.connect(lambda pct, msg: log.debug(f'HF Sync [{pct}%]: {msg}'))
-            self._sync_worker.finished.connect(self._on_sync_finished)
-            self._sync_worker.start()
-        except Exception as e:
-            log.warning(f'HF Sync: init error: {e}')
-            self._pending_sync = True  # restore flag so next tick retries
-
-    def _on_sync_finished(self, ok: bool):
-        msg = 'Synced.' if ok else 'Sync failed.'
-        self.statusBar().showMessage(msg)
-        log.info(f'HF Sync: finished — {"OK" if ok else "ERROR"}')
 
     # Screen type → importer build_type mapping (same as RecognitionWorker)
     _STYPE_TO_BUILD: dict[str, str] = {
@@ -2802,11 +2861,6 @@ class WarpCoreWindow(QMainWindow):
             pass
         if hasattr(self, '_sync_timer') and self._sync_timer:
             self._sync_timer.stop()
-
-        # Stop sync worker if it's currently running to prevent "QThread destroyed" abort
-        if hasattr(self, '_sync_worker') and self._sync_worker and self._sync_worker.isRunning():
-            self._sync_worker.requestInterruption()
-            self._sync_worker.wait(1000)
 
         # Stop active OCR workers
         if hasattr(self, '_ocr_workers'):
