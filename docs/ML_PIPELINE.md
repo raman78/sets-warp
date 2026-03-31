@@ -110,10 +110,23 @@ staging/<install_id>/annotations.jsonl    ← one JSON line per crop:
 staging/<install_id>/screen_types/<TYPE>/<sha256>.png
 ```
 
+**Ship Type / Ship Tier text crops** → same staging repo:
+```
+staging/<install_id>/crops/<sha256>.png       ← text region crop (same path as icon crops)
+staging/<install_id>/annotations.jsonl        ← entry per text crop:
+    {"crop_sha256": "...", "name": "Fleet Support Cruiser",
+     "slot": "Ship Type", "ml_name": "F1eet Support Cruiser", "date": "..."}
+```
+
+- `name`: user-confirmed ship type / tier string
+- `ml_name`: raw OCR output before user correction (empty when OCR was already correct)
+- These entries are filtered out of icon classifier training and processed separately
+  to build `ship_type_corrections.json` (see §3 below)
+
 ### What is NOT uploaded
 
-- Full screenshots (only the 64×64 icon crop)
-- Any personal information
+- Full screenshots (only the 64×64 icon crop or text region crop)
+- Ship name or character name (Ship Name bbox is position-only — never crops, never text)
 - The local `.pt` model files
 - Anything outside `warp/training_data/`
 
@@ -201,6 +214,24 @@ File: `sets-warp-backend/admin_train.py` — `train_screen_classifier()`
 
 Same flow with MobileNetV3-Small. Only runs if ≥ 7 screen type screenshots
 are available. Fine-tunes from previous `screen_classifier.pt` backbone.
+
+### Ship type / tier OCR correction map
+
+File: `sets-warp-backend/admin_train.py` — `collect_text_corrections()`
+
+```
+1. Filter staging annotations where slot in {'Ship Type', 'Ship Tier'}
+2. For each (ml_name, name) pair where ml_name != '' and ml_name != name:
+     votes[ml_name][install_id] = name   ← 1 vote per install_id
+3. Democratic vote per ml_name key → majority corrected_name wins
+4. Build ship_type_corrections.json:
+     {"F1eet Support Cruiser": "Fleet Support Cruiser", ...}
+5. Upload to sets-sto/warp-knowledge/models/ship_type_corrections.json
+```
+
+Applied in `warp/recognition/text_extractor.py` immediately after OCR reads
+the ship type/tier text, before fuzzy ShipDB lookup. Ships with OCR errors
+that multiple users have corrected are instantly fixed for all clients.
 
 ### model_version.json
 
@@ -306,8 +337,11 @@ check.
         │             │  2. Screen type capping        │
         │             │  3. Download crops (bulk)      │
         │             │  4. Fine-tune EfficientNet-B0  │
+        │             │     (icon crops only)          │
         │             │  5. Fine-tune MobileNetV3-Small│
-        │             │  6. Upload to warp-knowledge   │
+        │             │  6. Build ship_type_corr.json  │
+        │             │     (Ship Type/Tier entries)   │
+        │             │  7. Upload to warp-knowledge   │
         │             └───────────────┬────────────────┘
         │                             │
         │                             ▼
@@ -316,6 +350,7 @@ check.
         │             models/screen_classifier.pt
         │             models/model_version.json
         │             models/label_map.json
+        │             models/ship_type_corrections.json  (optional)
         │                             │
         │                             │  [ModelUpdater, 15s after launch,
         │                             │   at most once per 24 h]
@@ -352,10 +387,11 @@ The local `.pt` and community `.pt` are the **same file** —
 
 | Repo | Path | Contents |
 |------|------|----------|
-| `sets-sto/sto-icon-dataset` | `staging/<install_id>/crops/` | Icon crop PNGs (64×64) |
-| `sets-sto/sto-icon-dataset` | `staging/<install_id>/annotations.jsonl` | Label records |
+| `sets-sto/sto-icon-dataset` | `staging/<install_id>/crops/` | Icon crop PNGs (64×64) + Ship Type/Tier text crops |
+| `sets-sto/sto-icon-dataset` | `staging/<install_id>/annotations.jsonl` | Label records (icon + text; includes `ml_name` for text slots) |
 | `sets-sto/sto-icon-dataset` | `staging/<install_id>/screen_types/<TYPE>/` | Screen type PNGs |
 | `sets-sto/warp-knowledge` | `models/` | Trained .pt files, label_map.json, model_version.json |
+| `sets-sto/warp-knowledge` | `models/ship_type_corrections.json` | OCR correction map: `{raw_ocr: corrected_name}` |
 | `sets-sto/warp-knowledge` | `knowledge.json` | pHash → item_name community overrides |
 | `sets-sto/warp-knowledge` | `models/training_manifest.json` | SHA set from last training run |
 
@@ -372,7 +408,8 @@ The local `.pt` and community `.pt` are the **same file** —
 | `warp/models/model_version.json` | `trained_at`, `source`, `val_acc` of current model |
 | `warp/models/model_version_remote_cache.json` | Timestamp of last remote version check |
 | `warp/training_data/annotations.json` | All confirmed annotations |
-| `warp/training_data/crops/<sha>.png` | Confirmed icon crops |
+| `warp/training_data/crops/<sha>.png` | Confirmed icon crops + Ship Type/Tier text region crops |
 | `warp/training_data/screen_types/<TYPE>/<file>.png` | Confirmed screen type screenshots |
+| `warp/models/ship_type_corrections.json` | OCR correction map downloaded from community (optional) |
 | `warp/knowledge/install_id.txt` | Anonymous UUID identifying this installation |
 | `warp/hub_token.txt` | HuggingFace write token (optional, for uploads) |

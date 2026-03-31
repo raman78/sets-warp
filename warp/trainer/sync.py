@@ -229,12 +229,15 @@ class SyncWorker(QThread):
             ))
             existing_hashes.add(sha)
             uploaded += 1
-            new_annotations.append({
+            ann_entry: dict = {
                 "slot":        item["slot"],
                 "name":        item["name"],
                 "crop_sha256": sha,
                 "date":        today,
-            })
+            }
+            if item.get("ml_name") is not None:
+                ann_entry["ml_name"] = item["ml_name"]
+            new_annotations.append(ann_entry)
 
         if new_annotations:
             self.progress.emit(88, f"Uploading {uploaded} crops in one commit…")
@@ -490,7 +493,8 @@ class SyncWorker(QThread):
                 filename=ANNOTATIONS_FILE,
                 repo_type=HF_REPO_TYPE,
             )
-            count = sum(1 for line in open(path) if line.strip())
+            with open(path) as _f:
+                count = sum(1 for line in _f if line.strip())
             self.progress.emit(100, f"Downloaded {count} approved annotations.")
         except Exception as e:
             logger.warning(f"Download failed: {e}")

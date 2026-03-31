@@ -1008,6 +1008,9 @@ class WarpImporter:
         if self._text is None:
             from warp.recognition.text_extractor import TextExtractor
             self._text = TextExtractor()
+            corrections_path = Path(__file__).resolve().parent / 'models' / 'ship_type_corrections.json'
+            if corrections_path.exists():
+                TextExtractor.load_corrections(corrections_path)
         return self._text
 
     def _get_shipdb(self) -> ShipDB:

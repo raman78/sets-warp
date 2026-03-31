@@ -116,39 +116,98 @@ See `docs/warp_ml_roadmap.md` for full spec. Prerequisite: P10 (done).
 - `model_updater.py` — `community_anchors.json` in `_MODEL_FILES` (optional)
 - `admin_train.py` (backend) — `build_community_anchors()` + `upload_community_anchors()`
 
-**Pending:** Runtime test — requires >= 3 distinct users contributing confirmed layouts.
+**Threshold decision (2026-03-31):**
+Changed `min_contributors` from 3 to 2 in `build_community_anchors()`.
+
+Policy:
+- n=1 contributor → accepted (sole contributor = tentative truth, no conflict)
+- n=2 contributors → accepted (median of both; previously skipped as "ambiguous")
+- n≥3 contributors → accepted (consensus)
+
+Rationale: data is scarce at the current project stage. The old skip-zone (n=2) was
+overly conservative — if only two users contribute differing layouts for a given
+screen type and aspect ratio, taking the median is still better than no data. A third
+contributor will push the median towards the correct value.
+
+**Pending:** Runtime test — requires at least 1 user contributing confirmed layouts
+(code change only: 2 lines in `admin_train.py`, no new dependencies).
 
 ---
 
-## 7. Ship type recognition — community data collection (opt-in)
+## 7. Ship Type / Ship Tier — community OCR correction data
 
-**Status: Planned, design decided**
+**Status: Design finalized (2026-03-31) — implementation pending**
+
+**Previous design (opt-in) superseded.**
 
 **Context:**
-- OCR reads ship type reliably in most cases (text parsing bug fixed 2026-03-29).
-- When OCR fails entirely → fallback is `_GENERIC_PROFILE` (generic T6 slot counts).
-- Local `Ship Type` annotations in `annotations.json` help only locally — they don't feed
-  any central ML training → currently useless from an ecosystem perspective.
-- STO build screenshots are routinely shared publicly (Discord, Reddit, forums), so
-  privacy concern for ship type text is low. Ship name is the sensitive part.
+- OCR reads ship type reliably in most cases; confirmed user text is the gold standard.
+- Ship Name is sensitive personal data (player name) → position only, never uploaded.
+- Ship Type and Ship Tier have a fixed vocabulary and are routinely visible in public
+  screenshots → low privacy concern; user confirmation adds training value.
+- The comparison signal is: OCR raw output (`ml_name`) vs user-confirmed value (`name`).
+  When they differ, that pair is an OCR correction example.
 
-**Decision:** Add **opt-in** community upload of ship type text crops to HF.
+**Decision:** Upload Ship Type and Ship Tier crops **by default** (no opt-in toggle).
+These slots are now `TEXT_LEARNING_SLOTS`, not purely position-only like Ship Name.
 
-**Design:**
-- New opt-in checkbox in settings: "Contribute ship type recognition data" (default: off).
-- When enabled: `Ship Type` bbox crop (text area only, not full screenshot, not ship name)
-  is uploaded to HF alongside icon crops.
-- `Ship Type` stays in `NON_ICON_SLOTS` when opt-in is off.
-- Central `admin_train.py` uses these crops to improve OCR or train a lightweight
-  ship-type text classifier.
-- Local-only fallback usage of Ship Type annotations (`warp_importer.py` lines 911–928)
-  should be removed — it's cheating without training value.
+**Architecture — new slot split:**
+
+| Category | Constant | Slots | Crop saved | Uploaded | ml_name included |
+|----------|----------|-------|-----------|---------|-----------------|
+| `POSITION_ONLY_SLOTS` | `training_data.py` | `Ship Name` | No | No | — |
+| `TEXT_LEARNING_SLOTS` | `training_data.py` | `Ship Type`, `Ship Tier` | Yes | Yes | Yes |
+| `NON_ICON_SLOTS` (combined) | `training_data.py` | all three | — | — | — used for UI logic |
+
+`NON_ICON_SLOTS` remains unchanged for UI purposes (hide icon completer, show OCR
+fields, suppress duplicate warning between cyan bboxes). The split is internal to
+`_sync_crop_index` and `_export_crop` guards.
+
+**Data flow:**
+```
+WARP CORE — user confirms Ship Type bbox:
+  ann.ml_name = "F1eet Support Cruiser"   ← OCR raw (stored in Annotation)
+  ann.name    = "Fleet Support Cruiser"   ← user confirmed (may differ)
+
+sync.py._upload():
+  annotations.jsonl += {crop_sha256, name, slot="Ship Type", ml_name, date}
+  crops/<sha>.png   ← text region crop
+
+admin_train.py.collect_text_corrections():
+  For each (ml_name, name) pair where ml_name != name:
+    votes[ml_name][install_id] = name
+  winner = majority vote per ml_name key
+  → ship_type_corrections.json: {"F1eet Support Cruiser": "Fleet Support Cruiser", ...}
+  → uploaded to sets-sto/warp-knowledge/models/
+
+model_updater.py:
+  downloads ship_type_corrections.json (optional file)
+
+text_extractor.py:
+  after OCR → look up result in ship_type_corrections → apply if found
+```
+
+**Files to change (client — sets-warp):**
+- `warp/trainer/training_data.py` — add `POSITION_ONLY_SLOTS`, `TEXT_LEARNING_SLOTS`;
+  change guards in `_sync_crop_index`, `_export_crop`; add `ml_name` to crop_index
+  entries for `TEXT_LEARNING_SLOTS`; restrict migration to `Ship Name` only.
+- `warp/trainer/sync.py` — include `ml_name` in `annotations.jsonl` entries.
+- `warp/trainer/trainer_window.py` — call `_contribute()` for Ship Type/Tier
+  (was blocked by `slot not in NON_ICON_SLOTS`); skip `add_session_example()` for
+  `TEXT_LEARNING_SLOTS`; ensure `ann.ml_name = ri.get('ocr_raw', '')`.
+- `warp/trainer/model_updater.py` — add `ship_type_corrections.json` to `_MODEL_FILES`
+  (optional download, skip if missing).
+- `warp/recognition/text_extractor.py` — load corrections on init; apply after OCR
+  before fuzzy ship lookup.
+
+**Files to change (backend — sets-warp-backend):**
+- `admin_train.py` — filter `TEXT_LEARNING_SLOTS` out of `collect_votes()` (icon
+  training); add `collect_text_corrections()`; upload `ship_type_corrections.json`.
 
 **Privacy boundary:**
-- Upload: ship type text crop only (e.g. `"Fleet Support Cruiser"`)
+- Upload: text crop of ship type / tier region only
+- Upload: `ml_name` (OCR raw text) and `name` (user confirmed text)
 - Never upload: ship name, character name, full screenshot
-
-**Prerequisite:** P11 infrastructure (SyncWorker extension for text crops).
 
 ---
 

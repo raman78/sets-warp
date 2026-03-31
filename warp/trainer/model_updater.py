@@ -48,6 +48,7 @@ _MODEL_FILES          = [           # files to download from HF knowledge repo
     ('models/screen_classifier.pt',          'screen_classifier.pt'),
     ('models/screen_classifier_labels.json', 'screen_classifier_labels.json'),
     ('models/community_anchors.json',           'community_anchors.json'),        # P11 — optional
+    ('models/ship_type_corrections.json',       'ship_type_corrections.json'),    # OCR correction map — optional
 ]
 # Used only for the one-time "download if missing" fallback
 _SCREEN_CLASSIFIER_FILES = [
@@ -163,6 +164,15 @@ class ModelUpdater:
                     from warp.recognition.layout_detector import LayoutDetector
                     LayoutDetector.reset_community_anchors_cache()
                     log.debug('ModelUpdater: community anchors cache cleared')
+                except Exception:
+                    pass
+                # Reload ship type OCR corrections if downloaded
+                try:
+                    corrections_path = models_dir / 'ship_type_corrections.json'
+                    if corrections_path.exists():
+                        from warp.recognition.text_extractor import TextExtractor
+                        TextExtractor.load_corrections(corrections_path)
+                        log.debug('ModelUpdater: ship_type_corrections reloaded')
                 except Exception:
                     pass
 

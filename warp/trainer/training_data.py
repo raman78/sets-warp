@@ -51,6 +51,18 @@ NON_ICON_SLOTS: frozenset = frozenset({
     'Ship Tier',   # T1–T6-X2 — OCR only
 })
 
+# Sub-categories of NON_ICON_SLOTS with different data-handling behaviour:
+#
+# POSITION_ONLY_SLOTS — bbox saved for layout anchoring only.
+#   No crop PNG, no crop_index entry, no upload. (Privacy: Ship Name is the
+#   player's character name — never stored beyond bbox coordinates.)
+POSITION_ONLY_SLOTS: frozenset = frozenset({'Ship Name'})
+
+# TEXT_LEARNING_SLOTS — crop PNG + confirmed text + ml_name (raw OCR) saved
+#   and uploaded to HF staging so the central pipeline can build
+#   ship_type_corrections.json via democratic voting.
+TEXT_LEARNING_SLOTS: frozenset = frozenset({'Ship Type', 'Ship Tier'})
+
 
 @dataclass
 class Annotation:
@@ -272,11 +284,11 @@ class TrainingDataManager:
         logger.info(f"Training data saved to {self._dir}")
 
     def _migrate_clear_ship_name_text(self) -> None:
-        """One-time migration: clear stored text from Ship Name and Ship Type annotations.
-        Ship Name: position-only, content was never meant to be persisted (privacy).
-        Ship Type: name field no longer used after removal of annotation-based ShipDB fallback.
+        """One-time migration: clear stored text from Ship Name annotations.
+        Ship Name is position-only — content was never meant to be persisted (privacy).
+        Ship Type and Ship Tier are now TEXT_LEARNING_SLOTS and keep their confirmed text.
         """
-        _CLEAR_SLOTS = frozenset({'Ship Name', 'Ship Type'})
+        _CLEAR_SLOTS = frozenset({'Ship Name'})
         changed = 0
         for anns in self._annotations.values():
             for ann in anns:
@@ -284,7 +296,7 @@ class TrainingDataManager:
                     ann['name'] = ''
                     changed += 1
         if changed:
-            logger.info(f'Migration: cleared name text from {changed} Ship Name/Type annotations')
+            logger.info(f'Migration: cleared name text from {changed} Ship Name annotations')
             self.save()
 
     def _load(self):
@@ -326,10 +338,12 @@ class TrainingDataManager:
         - Updates state (PENDING → CONFIRMED etc.)
         - Updates name and slot (may change after user confirmation)
         - Re-exports crop if it doesn't exist yet
-        - NON_ICON_SLOTS are skipped — their bbox is kept in annotations.json
+        - POSITION_ONLY_SLOTS are skipped — their bbox is kept in annotations.json
           for layout learning, but no crop PNG or crop_index entry is created.
+        - TEXT_LEARNING_SLOTS get a crop PNG + crop_index entry that includes ml_name
+          so SyncWorker can upload them for OCR correction training.
         """
-        if ann.slot in NON_ICON_SLOTS:
+        if ann.slot in POSITION_ONLY_SLOTS:
             return
 
         safe_slot = ann.slot.replace(" ", "_").lower()
@@ -355,12 +369,15 @@ class TrainingDataManager:
                 logger.warning(f'_sync_crop_index: export failed: {e}')
 
         # Update index entry with current state/name/slot
-        self._crop_index[fname] = {
+        entry: dict = {
             'slot':   ann.slot,
             'name':   ann.name,
             'state':  ann.state,
             'source': image_path.name,
         }
+        if ann.slot in TEXT_LEARNING_SLOTS:
+            entry['ml_name'] = ann.ml_name
+        self._crop_index[fname] = entry
 
     # ---------------------------------------------------------------- crop export
 
@@ -368,9 +385,10 @@ class TrainingDataManager:
         """
         Crops the icon region from the original screenshot and saves it as PNG.
         Filename is derived from item name + slot (for easy dataset browsing).
-        NON_ICON_SLOTS are skipped — text fields have no icon to classify.
+        POSITION_ONLY_SLOTS are skipped — no crop needed (position anchor only).
+        TEXT_LEARNING_SLOTS get a crop so the text region can be uploaded for OCR training.
         """
-        if ann.slot in NON_ICON_SLOTS:
+        if ann.slot in POSITION_ONLY_SLOTS:
             return
         import cv2
         img = cv2.imread(str(image_path))
@@ -407,12 +425,15 @@ class TrainingDataManager:
                 break
 
         # Update crop index
-        self._crop_index[fname] = {
+        _entry: dict = {
             "slot":   ann.slot,
             "name":   ann.name,
             "state":  ann.state,
             "source": image_path.name,
         }
+        if ann.slot in TEXT_LEARNING_SLOTS:
+            _entry["ml_name"] = ann.ml_name
+        self._crop_index[fname] = _entry
 
     # ---------------------------------------------------------------- export for sync
 
@@ -446,12 +467,15 @@ class TrainingDataManager:
                         if old_path.exists():
                             old_path.rename(new_path)
                         del self._crop_index[existing]
-                    self._crop_index[fname] = {
+                    _repair_entry: dict = {
                         'slot':   ann.slot,
                         'name':   ann.name,
                         'state':  AnnotationState.CONFIRMED,
                         'source': image_name,
                     }
+                    if ann.slot in TEXT_LEARNING_SLOTS:
+                        _repair_entry['ml_name'] = ann.ml_name
+                    self._crop_index[fname] = _repair_entry
                     # Export crop PNG if missing
                     crop_path = self._dir / self.CROPS_DIR / fname
                     if not crop_path.exists():
