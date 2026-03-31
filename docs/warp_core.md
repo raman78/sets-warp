@@ -144,29 +144,62 @@ Local training adds `"source": "local"`. `ModelUpdater` compares `trained_at` ti
 ## Training data flow
 
 ```
-User confirms bbox in WARP CORE
+User confirms icon bbox in WARP CORE
   -> TrainingDataManager.add_annotation()
   -> annotations.json + crop PNG saved to warp/training_data/
-  -> SyncWorker uploads crop to HF (sets-sto/sto-icon-dataset)
+  -> SyncWorker uploads crop + annotations.jsonl to HF (sets-sto/sto-icon-dataset)
+
+User confirms Ship Type / Ship Tier bbox
+  -> Same TrainingDataManager path — crop PNG + ml_name (OCR raw) also saved
+  -> SyncWorker includes slot="Ship Type", ml_name in annotations.jsonl entry
+
+User confirms Ship Name bbox
+  -> annotations.json updated (position only) — NO crop, NO upload
 
 GitHub Actions (hourly, admin_train.py)
-  -> trains EfficientNet on all community crops from HF staging
-  -> uploads icon_classifier.pt + model_version.json to HF sets-sto/warp-knowledge
+  -> Icon entries: trains EfficientNet-B0 on community icon crops
+  -> Text entries: collect_text_corrections() builds ship_type_corrections.json
+  -> uploads icon_classifier.pt + ship_type_corrections.json + model_version.json
+     to HF sets-sto/warp-knowledge
 
 Background (every 15 min via WARP CORE sync timer)
   -> ModelUpdater checks remote model_version.json on HF
   -> If remote trained_at > local trained_at: downloads new icon_classifier.pt
+     and ship_type_corrections.json (optional)
   -> icon_matcher.py loads new .pt on next import
+  -> text_extractor.py applies corrections from ship_type_corrections.json
 ```
+
+---
+
+## NON_ICON_SLOTS — two internal categories
+
+`NON_ICON_SLOTS = {'Ship Name', 'Ship Type', 'Ship Tier'}` — text slots, not icon slots.
+Used throughout the UI to suppress icon matching, hide the item-name completer, and show
+OCR widgets instead. For UI logic this set is treated uniformly.
+
+Internally, the set is split into two categories with different data handling:
+
+| Constant | Slots | Crop saved | Uploaded | ml_name | Purpose |
+|----------|-------|-----------|---------|---------|---------|
+| `POSITION_ONLY_SLOTS` | `Ship Name` | No | No | No | Layout anchor only. Ship name is personal data — never stored, never uploaded. |
+| `TEXT_LEARNING_SLOTS` | `Ship Type`, `Ship Tier` | Yes | Yes | Yes | Text crop + confirmed label + OCR raw → builds community `ship_type_corrections.json`. |
+
+`ann.ml_name` stores the raw OCR output for Ship Type / Tier. When the user confirms a
+different value, the pair `(ml_name, name)` is a correction example. The backend
+aggregates these democratically into `ship_type_corrections.json`; clients download it
+and apply corrections in `text_extractor.py` before ShipDB lookup.
+
+See `docs/ML_PIPELINE.md` §2, §3, §7 and `docs/backlog.md` item 7 for the full design.
 
 ---
 
 ## NON_ICON_SLOTS — known pitfalls and solutions (v1.9b)
 
-`NON_ICON_SLOTS = {'Ship Name', 'Ship Type', 'Ship Tier'}` — text-only slots.
-Their bboxes are stored in `annotations.json` for layout learning but no ML crop is
-generated. Despite this difference, most annotation logic is shared with icon slots.
-The section below documents bugs that were hard to reproduce and their root causes.
+The pitfalls below still apply to all three slots regardless of the new internal split.
+Guards that were written as `slot not in NON_ICON_SLOTS` continue to use the combined
+set for UI behaviour; only `_sync_crop_index` and `_export_crop` now use the finer
+`POSITION_ONLY_SLOTS` guard.
 
 ---
 

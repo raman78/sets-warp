@@ -181,6 +181,24 @@ class TextExtractor:
                              | BOFFS | SPEC | '' (unknown)
     """
 
+    # Community OCR correction map: {raw_ocr_text: corrected_text}.
+    # Loaded from ship_type_corrections.json downloaded by ModelUpdater.
+    # Applied to ship_type and ship_tier results after OCR extraction.
+    _corrections: dict[str, str] = {}
+
+    @classmethod
+    def load_corrections(cls, path) -> None:
+        """Load ship_type_corrections.json from the given path."""
+        import json
+        from pathlib import Path
+        try:
+            data = json.loads(Path(path).read_text(encoding='utf-8'))
+            if isinstance(data, dict):
+                cls._corrections = data
+                log.debug(f'TextExtractor: loaded {len(data)} OCR corrections from {path}')
+        except Exception as e:
+            log.warning(f'TextExtractor: could not load corrections from {path}: {e}')
+
     def __init__(self):
         self._ocr = None
 
@@ -341,6 +359,15 @@ class TextExtractor:
                     result['build_type'] = 'GROUND'
                 else:
                     result['build_type'] = 'SPACE'
+
+            # ── Apply community OCR corrections ───────────────────────────────
+            if self._corrections:
+                for key in ('ship_type', 'ship_tier'):
+                    raw = result[key]
+                    if raw and raw in self._corrections:
+                        corrected = self._corrections[raw]
+                        _slog.debug(f'TextExtractor: OCR correction {raw!r} → {corrected!r}')
+                        result[key] = corrected
 
         except Exception as e:
             _slog.debug(f'TextExtractor: unexpected error: {e}')

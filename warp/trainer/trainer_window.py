@@ -1885,7 +1885,10 @@ class WarpCoreWindow(QMainWindow):
             if crop.size == 0:
                 return
             name, conf, thumb, _used_sess = SETSIconMatcher(self._sets).match(crop)
-            
+
+            ri = self._recognition_items[row]
+            slot = ri['slot']
+
             _cross_check = False
             try:
                 if name:
@@ -1893,8 +1896,6 @@ class WarpCoreWindow(QMainWindow):
                     _cross_check = not WarpImporter(sets_app=self._sets)._item_valid_for_slot(name, slot)
             except: pass
 
-            ri = self._recognition_items[row]
-            
             if slot in NON_ICON_SLOTS:
                 if self._ship_type_combo.count() == 0: self._populate_ship_type_combo()
                 v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
@@ -2290,7 +2291,7 @@ class WarpCoreWindow(QMainWindow):
                     image_path=path, bbox=ri['bbox'], slot=slot, name=name,
                     state=AnnotationState.CONFIRMED,
                     ml_conf=ri.get('conf', 0.0),
-                    ml_name=ri.get('orig_name', ''),
+                    ml_name=ri.get('ocr_raw', '') or ri.get('orig_name', ''),
                 )
                 ri['ann_id'] = saved.ann_id  # track for future edits on this bbox
                 self._ann_widget.refresh_annotations(path)

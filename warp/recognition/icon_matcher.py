@@ -521,13 +521,9 @@ class SETSIconMatcher:
         Force reload of the ML model on next inference call.
         Called after local training completes.
         """
-        # Walk all live instances via a class-level weak reference dict
-        # Simple approach: just clear the module-level session cache flag
-        # Each new SETSIconMatcher() will reload fresh from disk.
-        # Existing instances need _ml_session cleared.
-        cls._shared_ml_session        = None
-        cls._shared_label_map         = {}
-        cls._shared_ml_disabled       = False
+        # New SETSIconMatcher() instances will reload fresh from disk.
+        # Existing instances keep their old model until garbage-collected.
+        # (_shared_* attributes don't exist; instance attrs are _ml_session etc.)
         cls._session_examples         = []
         cls._seeded_from_training_data = False
         log.info('WARP: ML session reset -- will reload on next match')
