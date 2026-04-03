@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## v2.6 (2026-04-03) — TEXT_LEARNING_SLOTS; ship_type_corrections pipeline; annotation cleanup; screen type protection
+## v2.6 (2026-04-03) — TEXT_LEARNING_SLOTS; ship_type_corrections pipeline; annotation cleanup; screen type protection; Universal Console placement; screen classifier threshold
 
 ### Feature: Ship Type / Tier OCR correction pipeline (backlog #7)
 - `training_data.py`: split `NON_ICON_SLOTS` into `POSITION_ONLY_SLOTS` (Ship Name — position anchor only, no crop) and `TEXT_LEARNING_SLOTS` (Ship Type, Ship Tier — crop PNG + `ml_name` saved and uploaded).
@@ -23,6 +23,16 @@
 
 ### Improvement: backend training log headers (backlog #9)
 - `admin_train.py`: clear section banners (`── Training screen_classifier ──`) before each model's training block; summary footer after save.
+
+### Fix: Universal Console slot placement
+- `warp_importer.py`: added `'Universal Consoles'` to `SLOT_VALID_TYPES` with all four console types (Universal, Tactical, Engineering, Science). Previously missing entry caused permissive validation for this slot.
+- `trainer_window.py` `_finish_bbox_drawn`: when `_infer_slot_from_name` returns `'Universal Consoles'` but P1 position already identified a specific console slot (Engineering/Science/Tactical Consoles), the positional suggestion is kept. Fixes Universal Console items always being forced into the Universal Consoles row regardless of where they physically are.
+
+### Fix: screen classifier confidence threshold (backlog #11)
+- `screen_classifier.py`: `CONF_THRESHOLD` lowered 0.70 → 0.50, `SESSION_THRESHOLD` 0.65 → 0.55. Community model produces lower softmax values due to Focal Loss calibration; 0.70 caused 96% UNKNOWN results.
+- `trainer_window.py` `ScreenTypeDetectorWorker`: replaced hardcoded `0.70` with imported `CONF_THRESHOLD`.
+- `sync.py`: text crops (ship_type/ship_tier) now use separate size minimums (`10×50 px`) instead of the icon crop minimum (`24×24 px`). Fixes valid wide-but-short text crops being rejected.
+- `admin_train.py` (backend): per-class sample filter (`SC_MIN_CLASS_SAMPLES=5`), 20% val split (was 1 sample), replaced `_FocalLoss` with `CrossEntropyLoss + class weights` to fix softmax miscalibration.
 
 ## v2.5 (2026-03-29) — P11 community anchors; OCR fixes; Ship Name privacy
 
