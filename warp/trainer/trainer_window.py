@@ -1750,7 +1750,14 @@ class WarpCoreWindow(QMainWindow):
             allowed = SLOT_GROUPS.get(group_key)  # None means no restriction
             inferred = self._infer_slot_from_name(name, allowed_slots=allowed)
             if inferred:
-                slot = inferred
+                # Universal Console items are valid in any console slot.
+                # If P1 position already identified a specific console slot, trust it.
+                _specific_console_slots = frozenset({
+                    'Engineering Consoles', 'Science Consoles', 'Tactical Consoles'})
+                if inferred == 'Universal Consoles' and slot in _specific_console_slots:
+                    pass  # keep P1 position suggestion
+                else:
+                    slot = inferred
             else:
                 # Name found by matcher but doesn't belong to any allowed slot
                 # for this screen type — discard to avoid wrong slot assignment
