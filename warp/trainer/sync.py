@@ -56,7 +56,9 @@ ANNOTATIONS_FILE = "data/annotations.jsonl"
 STAGING_ROOT     = "staging"              # user contributions land here
 MAX_DAILY_UPLOADS = 1000                  # per install_id, per UTC day
 MAX_NAME_LEN      = 120
-MIN_CROP_PX       = 24
+MIN_CROP_PX       = 24   # icon crops: minimum on both sides
+MIN_TEXT_CROP_H   = 10   # text crops (ship_type/ship_tier): minimum height only
+MIN_TEXT_CROP_W   = 50   # text crops: minimum width
 
 
 def _get_install_id() -> str:
@@ -84,16 +86,27 @@ def _validate_annotation(item: dict) -> str | None:
     return None
 
 
+_TEXT_CROP_PREFIXES = ('ship_type_', 'ship_tier_')
+
+
 def _validate_crop(path: Path) -> str | None:
-    """Returns None if valid PNG crop, or an error string."""
+    """Returns None if valid PNG crop, or an error string.
+
+    Text crops (ship_type / ship_tier) are wide horizontal bands — they use
+    relaxed height/width minimums instead of the square icon minimum.
+    """
     try:
         import cv2
         img = cv2.imread(str(path))
         if img is None:
             return "unreadable image"
         h, w = img.shape[:2]
-        if h < MIN_CROP_PX or w < MIN_CROP_PX:
-            return f"too small ({w}×{h})"
+        if any(path.name.startswith(p) for p in _TEXT_CROP_PREFIXES):
+            if h < MIN_TEXT_CROP_H or w < MIN_TEXT_CROP_W:
+                return f"too small ({w}×{h})"
+        else:
+            if h < MIN_CROP_PX or w < MIN_CROP_PX:
+                return f"too small ({w}×{h})"
         return None
     except Exception as e:
         return str(e)
