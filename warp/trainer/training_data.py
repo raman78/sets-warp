@@ -258,11 +258,18 @@ class TrainingDataManager:
                 return
 
     def remove_annotation(self, image_path: Path, ann: Annotation):
-        """Remove an annotation by ann_id."""
+        """Remove an annotation by ann_id and clean up its crop_index entry + PNG."""
         key = image_path.name
         dicts = self._annotations.get(key, [])
         self._annotations[key] = [d for d in dicts if d.get("ann_id") != ann.ann_id]
         self._dirty = True
+        # Remove matching crop_index entries (filename contains ann_id) and crop PNG
+        to_remove = [f for f in self._crop_index if ann.ann_id in f]
+        for fname in to_remove:
+            del self._crop_index[fname]
+            crop_path = self._dir / self.CROPS_DIR / fname
+            if crop_path.exists():
+                crop_path.unlink()
 
     # ---------------------------------------------------------------- persistence
 
