@@ -164,7 +164,7 @@ class ScreenTypeDetectorWorker(QThread):
 
         if self._models_dir is not None:
             try:
-                from warp.recognition.screen_classifier import ScreenTypeClassifier
+                from warp.recognition.screen_classifier import ScreenTypeClassifier, CONF_THRESHOLD
                 classifier = ScreenTypeClassifier(self._models_dir)
                 _slog.info(f'ScreenTypeDetector: classifier loaded from {self._models_dir}')
             except Exception as e:
@@ -190,7 +190,7 @@ class ScreenTypeDetectorWorker(QThread):
                 else:
                     ml_stype, ml_conf = classifier.classify(img)
                     conf = ml_conf
-                    if ml_stype and ml_conf >= 0.70:
+                    if ml_stype and ml_conf >= CONF_THRESHOLD:
                         stype = ml_stype
                         is_correct = True
             except Exception as e:

@@ -47,8 +47,8 @@ SCREEN_TYPES = [
 ]
 
 INPUT_SIZE        = 224     # MobileNetV3 input
-CONF_THRESHOLD    = 0.70    # min softmax confidence to trust ML result
-SESSION_THRESHOLD = 0.65    # min cosine similarity to trust k-NN session result
+CONF_THRESHOLD    = 0.50    # min softmax confidence to trust ML result
+SESSION_THRESHOLD = 0.55    # min cosine similarity to trust k-NN session result
 MIN_SESSION_EXAMPLES = 2    # need at least this many session examples to use k-NN
 
 MODEL_FILENAME  = 'screen_classifier.onnx'
