@@ -269,3 +269,32 @@ client-side delete mechanism. Two options considered:
 **Decision: Option B.** Democratic voting in `collect_votes()` already mitigates single
 bad labels. The local fix prevents future bad uploads; already-uploaded bad crops will be
 diluted by correct crops from other users.
+
+---
+
+## 11. GROUND_MIXED screen classifier regression
+
+**Status: PARTIAL FIX (2026-04-03) — backend improvement pending**
+
+**Symptoms (observed 2026-04-03):**
+- `ScreenTypeDetector` returned UNKNOWN for 96% of 119 screenshots (threshold 0.70).
+- Per-class accuracy on local training data: GROUND_MIXED 18%, TRAITS avg_conf=0.39.
+
+**Root causes:**
+1. `CONF_THRESHOLD = 0.70` was too strict for current community model.
+   Focal Loss training produces lower softmax values; many correct predictions fall below it.
+2. `GROUND_MIXED` class severely undertrained in community model — misclassified as TRAITS
+   (30×) and SPACE_MIXED (22×). Community training data likely has very few GROUND_MIXED
+   screenshots relative to other classes (class imbalance in HF staging).
+
+**Client fix applied:**
+- `screen_classifier.py`: `CONF_THRESHOLD` lowered 0.70 → 0.50, `SESSION_THRESHOLD` 0.65 → 0.55.
+- `trainer_window.py`: `ScreenTypeDetectorWorker` now uses imported `CONF_THRESHOLD`
+  instead of a hardcoded literal.
+
+**Backend fix needed (`admin_train.py`):**
+- Add minimum-samples-per-class guard: if a class has fewer than N samples in the
+  community dataset, skip it from the label set for that training run (or oversample).
+- Log per-class sample counts in training output so imbalance is visible.
+- Consider replacing `_FocalLoss` with plain `CrossEntropyLoss` + class weights only;
+  Focal Loss adds miscalibration without clear benefit on a 7-class balanced dataset.
