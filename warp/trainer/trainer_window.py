@@ -1022,18 +1022,13 @@ class WarpCoreWindow(QMainWindow):
         """
         Apply ML results with confirmation state logic:
 
-        re-detect trigger ('detect_screen_types_button'):
-          - green + ML conf ≥ 0.95 → override to yellow (show ML learning)
-          - green + ML conf < 0.95 → keep green + training signal if ML disagrees
-          - yellow / UNKNOWN + ML conf ≥ 0.95 → yellow (update type)
-          - yellow / UNKNOWN + ML conf < 0.95 → keep existing state
+        green (user-confirmed) → ALWAYS preserved, never overwritten.
+          If ML disagrees → silent training signal only (user is the ground truth).
 
-        open_folder trigger:
-          - green items → never touched
-          - others → conf ≥ 0.95 → yellow; else keep UNKNOWN
+        yellow / UNKNOWN + ML conf ≥ 0.95 → yellow (update type).
+        yellow / UNKNOWN + ML conf < 0.95 → keep existing state.
         """
         import cv2
-        is_redetect = (self._detect_trigger == 'detect_screen_types_button')
         training_signals: list[tuple] = []   # (path, user_stype) to feed to classifier
 
         for fname, (ml_stype, ml_conf) in results.items():
@@ -1044,16 +1039,10 @@ class WarpCoreWindow(QMainWindow):
             user_stype = self._screen_types.get(fname, 'UNKNOWN')
 
             if is_user:
-                if is_redetect and ml_stype != 'UNKNOWN' and ml_conf >= 0.95:
-                    # ML confident enough → show as yellow (override green)
-                    self._screen_types[fname] = ml_stype
-                    self._screen_types_manual.discard(fname)
-                    self._screen_types_ml_auto.add(fname)
-                    self._data_mgr.set_screen_type(path, ml_stype, user_confirmed=False)
-                else:
-                    # Keep green; collect training signal if ML has a different opinion
-                    if ml_stype != 'UNKNOWN' and ml_stype != user_stype:
-                        training_signals.append((path, user_stype))
+                # User-confirmed type is always preserved — never overwrite green.
+                # If ML disagrees, collect a training signal so it learns from the user.
+                if ml_stype != 'UNKNOWN' and ml_stype != user_stype:
+                    training_signals.append((path, user_stype))
             else:
                 if ml_stype != 'UNKNOWN' and ml_conf >= 0.95:
                     self._screen_types[fname] = ml_stype
