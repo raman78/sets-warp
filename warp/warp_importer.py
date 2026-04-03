@@ -164,6 +164,8 @@ SLOT_VALID_TYPES: dict[str, frozenset] = {
     'Engineering Consoles':  frozenset({'Ship Engineering Console', 'Universal Console'}),
     'Science Consoles':      frozenset({'Ship Science Console', 'Universal Console'}),
     'Tactical Consoles':     frozenset({'Ship Tactical Console', 'Universal Console'}),
+    'Universal Consoles':    frozenset({'Universal Console', 'Ship Tactical Console',
+                                        'Ship Engineering Console', 'Ship Science Console'}),
     'Hangar':                frozenset({'Hangar Bay'}),
 }
 
