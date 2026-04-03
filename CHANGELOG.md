@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## v2.6 (2026-04-03) — TEXT_LEARNING_SLOTS; ship_type_corrections pipeline; annotation cleanup
+## v2.6 (2026-04-03) — TEXT_LEARNING_SLOTS; ship_type_corrections pipeline; annotation cleanup; screen type protection
 
 ### Feature: Ship Type / Tier OCR correction pipeline (backlog #7)
 - `training_data.py`: split `NON_ICON_SLOTS` into `POSITION_ONLY_SLOTS` (Ship Name — position anchor only, no crop) and `TEXT_LEARNING_SLOTS` (Ship Type, Ship Tier — crop PNG + `ml_name` saved and uploaded).
@@ -12,6 +12,11 @@
 
 ### Bug fix: deleted annotations still uploaded (backlog #10)
 - `remove_annotation()` now also removes the `crop_index` entry and deletes the crop PNG from disk. Previously, deleted annotations could still appear in `get_confirmed_crops()` and be uploaded by `SyncWorker`.
+
+### Fix: user-confirmed screen type never overwritten
+- Green dot (user-confirmed) is permanently protected — re-detect and auto-detect never change it.
+- When ML disagrees with user's confirmed type, a silent training signal is sent so the classifier learns from the correction without touching the UI.
+- Removed `is_redetect` branching logic (was the only place that could override green).
 
 ### Improvement: screen type k-NN seeded on manual confirm
 - `trainer_window.py`: `ScreenTypeClassifier.add_session_example()` is called when the user manually confirms a screen type (checkbox or dropdown), improving in-session k-NN accuracy without waiting for the next image.
