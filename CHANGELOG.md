@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## v2.6 (2026-04-03) — TEXT_LEARNING_SLOTS; ship_type_corrections pipeline; annotation cleanup
+
+### Feature: Ship Type / Tier OCR correction pipeline (backlog #7)
+- `training_data.py`: split `NON_ICON_SLOTS` into `POSITION_ONLY_SLOTS` (Ship Name — position anchor only, no crop) and `TEXT_LEARNING_SLOTS` (Ship Type, Ship Tier — crop PNG + `ml_name` saved and uploaded).
+- `sync.py`: include `ml_name` in `annotations.jsonl` entries for `TEXT_LEARNING_SLOTS`.
+- `model_updater.py`: download `ship_type_corrections.json` (optional); reload `TextExtractor` corrections after model update.
+- `text_extractor.py`: add `_corrections` class var + `load_corrections()` classmethod; apply community OCR corrections to `ship_type`/`ship_tier` after extraction.
+- `warp_importer.py`: auto-load `ship_type_corrections.json` on `TextExtractor` init.
+- `admin_train.py` (backend): `collect_text_corrections()` aggregates (ml_name, name) pairs per install_id, majority-votes per OCR key, uploads `ship_type_corrections.json` to HF.
+
+### Bug fix: deleted annotations still uploaded (backlog #10)
+- `remove_annotation()` now also removes the `crop_index` entry and deletes the crop PNG from disk. Previously, deleted annotations could still appear in `get_confirmed_crops()` and be uploaded by `SyncWorker`.
+
+### Improvement: screen type k-NN seeded on manual confirm
+- `trainer_window.py`: `ScreenTypeClassifier.add_session_example()` is called when the user manually confirms a screen type (checkbox or dropdown), improving in-session k-NN accuracy without waiting for the next image.
+
+### Improvement: backend training log headers (backlog #9)
+- `admin_train.py`: clear section banners (`── Training screen_classifier ──`) before each model's training block; summary footer after save.
+
 ## v2.5 (2026-03-29) — P11 community anchors; OCR fixes; Ship Name privacy
 
 ### Feature: P11 — Community anchors.json
