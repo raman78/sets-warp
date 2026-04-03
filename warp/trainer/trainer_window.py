@@ -1155,6 +1155,14 @@ class WarpCoreWindow(QMainWindow):
             self._screen_types_manual.add(path.name)
             self._screen_types_ml_auto.discard(path.name)
             self._data_mgr.set_screen_type(path, stype, user_confirmed=True)
+            try:
+                import cv2
+                from warp.recognition.screen_classifier import ScreenTypeClassifier
+                img = cv2.imread(str(path))
+                if img is not None:
+                    ScreenTypeClassifier.add_session_example(img, stype)
+            except Exception:
+                pass
         else:
             # User un-confirms — clear both confirmed states, remove type label
             self._screen_types_manual.discard(path.name)
@@ -1244,6 +1252,14 @@ class WarpCoreWindow(QMainWindow):
         self._screen_types_ml_auto.discard(path.name)
         self._recognition_cache.pop(path.name, None)
         self._data_mgr.set_screen_type(path, stype, user_confirmed=True)
+        try:
+            import cv2
+            from warp.recognition.screen_classifier import ScreenTypeClassifier
+            img = cv2.imread(str(path))
+            if img is not None:
+                ScreenTypeClassifier.add_session_example(img, stype)
+        except Exception:
+            pass
         item = self._file_list.item(self._current_idx)
         if item:
             sc_icon = SCREEN_TYPE_ICONS.get(stype, '?')

@@ -1,6 +1,6 @@
 # WARP / WARP CORE — Backlog & Open Questions
 
-**Updated:** 2026-03-30
+**Updated:** 2026-04-03
 
 Items here are not yet scheduled. Each has a status and open questions to resolve before implementation.
 
@@ -108,7 +108,7 @@ print('update result:', result)
 
 See `docs/warp_ml_roadmap.md` for full spec. Prerequisite: P10 (done).
 
-**Status: IN PROGRESS (2026-03-29)**
+**Status: COMPLETE (2026-04-03)**
 
 **Implemented:**
 - `sync.py` — `_upload_anchors_grid()`: uploads normalized slot grids to HF staging
@@ -116,27 +116,16 @@ See `docs/warp_ml_roadmap.md` for full spec. Prerequisite: P10 (done).
 - `model_updater.py` — `community_anchors.json` in `_MODEL_FILES` (optional)
 - `admin_train.py` (backend) — `build_community_anchors()` + `upload_community_anchors()`
 
-**Threshold decision (2026-03-31):**
-Changed `min_contributors` from 3 to 2 in `build_community_anchors()`.
+**Threshold:** `min_contributors=2` (n=1 accepted as tentative truth, n≥2 consensus).
 
-Policy:
-- n=1 contributor → accepted (sole contributor = tentative truth, no conflict)
-- n=2 contributors → accepted (median of both; previously skipped as "ambiguous")
-- n≥3 contributors → accepted (consensus)
-
-Rationale: data is scarce at the current project stage. The old skip-zone (n=2) was
-overly conservative — if only two users contribute differing layouts for a given
-screen type and aspect ratio, taking the median is still better than no data. A third
-contributor will push the median towards the correct value.
-
-**Pending:** Runtime test — requires at least 1 user contributing confirmed layouts
-(code change only: 2 lines in `admin_train.py`, no new dependencies).
+**Pending runtime activation:** Requires ≥1 user contributing confirmed layouts before
+community_anchors.json is generated. Code is complete.
 
 ---
 
 ## 7. Ship Type / Ship Tier — community OCR correction data
 
-**Status: Design finalized (2026-03-31) — implementation pending**
+**Status: COMPLETE (2026-04-03)**
 
 **Previous design (opt-in) superseded.**
 
@@ -223,7 +212,7 @@ lookup from `_load_confirmed_profile()`. Function now returns only confirmed slo
 
 ## 9. Backend training logs — clearer section headers
 
-**Status: Planned**
+**Status: COMPLETE (2026-04-03)**
 
 **Context:**
 GitHub Actions training output mixes PyTorch download progress, HF HTTP logs, and epoch
@@ -257,3 +246,26 @@ screen_classifier saved — 7 classes, val_acc=100.0%
 - Same pattern for icon_classifier (EfficientNet-B0).
 
 **Scope:** `admin_train.py` only — `train()` and `train_screen_classifier()` entry points.
+
+## 10. Bad annotation cleaning
+
+**Status: LOCAL BUG FIXED (2026-04-03) — HF retract: accepted drift (option B)**
+
+**Bug (fixed):** `remove_annotation()` removed entries from `_annotations` but not from
+`_crop_index`. Since `get_confirmed_crops()` reads from `_crop_index`, a deleted annotation
+would still appear as confirmed and be uploaded to HF by SyncWorker.
+
+**Fix applied:** `remove_annotation()` now also removes the crop_index entry and deletes
+the crop PNG on disk. Filenames embed `ann_id` as suffix — lookup is a simple scan.
+
+**HF retract:** Once a crop reaches `sets-sto/sto-icon-dataset/staging/`, there is no
+client-side delete mechanism. Two options considered:
+
+| Option | Description | Complexity |
+|--------|-------------|------------|
+| A. Retraction list | Upload `retractions.json` with hashes to skip; `admin_train.py` filters | Medium |
+| B. Accept drift | Central model fine-tunes regularly — 1 bad crop in 100 is ~1% noise, corrected over time | Zero |
+
+**Decision: Option B.** Democratic voting in `collect_votes()` already mitigates single
+bad labels. The local fix prevents future bad uploads; already-uploaded bad crops will be
+diluted by correct crops from other users.
