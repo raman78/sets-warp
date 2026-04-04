@@ -1040,8 +1040,8 @@ class WarpCoreWindow(QMainWindow):
 
             if is_user:
                 # User-confirmed type is always preserved — never overwrite green.
-                # If ML disagrees, collect a training signal so it learns from the user.
-                if ml_stype != 'UNKNOWN' and ml_stype != user_stype:
+                # If ML is wrong OR uncertain (UNKNOWN), collect a training signal.
+                if ml_stype == 'UNKNOWN' or ml_stype != user_stype:
                     training_signals.append((path, user_stype))
             else:
                 if ml_stype != 'UNKNOWN' and ml_conf >= 0.95:
