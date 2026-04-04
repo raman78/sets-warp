@@ -1,5 +1,31 @@
 # CHANGELOG
 
+## v2.7 (2026-04-04) — Done state; layout learning fix; ground slot order
+
+### Feature: Screenshot "Mark Done" state
+
+- `trainer_window.py`: `✓ Mark Done` / `↩ Back to Edit` toggle button (below progress bar in left panel). Shortcut `Alt+D`.
+- Done screenshots are locked — no new bboxes can be added (`AnnotationWidget.set_locked()`), Add BBox button disabled.
+- Done state persisted to `warp/training_data/screenshots_done.json`.
+- File list colour scheme updated: white = no annotations, light blue `#7ec8ff` = in progress, green `#7effc8` = Done (previously green meant "has annotations").
+- `_file_item_color()` helper centralises the three-state colour logic; all 4 colour-update sites use it.
+
+### Fix: layout learning — one save per screenshot instead of per-accept
+
+- `_learn_layout_for()` removed from `_on_accept()` (was called N times per screenshot, saving partial entries after each confirmed bbox).
+- Now called once when switching away from a screenshot (if not Done) or when clicking Mark Done.
+- `layout_detector.py`: `learn_layout()` accepts `source_file=''` parameter, stored in each `anchors.json` entry.
+- New `remove_layout(source_file)` method removes all entries for a given file (used by Back to Edit).
+
+### Fix: ground equipment slot order
+
+- `GROUND_SLOT_ORDER` in `warp_importer.py` and `layout_detector.py` corrected to match actual STO screenshot order:
+  `Kit Modules → Kit → Body Armor → EV Suit → Personal Shield → Weapons → Ground Devices`
+  (was: `Body Armor → EV Suit → Personal Shield → Weapons → Kit → Kit Modules → Ground Devices`)
+- Strategy 2 (pixel analysis) now maps detected pixel rows to the correct slot names.
+
+---
+
 ## v2.6 (2026-04-03) — TEXT_LEARNING_SLOTS; ship_type_corrections pipeline; annotation cleanup; screen type protection; Universal Console placement; screen classifier threshold
 
 ### Feature: Ship Type / Tier OCR correction pipeline (backlog #7)

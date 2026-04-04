@@ -66,6 +66,7 @@ class AnnotationWidget(QWidget):
         # Mode flags — drawing/editing only active when explicitly enabled
         self._draw_mode_forced: bool = False   # set by + Add BBox / Edit BBox
         self._alt_draw: bool = False             # True when drawing via Alt+LMB
+        self._locked: bool = False               # True when screenshot is marked Done
 
         # Drawing state
         self._drawing       = False
@@ -175,6 +176,17 @@ class AnnotationWidget(QWidget):
         if not enabled: self._drawing = False; self._draw_start = None; self._draw_current = None
         self.update()
 
+    def set_locked(self, locked: bool):
+        """Lock/unlock drawing — used when screenshot is marked Done."""
+        self._locked = locked
+        if locked:
+            self._draw_mode_forced = False
+            self._drawing = False
+            self._draw_start = None
+            self._draw_current = None
+            self._clear_mod_cursor()
+        self.update()
+
     # ---------------------------------------------------------------- painting
 
     def paintEvent(self, event: QPaintEvent):
@@ -246,6 +258,7 @@ class AnnotationWidget(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton: return
+        if self._locked: return
         pos = event.pos()
         # Alt+LMB drag — start drawing a new bbox without toggling Add BBox button
         alt_held   = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)

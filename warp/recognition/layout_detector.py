@@ -40,8 +40,8 @@ SPACE_SLOT_ORDER_STANDARD = [
 SPACE_SLOT_ORDER_CARRIER = SPACE_SLOT_ORDER_STANDARD + ['Hangars']
 
 GROUND_SLOT_ORDER = [
-    'Body Armor', 'EV Suit', 'Personal Shield', 'Weapons',
-    'Kit', 'Kit Modules', 'Ground Devices',
+    'Kit Modules', 'Kit', 'Body Armor', 'EV Suit', 'Personal Shield', 'Weapons',
+    'Ground Devices',
 ]
 
 SLOT_DEFAULT_COUNTS = {
@@ -128,7 +128,23 @@ class LayoutDetector:
         return fallback
     # ── Learning Logic ────────────────────────────────────────────────────────
 
-    def learn_layout(self, screen_type: str, img_size: tuple[int, int], annotations: list[dict]):
+    def remove_layout(self, source_file: str) -> bool:
+        """Remove all learned layout entries for source_file from anchors.json."""
+        if not source_file or not self._calibration or 'learned' not in self._calibration:
+            return False
+        before = len(self._calibration['learned'])
+        self._calibration['learned'] = [
+            e for e in self._calibration['learned']
+            if e.get('source_file') != source_file
+        ]
+        removed = before - len(self._calibration['learned'])
+        if removed:
+            self._save_calibration()
+            _slog.info(f'LayoutDetector: removed {removed} layout entries for {source_file!r}')
+            return True
+        return False
+
+    def learn_layout(self, screen_type: str, img_size: tuple[int, int], annotations: list[dict], source_file: str = ''):
         """
         Record a confirmed layout to anchors.json.
 
@@ -193,11 +209,12 @@ class LayoutDetector:
             self._calibration['learned'] = []
 
         entry = {
-            'type':      screen_type,
-            'aspect':    aspect,
-            'slots':     slot_map,
-            'res':       f'{w}x{h}',
-            'timestamp': int(__import__('time').time()),
+            'type':        screen_type,
+            'aspect':      aspect,
+            'slots':       slot_map,
+            'res':         f'{w}x{h}',
+            'timestamp':   int(__import__('time').time()),
+            'source_file': source_file,
         }
 
         # Avoid exact duplicates

@@ -65,13 +65,17 @@
 
 ## Ground Equipment
 
+Slots appear in this order from top to bottom on the screenshot:
+
+- **Kit Modules** — 1 to 6 slots (top of screen). Maximum 6. Career-specific (Engineering, Science, Tactical) unless labelled Universal.
+- **Kit Frame** — 1 slot. Mandatory. Determines available Module slots.
 - **Body Armor** — 0 or 1 slot (optional).
 - **EV Suit** — 0 or 1 slot (optional).
 - **Personal Shield** — 1 slot. Mandatory. Ground-only (cache: `personal_shield`). Distinct from space Ship Shields (cache: `shield`).
 - **Weapons** — 1 to 2 slots (primary + secondary). Mandatory.
-- **Kit Frame** — 1 slot. Mandatory. Determines available Module slots.
-- **Kit Modules** — 1 to 6 slots. Maximum 6. Career-specific (Engineering, Science, Tactical) unless labelled Universal.
-- **Ground Devices** — 0 to 3 slots (optional).
+- **Ground Devices** — 0 to 3 slots (optional, bottom of screen).
+
+> **WARP:** `GROUND_SLOT_ORDER` in `warp_importer.py` and `layout_detector.py` reflects this top-to-bottom order. Strategy 2 (pixel analysis) maps detected rows to slot names sequentially, so the order must match exactly.
 
 ---
 

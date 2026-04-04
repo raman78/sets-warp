@@ -60,12 +60,12 @@ SPACE_SLOT_ORDER: list[dict] = [
 ]
 
 GROUND_SLOT_ORDER: list[dict] = [
+    {'name': 'Kit Modules',      'key': 'kit_modules',    'mandatory': True,  'max': 6, 'weapon': False, 'exp': False},
+    {'name': 'Kit',              'key': 'kit',            'mandatory': True,  'max': 1, 'weapon': False, 'exp': False},
     {'name': 'Body Armor',       'key': 'armor',          'mandatory': False, 'max': 1, 'weapon': False, 'exp': False},
     {'name': 'EV Suit',          'key': 'ev_suit',        'mandatory': False, 'max': 1, 'weapon': False, 'exp': False},
     {'name': 'Personal Shield',  'key': 'personal_shield','mandatory': True,  'max': 1, 'weapon': False, 'exp': False},
     {'name': 'Weapons',          'key': 'weapons',        'mandatory': True,  'max': 2, 'weapon': True,  'exp': False},
-    {'name': 'Kit',              'key': 'kit',            'mandatory': True,  'max': 1, 'weapon': False, 'exp': False},
-    {'name': 'Kit Modules',      'key': 'kit_modules',    'mandatory': True,  'max': 6, 'weapon': False, 'exp': False},
     {'name': 'Ground Devices',   'key': 'ground_devices', 'mandatory': False, 'max': 3, 'weapon': False, 'exp': False},
 ]
 
