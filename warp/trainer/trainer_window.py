@@ -115,7 +115,7 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
 }
 
 FIXED_VALUE_SLOTS: frozenset[str] = frozenset(['Ship Tier', 'Ship Type'])
-from warp.trainer.training_data import NON_ICON_SLOTS  # Ship Name/Type/Tier — no ML crops
+from warp.trainer.training_data import NON_ICON_SLOTS, SINGLE_INSTANCE_SLOTS
 SHIP_TIER_VALUES: list[str] = ['T1', 'T2', 'T3', 'T4', 'T5', 'T5-U', 'T5-X', 'T5-X2', 'T6', 'T6-X', 'T6-X2']
 _SHIP_INFO_SLOTS = ['Ship Name', 'Ship Type', 'Ship Tier']
 
@@ -1847,6 +1847,16 @@ class WarpCoreWindow(QMainWindow):
                     'Engineering Consoles', 'Science Consoles', 'Tactical Consoles'})
                 if inferred == 'Universal Consoles' and slot in _specific_console_slots:
                     pass  # keep P1 position suggestion
+                elif inferred in SINGLE_INSTANCE_SLOTS and self._current_idx >= 0:
+                    # Skip suggestion if this single-instance slot is already confirmed
+                    _already = {
+                        ann.slot for ann in self._data_mgr.get_annotations(
+                            self._screenshots[self._current_idx])
+                        if ann.state == AnnotationState.CONFIRMED
+                    }
+                    if inferred not in _already:
+                        slot = inferred
+                    # else: keep P1 position suggestion — slot is taken
                 else:
                     slot = inferred
             else:
