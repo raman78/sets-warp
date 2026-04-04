@@ -514,39 +514,64 @@ class RecognitionWorker(QThread):
 
 class _DetectProgressDialog(QWidget):
     cancelled = Signal()
-    def __init__(self, total: int, parent=None):
+    def __init__(self, total: int, max_iter: int = 1, parent=None):
         super().__init__(parent, Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
         self.setWindowTitle('WARP CORE — Detecting Screen Types')
-        self.setFixedSize(460, 140)
+        self.setFixedSize(460, 160 if max_iter > 1 else 140)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(10)
+        lay.setSpacing(8)
         apply_dark_style(self)
-        self._title_lbl = QLabel('Classifying screenshots with ML model…')
+        title = 'Classifying screenshots — loop mode…' if max_iter > 1 else 'Classifying screenshots with ML model…'
+        self._title_lbl = QLabel(title)
         self._title_lbl.setFont(QFont('', 10, QFont.Weight.Bold))
         self._title_lbl.setStyleSheet(f'color:{ACCENT};')
+        self._iter_lbl = QLabel('')
+        self._iter_lbl.setStyleSheet(f'color:{MFG};font-size:10px;')
+        self._iter_lbl.setVisible(max_iter > 1)
         self._file_lbl = QLabel('')
         self._file_lbl.setStyleSheet(f'color:{MFG};font-size:10px;')
         self._file_lbl.setWordWrap(True)
         self._bar = QProgressBar()
         self._bar.setRange(0, total)
         self._bar.setValue(0)
-        btn_cancel = QPushButton('Cancel')
+        btn_cancel = QPushButton('Stop' if max_iter > 1 else 'Cancel')
         btn_cancel.setFixedWidth(80)
         btn_cancel.clicked.connect(self.cancelled.emit)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         btn_row.addWidget(btn_cancel)
         lay.addWidget(self._title_lbl)
+        lay.addWidget(self._iter_lbl)
         lay.addWidget(self._file_lbl)
         lay.addWidget(self._bar)
         lay.addLayout(btn_row)
+
     def update_progress(self, idx: int, total: int, filename: str, stype: str):
         self._bar.setValue(idx)
         icon = SCREEN_TYPE_ICONS.get(stype, '?')
         label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
         self._file_lbl.setText(f'{filename}  →  {icon} {label}')
+
+    def reset_progress(self, total: int):
+        self._bar.setRange(0, total)
+        self._bar.setValue(0)
+        self._file_lbl.setText('')
+
+    def update_iteration(self, i: int, max_i: int, prev: int | None,
+                         curr: int, unknown: int, wrong: int):
+        if prev is None:
+            trend = ''
+        elif curr < prev:
+            trend = f'  {prev} → {curr} ↓'
+        elif curr == prev:
+            trend = f'  {prev} → {curr} →'
+        else:
+            trend = f'  {prev} → {curr} ↑'
+        self._iter_lbl.setText(
+            f'Iteration {i} / {max_i}{trend}   (UNKNOWN: {unknown}, wrong: {wrong})'
+        )
 
 class _RecognitionProgressDialog(QWidget):
     cancelled = Signal()
@@ -678,6 +703,9 @@ class WarpCoreWindow(QMainWindow):
         self._suppress_next_focus_popup = False  # set True after programmatic setFocus
         self._recog_worker = None
         self._detect_dlg = None
+        self._detect_loop_max: int = 1
+        self._detect_loop_iter: int = 0
+        self._detect_loop_prev_unresolved: int | None = None
         self._recog_dlg = None
         self._selection_just_changed = False
         self.setWindowTitle('WARP CORE — ML Trainer')
@@ -992,17 +1020,31 @@ class WarpCoreWindow(QMainWindow):
             self._file_list.addItem(self._make_file_list_item(p, self._screen_types[p.name]))
         self._start_screen_type_detection("open_folder")
 
-    def _start_screen_type_detection(self, trigger: str = 'unknown'):
+    def _start_screen_type_detection(self, trigger: str = 'unknown', max_iter: int = 1):
         self._detect_trigger = trigger
+        self._detect_loop_max = max_iter
+        self._detect_loop_iter = 0
+        self._detect_loop_prev_unresolved = None
         total = len(self._screenshots)
-        self._detect_dlg = _DetectProgressDialog(total, parent=self)
+        self._detect_dlg = _DetectProgressDialog(total, max_iter=max_iter, parent=self)
         self._detect_dlg.cancelled.connect(self._on_detect_cancelled)
         self._detect_dlg.show()
+        self._run_detect_iteration()
+
+    def _run_detect_iteration(self):
+        self._detect_loop_iter += 1
+        total = len(self._screenshots)
+        if self._detect_dlg:
+            self._detect_dlg.reset_progress(total)
         models_dir = self._sets_root / 'warp' / 'models'
+        # Iteration 1: seed from green only. Subsequent iterations: green + yellow (ml_auto).
+        seed_names = (self._screen_types_manual if self._detect_loop_iter == 1
+                      else self._screen_types_manual | self._screen_types_ml_auto)
         confirmed_types = {
             p: self._screen_types[p.name]
             for p in self._screenshots
-            if p.name in self._screen_types_manual and p.name in self._screen_types
+            if p.name in seed_names
+            and self._screen_types.get(p.name, 'UNKNOWN') != 'UNKNOWN'
         }
         self._detect_worker = ScreenTypeDetectorWorker(
             self._screenshots, models_dir=models_dir,
@@ -1011,7 +1053,9 @@ class WarpCoreWindow(QMainWindow):
         self._detect_worker.progress.connect(self._on_detect_progress)
         self._detect_worker.finished.connect(self._on_detect_finished)
         self._detect_worker.start()
-        self.statusBar().showMessage(f'Detecting screen types for {total} screenshot(s)...')
+        self.statusBar().showMessage(
+            f'Detecting screen types — iteration {self._detect_loop_iter} / {self._detect_loop_max}…'
+        )
 
     def _on_detect_progress(self, idx: int, total: int, filename: str, stype: str, conf: float):
         # During scan: only update UI for items without a user-confirmed type
@@ -1082,6 +1126,34 @@ class WarpCoreWindow(QMainWindow):
                     item.setForeground(QColor('#7effc8'))
                 else:
                     item.setForeground(Qt.GlobalColor.white)
+
+        # --- Loop logic ---
+        if self._detect_loop_max > 1:
+            unknown_count = 0
+            wrong_count = 0
+            for fname, (ml_stype, _ml_conf) in results.items():
+                if fname not in self._screen_types_manual:
+                    continue
+                user_stype = self._screen_types.get(fname, 'UNKNOWN')
+                if ml_stype == 'UNKNOWN':
+                    unknown_count += 1
+                elif ml_stype != user_stype:
+                    wrong_count += 1
+            unresolved = unknown_count + wrong_count
+            prev = self._detect_loop_prev_unresolved
+            self._detect_loop_prev_unresolved = unresolved
+            if self._detect_dlg:
+                self._detect_dlg.update_iteration(
+                    self._detect_loop_iter, self._detect_loop_max,
+                    prev, unresolved, unknown_count, wrong_count,
+                )
+            progress_made = (prev is None) or (unresolved < prev)
+            if progress_made and self._detect_loop_iter < self._detect_loop_max and unresolved > 0:
+                self._detect_worker = None
+                self._run_detect_iteration()
+                return  # dialog stays open, loop continues
+            reason = 'no progress' if not progress_made else ('all resolved' if unresolved == 0 else 'max iterations reached')
+            log.info(f'Screen type loop stopped after {self._detect_loop_iter} iteration(s): {reason}')
 
         if self._detect_dlg:
             self._detect_dlg.close()
@@ -1297,8 +1369,7 @@ class WarpCoreWindow(QMainWindow):
 
     def _on_detect_screen_types(self):
         if not self._screenshots: return
-        # Only detect files not yet manually labelled — never overwrite user choices
-        self._start_screen_type_detection('detect_screen_types_button')
+        self._start_screen_type_detection('detect_screen_types_button', max_iter=10)
 
     def _start_recognition(self, path: Path, stype: str, preserve_confirmed: list | None = None):
         if self._recog_worker and self._recog_worker.isRunning():
