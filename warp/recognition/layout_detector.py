@@ -235,9 +235,11 @@ class LayoutDetector:
             _slog.info(f'LayoutDetector: LRU eviction — trimmed to {MAX_LEARNED} entries')
 
         self._save_calibration()
+        total_bboxes = sum(v['count'] for v in slot_map.values())
         _slog.info(
             f'LayoutDetector: saved layout [{screen_type}] {w}x{h} '
-            f'({len(slot_map)} slots, total={len(self._calibration["learned"])})'
+            f'({len(slot_map)} slot groups, {total_bboxes} bboxes, '
+            f'total entries={len(self._calibration["learned"])})'
         )
 
     def _detect_via_learned_layouts(self, img, build_type, slot_order, profile):
