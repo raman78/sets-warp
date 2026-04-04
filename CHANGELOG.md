@@ -24,6 +24,11 @@
   (was: `Body Armor → EV Suit → Personal Shield → Weapons → Kit → Kit Modules → Ground Devices`)
 - Strategy 2 (pixel analysis) now maps detected pixel rows to the correct slot names.
 
+### Fix: Done state not persisted across restarts
+
+- `_load_done()` / `_save_done()` used `self._data_mgr.data_dir` which does not exist on `TrainingDataManager` (field is `_dir`). Silently failed via `except Exception: pass` — `screenshots_done.json` was never written or read.
+- `_screenshots_done` now initialized via `_load_done()` in `__init__` (was `set()`), so Done state is restored on startup without requiring the user to re-open the folder.
+
 ---
 
 ## v2.6 (2026-04-03) — TEXT_LEARNING_SLOTS; ship_type_corrections pipeline; annotation cleanup; screen type protection; Universal Console placement; screen classifier threshold
