@@ -615,34 +615,97 @@ class LayoutDetector:
         if len(found) >= 2: res['Secondary Specialization'] = [found[1]]
         return res
 
-    def _count_icons_in_row(self, img, y_top, y_bot, panel_right, cell_w) -> int:
-        """Count icons in a row by scanning horizontally for icon-shaped bright patches.
-        Scans centre strip of the row. Stops at first dark cell (gap between slot groups)."""
-        import numpy as np
+    @staticmethod
+    def _classify_cell(crop_bgr) -> str:
+        """
+        Classify a single slot cell crop as 'active', 'empty', or 'inactive'.
+
+        Uses the inner 60% of the crop to avoid border contamination.
+
+        active   — has a visible icon (bright content)
+        inactive — locked / unavailable slot:
+                     BOFFS: dark navy-blue with X pattern (blue-saturated)
+                     EQ/Traits: near-black with 'LOCK' text (higher brightness variance)
+        empty    — slot exists but nothing is slotted (uniform near-black, thin border only)
+        """
+        import cv2
+        if crop_bgr is None or crop_bgr.size == 0:
+            return 'active'  # unknown → treat as active (safe fallback)
+        ih, iw = crop_bgr.shape[:2]
+        mx = max(1, int(iw * 0.20))
+        my = max(1, int(ih * 0.20))
+        inner = crop_bgr[my:ih - my, mx:iw - mx]
+        if inner.size == 0:
+            inner = crop_bgr
+        hsv = cv2.cvtColor(inner, cv2.COLOR_BGR2HSV).reshape(-1, 3).astype(float)
+        mean_v = hsv[:, 2].mean()
+        std_v  = hsv[:, 2].std()
+        mean_s = hsv[:, 1].mean()
+        mean_h = hsv[:, 0].mean()
+
+        if mean_v > 45:
+            return 'active'
+        # BOFFS inactive: navy-blue X pattern — distinctly saturated blue
+        if mean_s > 40 and 95 < mean_h < 130:
+            return 'inactive'
+        # LOCK (EQ/Traits): near-black but text pixels raise brightness variance
+        if std_v > 10:
+            return 'inactive'
+        return 'empty'
+
+    def _count_icons_in_row(self, img, y_top, y_bot, panel_right, cell_w,
+                            slot_name: str = '') -> tuple[int, list[str]]:
+        """
+        Count active icons in a row, scanning right-to-left.
+
+        Returns (count, cell_states) where cell_states is a list of
+        'active' | 'empty' | 'inactive' for each scanned cell position
+        (index 0 = rightmost cell).
+
+        Empty and inactive cells are skipped in the count but do NOT
+        stop the scan — only two consecutive background cells stop it.
+        A background cell is any dark cell that lies outside the known
+        slot grid (distinguished from empty/inactive by context: once
+        we exit the grid there is no more slot structure).
+        """
+        import cv2
         row_h = y_bot - y_top
-        # Use inner 50% of row height to avoid separator lines
         y1 = max(0, y_top + row_h // 4)
         y2 = min(img.shape[0], y_bot - row_h // 4)
         count = 0
-        max_icons = 8  # STO max slots per row
-        consecutive_dark = 0
+        max_icons = 8
+        consecutive_bg = 0   # counts cells that look like plain background (not a slot)
+        cell_states: list[str] = []
         for j in range(max_icons):
             x2 = panel_right - j * cell_w
-            x1 = max(0, x2 - int(cell_w * 0.85))  # inner 85% of cell
+            x1 = max(0, x2 - int(cell_w * 0.85))
             if x1 >= x2 or x1 < 0:
                 break
-            strip = img[y1:y2, x1:x2]
-            if strip.size == 0:
+            crop = img[y1:y2, x1:x2]
+            if crop.size == 0:
                 break
-            avg = float(np.mean(strip))
-            if avg > 45:  # icon present — STO icons are distinctly brighter than background
+            state = self._classify_cell(crop)
+            cell_states.append(state)
+            if state == 'active':
                 count += 1
-                consecutive_dark = 0
+                consecutive_bg = 0
             else:
-                consecutive_dark += 1
-                if consecutive_dark >= 2:
-                    break  # two dark cells = end of slot group
-        return max(1, count)
+                # empty/inactive — still a grid cell, don't increment bg counter
+                # but check if it truly looks like featureless background:
+                # background has even lower brightness and zero border structure
+                avg = float(crop.mean())
+                if avg < 8:          # essentially pure black — outside grid
+                    consecutive_bg += 1
+                    if consecutive_bg >= 2:
+                        break
+                # else: empty/inactive slot within grid — keep scanning
+        if slot_name and any(s in ('empty', 'inactive') for s in cell_states):
+            non_active = [(i, s) for i, s in enumerate(cell_states) if s != 'active']
+            _slog.info(
+                f'LayoutDetector: [{slot_name}] {count} active + '
+                + ', '.join(f'{s} at pos {i}' for i, s in non_active)
+            )
+        return max(1, count), cell_states
 
     def _detect_via_pixel_analysis(self, img, slot_order, profile):
         h, w = img.shape[:2]
@@ -659,7 +722,7 @@ class LayoutDetector:
             if i >= len(slot_order): break
             slot_name = slot_order[i]
             # Count icons by pixel brightness — more reliable than profile for unknown ships
-            pixel_count = self._count_icons_in_row(img, y_top, y_bot, panel_right, cell_w)
+            pixel_count, _ = self._count_icons_in_row(img, y_top, y_bot, panel_right, cell_w, slot_name)
             profile_count = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
             if profile_count <= 1:
                 # Single mandatory slot (Deflector, Engines, Warp Core, Shield)
