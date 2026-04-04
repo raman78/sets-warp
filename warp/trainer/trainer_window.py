@@ -536,12 +536,12 @@ class _DetectProgressDialog(QWidget):
         self._bar = QProgressBar()
         self._bar.setRange(0, total)
         self._bar.setValue(0)
-        btn_cancel = QPushButton('Stop' if max_iter > 1 else 'Cancel')
-        btn_cancel.setFixedWidth(80)
-        btn_cancel.clicked.connect(self.cancelled.emit)
+        self._btn_cancel = QPushButton('Stop' if max_iter > 1 else 'Cancel')
+        self._btn_cancel.setFixedWidth(80)
+        self._btn_cancel.clicked.connect(self.cancelled.emit)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(self._btn_cancel)
         lay.addWidget(self._title_lbl)
         lay.addWidget(self._iter_lbl)
         lay.addWidget(self._file_lbl)
@@ -558,6 +558,10 @@ class _DetectProgressDialog(QWidget):
         self._bar.setRange(0, total)
         self._bar.setValue(0)
         self._file_lbl.setText('')
+
+    def mark_finished(self, reason: str):
+        self._title_lbl.setText(f'Done — {reason}')
+        self._btn_cancel.setText('Close')
 
     def update_iteration(self, i: int, max_i: int, prev: int | None,
                          curr: int, unknown: int, wrong: int):
@@ -1154,6 +1158,16 @@ class WarpCoreWindow(QMainWindow):
                 return  # dialog stays open, loop continues
             reason = 'no progress' if not progress_made else ('all resolved' if unresolved == 0 else 'max iterations reached')
             log.info(f'Screen type loop stopped after {self._detect_loop_iter} iteration(s): {reason}')
+            self._detect_worker = None
+            if self._detect_dlg:
+                self._detect_dlg.mark_finished(reason)
+            if self._screenshots:
+                if self._current_idx < 0:
+                    self._file_list.setCurrentRow(0)
+                else:
+                    self._load_screenshot(self._current_idx)
+            self._update_progress()
+            return  # dialog stays open until user clicks Close
 
         if self._detect_dlg:
             self._detect_dlg.close()
