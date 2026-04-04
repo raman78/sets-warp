@@ -233,16 +233,16 @@ class ScreenTypeClassifier:
         if len(examples) < MIN_SESSION_EXAMPLES:
             return '', 0.0
         q_hist = _hist_hsv(img_bgr)
-        # Weighted vote: each example contributes its cosine similarity
+        # Per-class average cosine similarity — scales correctly with example count
         scores: dict[str, float] = {}
+        counts: dict[str, int]   = {}
         for ex in examples:
             sim = max(0.0, _cosine(q_hist, ex['hist']))
             scores[ex['stype']] = scores.get(ex['stype'], 0.0) + sim
-        best_stype = max(scores, key=lambda k: scores[k])
-        # Normalise by number of examples to get 0-1 confidence estimate
-        total = sum(scores.values())
-        conf  = scores[best_stype] / total if total > 0 else 0.0
-        return best_stype, conf
+            counts[ex['stype']] = counts.get(ex['stype'], 0) + 1
+        avg = {s: scores[s] / counts[s] for s in scores}
+        best_stype = max(avg, key=lambda k: avg[k])
+        return best_stype, avg[best_stype]
 
 
 def _softmax(x: np.ndarray) -> np.ndarray:
