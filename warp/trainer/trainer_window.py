@@ -1564,6 +1564,10 @@ class WarpCoreWindow(QMainWindow):
                 # NON_ICON_SLOTS use their own widgets — skip completer (avoids iterating all equipment)
                 if slot not in NON_ICON_SLOTS:
                     self._populate_name_completer(slot)
+                # Always configure name field explicitly — setCurrentIndex may not fire
+                # currentIndexChanged if the numerical index didn't change (e.g. after
+                # _refresh_slot_combo rebuilt the combo), leaving a stale label/state.
+                self._configure_name_field(slot)
                 # Set name field directly (slot already set above, skip _on_slot_changed clear)
                 self._name_edit.blockSignals(True)
                 self._name_edit.setText(ri['name'])
