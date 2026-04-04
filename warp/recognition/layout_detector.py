@@ -80,6 +80,9 @@ class LayoutDetector:
         if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
             return self._detect_traits(img, build_type)
         if build_type == 'BOFFS':
+            learned_boffs = self._detect_via_learned_layouts_boffs(img)
+            if learned_boffs:
+                return learned_boffs
             return self._detect_boffs(img)
         if build_type == 'SPEC':
             return self._detect_spec(img)
@@ -176,6 +179,7 @@ class LayoutDetector:
         if not slot_bboxes:
             return
 
+        GAP_FACTOR = 2.5   # gap > 2.5× median step = new column (e.g. split Boff Tactical)
         slot_map = {}
         for slot, bboxes in slot_bboxes.items():
             # Sort left-to-right
@@ -183,22 +187,55 @@ class LayoutDetector:
             bw = int(round(sum(b[2] for b in bboxes_s) / len(bboxes_s)))
             bh = int(round(sum(b[3] for b in bboxes_s) / len(bboxes_s)))
             cy = int(round(sum(b[1] + b[3] / 2 for b in bboxes_s) / len(bboxes_s)))
-            x0 = bboxes_s[0][0]
 
-            if len(bboxes_s) > 1:
-                steps = [bboxes_s[i+1][0] - bboxes_s[i][0] for i in range(len(bboxes_s) - 1)]
+            if len(bboxes_s) == 1:
+                step = bw + max(2, int(bw * 0.08))
+                slot_map[slot] = {
+                    'x0_rel':   round(bboxes_s[0][0] / w, 5),
+                    'y_rel':    round(cy / h, 5),
+                    'w_rel':    round(bw / w, 5),
+                    'h_rel':    round(bh / h, 5),
+                    'step_rel': round(step / w, 5),
+                    'count':    1,
+                }
+                continue
+
+            steps = [bboxes_s[i+1][0] - bboxes_s[i][0] for i in range(len(bboxes_s) - 1)]
+            median_step = sorted(steps)[len(steps) // 2]
+            split_indices = [i for i, s in enumerate(steps) if s > GAP_FACTOR * median_step]
+
+            if not split_indices:
+                # Single contiguous run — use flat format (backward compatible)
                 step = int(round(sum(steps) / len(steps)))
+                slot_map[slot] = {
+                    'x0_rel':   round(bboxes_s[0][0] / w, 5),
+                    'y_rel':    round(cy / h, 5),
+                    'w_rel':    round(bw / w, 5),
+                    'h_rel':    round(bh / h, 5),
+                    'step_rel': round(step / w, 5),
+                    'count':    len(bboxes_s),
+                }
             else:
-                step = bw + max(2, int(bw * 0.08))   # sensible gap when only 1 icon
-
-            slot_map[slot] = {
-                'x0_rel':   round(x0 / w, 5),
-                'y_rel':    round(cy / h, 5),
-                'w_rel':    round(bw / w, 5),
-                'h_rel':    round(bh / h, 5),
-                'step_rel': round(step / w, 5),
-                'count':    len(bboxes_s),
-            }
+                # Multiple columns (e.g. same Boff profession in left+right column)
+                runs = []
+                prev = 0
+                for si in split_indices + [len(bboxes_s) - 1]:
+                    chunk = bboxes_s[prev:si + 1]
+                    chunk_steps = [chunk[j+1][0] - chunk[j][0] for j in range(len(chunk) - 1)]
+                    chunk_step = int(round(sum(chunk_steps) / len(chunk_steps))) if chunk_steps else (bw + max(2, int(bw * 0.08)))
+                    runs.append({
+                        'x0_rel':   round(chunk[0][0] / w, 5),
+                        'step_rel': round(chunk_step / w, 5),
+                        'count':    len(chunk),
+                    })
+                    prev = si + 1
+                slot_map[slot] = {
+                    'y_rel': round(cy / h, 5),
+                    'w_rel': round(bw / w, 5),
+                    'h_rel': round(bh / h, 5),
+                    'runs':  runs,
+                }
+                _slog.info(f'LayoutDetector: learn_layout [{slot}] split into {len(runs)} runs: {[(r["count"], round(r["x0_rel"],3)) for r in runs]}')
 
         if not slot_map:
             return
@@ -283,29 +320,27 @@ class LayoutDetector:
             for slot_name, geo in entry['slots'].items():
                 if isinstance(geo, (int, float)):
                     continue  # old-format entry
-                # Predicted center Y and X region for this slot
-                cy = int(geo['y_rel'] * h)
-                x0 = int(geo['x0_rel'] * w)
                 bw = max(1, int(geo['w_rel'] * w))
                 bh = max(1, int(geo['h_rel'] * h))
-                step = max(bw, int(geo['step_rel'] * w))
-                count = geo.get('count', 1)
-
-                # Sample a small horizontal strip at predicted Y
+                cy = int(geo['y_rel'] * h)
                 y1 = max(0, cy - bh // 4)
                 y2 = min(h, cy + bh // 4)
-                for j in range(min(count, 8)):  # max 8 icons
-                    ix = x0 + j * step
-                    ix2 = min(w, ix + bw)
-                    if ix >= w or y1 >= y2:
-                        continue
-                    patch = gray[y1:y2, ix:ix2]
-                    if patch.size == 0:
-                        continue
-                    checked += 1
-                    avg_brightness = float(patch.mean())
-                    if avg_brightness > 40:  # icon region (brighter than dark BG)
-                        score += 1
+                # Normalise to runs — handles both flat and multi-run formats
+                runs = geo.get('runs') or [{'x0_rel': geo['x0_rel'], 'step_rel': geo['step_rel'], 'count': geo.get('count', 1)}]
+                for run in runs:
+                    x0   = int(run['x0_rel'] * w)
+                    step = max(bw, int(run['step_rel'] * w))
+                    for j in range(min(run['count'], 8)):
+                        ix  = x0 + j * step
+                        ix2 = min(w, ix + bw)
+                        if ix >= w or y1 >= y2:
+                            continue
+                        patch = gray[y1:y2, ix:ix2]
+                        if patch.size == 0:
+                            continue
+                        checked += 1
+                        if float(patch.mean()) > 40:  # icon region (brighter than dark BG)
+                            score += 1
 
             # Normalise: fraction of predicted positions that have bright pixels
             norm_score = score / max(checked, 1)
@@ -325,27 +360,34 @@ class LayoutDetector:
         result = {}
         for slot_name in slot_order:
             geo = best_entry['slots'].get(slot_name)
-            if geo is None:
-                continue
-            if isinstance(geo, (int, float)):
+            if geo is None or isinstance(geo, (int, float)):
                 continue
 
-            n_icons = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
-            if n_icons == 0:
-                continue
-
-            x0   = int(geo['x0_rel']   * w)
-            cy   = int(geo['y_rel']    * h)
-            bw   = max(1, int(geo['w_rel']   * w))
-            bh   = max(1, int(geo['h_rel']   * h))
-            step = max(bw, int(geo['step_rel'] * w))
+            cy = int(geo['y_rel'] * h)
+            bw = max(1, int(geo['w_rel'] * w))
+            bh = max(1, int(geo['h_rel'] * h))
+            iy = max(0, cy - bh // 2)
 
             bboxes = []
-            for j in range(n_icons):
-                ix = x0 + j * step
-                iy = cy - bh // 2
-                bboxes.append((max(0, ix), max(0, iy), bw, bh))
-            result[slot_name] = bboxes
+            if 'runs' in geo:
+                # Multi-column layout — use stored run counts (authoritative)
+                for run in geo['runs']:
+                    x0   = int(run['x0_rel'] * w)
+                    step = max(bw, int(run['step_rel'] * w))
+                    for j in range(run['count']):
+                        bboxes.append((max(0, x0 + j * step), iy, bw, bh))
+            else:
+                # Single-run layout — respect ship profile count
+                n_icons = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, geo.get('count', 1)))
+                if n_icons == 0:
+                    continue
+                x0   = int(geo['x0_rel'] * w)
+                step = max(bw, int(geo['step_rel'] * w))
+                for j in range(n_icons):
+                    bboxes.append((max(0, x0 + j * step), iy, bw, bh))
+
+            if bboxes:
+                result[slot_name] = bboxes
 
         return result if result else None
 
@@ -440,6 +482,65 @@ class LayoutDetector:
         'temporal':      'Boff Temporal',
         'medical':       'Boff Science',
     }
+
+    def _detect_via_learned_layouts_boffs(self, img) -> dict | None:
+        """Strategy 1 for BOFFS: score learned entries, build bboxes from runs."""
+        if not self._calibration or 'learned' not in self._calibration:
+            return None
+        import cv2
+        h, w = img.shape[:2]
+        aspect = round(w / h, 3)
+        candidates = [e for e in self._calibration['learned']
+                      if e.get('type') == 'BOFFS' and abs(e.get('aspect', 0) - aspect) < 0.05]
+        if not candidates:
+            return None
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        best_score, best_entry = -1.0, None
+        for entry in candidates:
+            score, checked = 0, 0
+            for geo in entry['slots'].values():
+                if isinstance(geo, (int, float)):
+                    continue
+                bw = max(1, int(geo['w_rel'] * w))
+                bh = max(1, int(geo['h_rel'] * h))
+                cy = int(geo['y_rel'] * h)
+                y1, y2 = max(0, cy - bh // 4), min(h, cy + bh // 4)
+                runs = geo.get('runs') or [{'x0_rel': geo['x0_rel'], 'step_rel': geo['step_rel'], 'count': geo.get('count', 1)}]
+                for run in runs:
+                    x0   = int(run['x0_rel'] * w)
+                    step = max(bw, int(run['step_rel'] * w))
+                    for j in range(min(run['count'], 8)):
+                        ix = x0 + j * step
+                        patch = gray[y1:y2, ix:min(w, ix + bw)]
+                        if patch.size == 0 or ix >= w:
+                            continue
+                        checked += 1
+                        if float(patch.mean()) > 40:
+                            score += 1
+            norm = score / max(checked, 1)
+            if norm > best_score or (norm == best_score and entry.get('timestamp', 0) > (best_entry or {}).get('timestamp', 0)):
+                best_score, best_entry = norm, entry
+        if best_entry is None or best_score < 0.3:
+            return None
+        result = {}
+        for slot_name, geo in best_entry['slots'].items():
+            if isinstance(geo, (int, float)):
+                continue
+            cy = int(geo['y_rel'] * h)
+            bw = max(1, int(geo['w_rel'] * w))
+            bh = max(1, int(geo['h_rel'] * h))
+            iy = max(0, cy - bh // 2)
+            bboxes = []
+            runs = geo.get('runs') or [{'x0_rel': geo['x0_rel'], 'step_rel': geo['step_rel'], 'count': geo.get('count', 1)}]
+            for run in runs:
+                x0   = int(run['x0_rel'] * w)
+                step = max(bw, int(run['step_rel'] * w))
+                for j in range(run['count']):
+                    bboxes.append((max(0, x0 + j * step), iy, bw, bh))
+            if bboxes:
+                result[slot_name] = bboxes
+        _slog.info(f'LayoutDetector: Strategy 1 (learned BOFFS) score={best_score:.2f}, {len(result)} sections, {sum(len(v) for v in result.values())} bboxes')
+        return result if result else None
 
     def _detect_boffs(self, img):
         h, w = img.shape[:2]
