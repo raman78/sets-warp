@@ -2956,6 +2956,11 @@ class WarpCoreWindow(QMainWindow):
             if not build_type:
                 log.debug(f'Layout learn: {path.name} — stype={stype!r} unknown, skipping')
                 return False
+            # BOFFS and SPEC use dedicated colour/OCR detectors, not grid layout —
+            # saving their geometry to anchors.json would produce nonsense entries.
+            if build_type in ('BOFFS', 'SPEC'):
+                log.debug(f'Layout learn: {path.name} — {build_type} skipped (non-grid screen)')
+                return False
             import cv2
             from warp.recognition.layout_detector import LayoutDetector
             img = cv2.imread(str(path))
