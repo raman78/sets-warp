@@ -56,7 +56,7 @@ ANNOTATIONS_FILE = "data/annotations.jsonl"
 STAGING_ROOT     = "staging"              # user contributions land here
 MAX_DAILY_UPLOADS = 1000                  # per install_id, per UTC day
 MAX_NAME_LEN      = 120
-MIN_CROP_PX       = 24   # icon crops: minimum on both sides
+MIN_CROP_PX       = 16   # icon crops: minimum on both sides (BOFF ability icons can be ~22px)
 MIN_TEXT_CROP_H   = 10   # text crops (ship_type/ship_tier): minimum height only
 MIN_TEXT_CROP_W   = 50   # text crops: minimum width
 

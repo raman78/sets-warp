@@ -731,8 +731,8 @@ class WarpImporter:
                     source_file = source,
                     bbox        = bbox,
                 ))
-                # Contribute to community knowledge (non-blocking, only high-conf)
-                if conf >= TEMPLATE_CONF_THRESHOLD:
+                # Contribute to community knowledge (non-blocking, only high-conf, skip virtual)
+                if conf >= TEMPLATE_CONF_THRESHOLD and name not in ('__empty__', '__inactive__'):
                     sync = self._get_sync_client()
                     if sync is not None:
                         sync.contribute(crop, name, confirmed=False)

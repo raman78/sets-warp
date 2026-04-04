@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## v2.7 (2026-04-04) — Done state; layout learning fix; ground slot order; virtual items; empty/inactive detection
+
+### Feature: virtual item names `__empty__` / `__inactive__`
+- `training_data.py`: `VIRTUAL_ITEM_NAMES = frozenset({'__empty__', '__inactive__'})` — annotatable slot states that produce ML training crops but write nothing to the SETS build.
+- `trainer_window.py`: virtual names appear at top of autocomplete list; review list shows grey `[empty slot]` / `[inactive slot]` labels (`#aaaaaa` pending, `#888888` confirmed).
+- `warp_dialog.py`: items with virtual names skipped (`continue`) in build-writing loop.
+- `warp_importer.py`: `__empty__` / `__inactive__` excluded from `sync.contribute()` — pHash community knowledge base stays clean.
+
+### Feature: empty / inactive cell detection (`layout_detector.py`)
+- New `_classify_cell(crop_bgr) -> str` static method — HSV-based classification: `'active'` (mean_v > 45), `'inactive'` (navy-blue BOFF X or LOCK text pattern), `'empty'` (uniform dark, mean_v < 15).
+- `_count_icons_in_row()` returns `(count, cell_states)` — empty/inactive cells no longer stop the right-to-left scan; only pure background (avg < 8) stops it.
+- Logs non-active cells detected per row for diagnostics.
+
+### Fix: BOFF ability crops too small for HF upload
+- `sync.py`: `MIN_CROP_PX` lowered from 24 → 16. BOFF ability icons are naturally smaller (~22 px); the old threshold silently dropped all inactive BOFF crops.
+
+---
+
 ## v2.7 (2026-04-04) — Done state; layout learning fix; ground slot order
 
 ### Feature: Screenshot "Mark Done" state
