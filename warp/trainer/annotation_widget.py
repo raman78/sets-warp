@@ -423,9 +423,12 @@ class AnnotationWidget(QWidget):
             self._drawing = False
             if self._draw_start and self._draw_current:
                 screen_rect = QRect(self._draw_start, self._draw_current).normalized()
-                if screen_rect.width() > 8 and screen_rect.height() > 8:
-                    self._pending_bbox = self._screen_to_img_rect(screen_rect)
-                    self.annotation_added.emit(self._pending_bbox)
+                if screen_rect.width() > 3 and screen_rect.height() > 3:
+                    img_bbox = self._screen_to_img_rect(screen_rect)
+                    # Require at least 8×8 in image pixels — below that the crop is useless for ML
+                    if img_bbox[2] >= 8 and img_bbox[3] >= 8:
+                        self._pending_bbox = img_bbox
+                        self.annotation_added.emit(self._pending_bbox)
             self._draw_start = None
             self._draw_current = None
             if getattr(self, '_alt_draw', False):
