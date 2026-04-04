@@ -137,10 +137,11 @@ class ScreenTypeDetectorWorker(QThread):
     progress = Signal(int, int, str, str, float)
     # finished: {filename: (stype, conf)}  — conf is raw ML confidence (0.0 if no model)
     finished = Signal(dict)
-    def __init__(self, paths: list, models_dir=None, parent=None):
+    def __init__(self, paths: list, models_dir=None, confirmed_types: dict | None = None, parent=None):
         super().__init__(parent)
         self._paths = paths
         self._models_dir = models_dir
+        self._confirmed_types = confirmed_types or {}   # {Path: stype} — for k-NN pre-seed
         self._sets_root = self._find_sets_root() # Need sets_root for stats file
         
     def _find_sets_root(self) -> Path:
@@ -173,6 +174,20 @@ class ScreenTypeDetectorWorker(QThread):
         else:
             _slog.warning('ScreenTypeDetector: no models_dir — all results will be UNKNOWN')
         import cv2
+
+        # Pre-seed k-NN with all user-confirmed types before running detection.
+        # Clear first to prevent accumulation of stale examples across runs.
+        if self._confirmed_types and classifier is not None:
+            from warp.recognition.screen_classifier import ScreenTypeClassifier
+            ScreenTypeClassifier.clear_session()
+            seeded = 0
+            for cpath, cstype in self._confirmed_types.items():
+                img = cv2.imread(str(cpath))
+                if img is not None:
+                    ScreenTypeClassifier.add_session_example(img, cstype)
+                    seeded += 1
+            _slog.info(f'ScreenTypeDetector: k-NN pre-seeded with {seeded} confirmed examples')
+
         _slog.info(f'ScreenTypeDetector: starting — {total} screenshot(s)')
         for idx, path in enumerate(self._paths):
             if self.isInterruptionRequested():
@@ -984,7 +999,15 @@ class WarpCoreWindow(QMainWindow):
         self._detect_dlg.cancelled.connect(self._on_detect_cancelled)
         self._detect_dlg.show()
         models_dir = self._sets_root / 'warp' / 'models'
-        self._detect_worker = ScreenTypeDetectorWorker(self._screenshots, models_dir=models_dir, parent=self)
+        confirmed_types = {
+            p: self._screen_types[p.name]
+            for p in self._screenshots
+            if p.name in self._screen_types_manual and p.name in self._screen_types
+        }
+        self._detect_worker = ScreenTypeDetectorWorker(
+            self._screenshots, models_dir=models_dir,
+            confirmed_types=confirmed_types, parent=self,
+        )
         self._detect_worker.progress.connect(self._on_detect_progress)
         self._detect_worker.finished.connect(self._on_detect_finished)
         self._detect_worker.start()
@@ -1023,26 +1046,17 @@ class WarpCoreWindow(QMainWindow):
         Apply ML results with confirmation state logic:
 
         green (user-confirmed) → ALWAYS preserved, never overwritten.
-          If ML disagrees → silent training signal only (user is the ground truth).
-
         yellow / UNKNOWN + ML conf ≥ 0.95 → yellow (update type).
         yellow / UNKNOWN + ML conf < 0.95 → keep existing state.
         """
-        import cv2
-        training_signals: list[tuple] = []   # (path, user_stype) to feed to classifier
-
         for fname, (ml_stype, ml_conf) in results.items():
             path = next((p for p in self._screenshots if p.name == fname), None)
             if path is None:
                 continue
             is_user = fname in self._screen_types_manual
-            user_stype = self._screen_types.get(fname, 'UNKNOWN')
 
             if is_user:
-                # User-confirmed type is always preserved — never overwrite green.
-                # If ML is wrong OR uncertain (UNKNOWN), collect a training signal.
-                if ml_stype == 'UNKNOWN' or ml_stype != user_stype:
-                    training_signals.append((path, user_stype))
+                pass   # green dot preserved — k-NN already pre-seeded with correct type
             else:
                 if ml_stype != 'UNKNOWN' and ml_conf >= 0.95:
                     self._screen_types[fname] = ml_stype
@@ -1068,18 +1082,6 @@ class WarpCoreWindow(QMainWindow):
                     item.setForeground(QColor('#7effc8'))
                 else:
                     item.setForeground(Qt.GlobalColor.white)
-
-        # Send training signals to classifier (green kept but ML disagreed)
-        if training_signals:
-            try:
-                from warp.recognition.screen_classifier import ScreenTypeClassifier
-                for path, user_stype in training_signals:
-                    img = cv2.imread(str(path))
-                    if img is not None:
-                        ScreenTypeClassifier.add_session_example(img, user_stype)
-                        log.debug(f'Screen type training signal: {path.name} → user={user_stype}')
-            except Exception as e:
-                log.debug(f'Screen type training signal error: {e}')
 
         if self._detect_dlg:
             self._detect_dlg.close()
