@@ -24,6 +24,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QSettings
 from PySide6.QtGui import QFont, QPixmap, QImage
 
 from warp.warp_importer import WarpImporter, ImportResult, RecognisedItem
+from warp.trainer.training_data import VIRTUAL_ITEM_NAMES
 from warp.style import (
     apply_dark_style, primary_btn_style, secondary_btn_style,
     ACCENT, FG, MFG, BG, MBG, LBG, BC, C_WARNING,
@@ -426,6 +427,8 @@ class WarpDialog(QDialog):
         for ri in r.items:
             if not ri.name:
                 continue
+            if ri.name in VIRTUAL_ITEM_NAMES:
+                continue  # empty/inactive slot — position recorded for layout learning, nothing to write
             # Boff abilities are handled separately after equipment/traits
             if ri.slot.startswith('Boff '):
                 boff_items.append(ri)
