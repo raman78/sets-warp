@@ -63,6 +63,10 @@ POSITION_ONLY_SLOTS: frozenset = frozenset({'Ship Name'})
 #   ship_type_corrections.json via democratic voting.
 TEXT_LEARNING_SLOTS: frozenset = frozenset({'Ship Type', 'Ship Tier'})
 
+# Virtual item names — annotated by user to teach the ML what empty/inactive slots look like.
+# Crop is saved and uploaded like any icon annotation, but must NOT be written to the SETS build.
+VIRTUAL_ITEM_NAMES: frozenset = frozenset({'__empty__', '__inactive__'})
+
 
 @dataclass
 class Annotation:

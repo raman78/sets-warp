@@ -115,7 +115,7 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
 }
 
 FIXED_VALUE_SLOTS: frozenset[str] = frozenset(['Ship Tier', 'Ship Type'])
-from warp.trainer.training_data import NON_ICON_SLOTS, SINGLE_INSTANCE_SLOTS
+from warp.trainer.training_data import NON_ICON_SLOTS, SINGLE_INSTANCE_SLOTS, VIRTUAL_ITEM_NAMES
 SHIP_TIER_VALUES: list[str] = ['T1', 'T2', 'T3', 'T4', 'T5', 'T5-U', 'T5-X', 'T5-X2', 'T6', 'T6-X', 'T6-X2']
 _SHIP_INFO_SLOTS = ['Ship Name', 'Ship Type', 'Ship Tier']
 
@@ -1502,8 +1502,12 @@ class WarpCoreWindow(QMainWindow):
             self._review_list.setCurrentRow(0)
 
     def _add_review_row(self, name: str, slot: str, conf: float, confirmed: bool = False, cross_check_failed: bool = False):
+        is_virtual = name in VIRTUAL_ITEM_NAMES
         if confirmed:
             label = f'{slot}  ->  {name or "—"}  [confirmed]'
+        elif is_virtual:
+            display = 'empty slot' if name == '__empty__' else 'inactive slot'
+            label = f'{slot}  ->  [{display}]'
         elif cross_check_failed:
             label = f'⚠️ {slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
         else:
@@ -1525,8 +1529,12 @@ class WarpCoreWindow(QMainWindow):
         else:
             tooltip = f'Slot: {slot}\nNo item recognised'
         item.setToolTip(tooltip)
-        if confirmed:
+        if confirmed and is_virtual:
+            item.setForeground(QColor('#888888'))   # grey — virtual, no build value
+        elif confirmed:
             item.setForeground(QColor('#7effc8'))
+        elif is_virtual:
+            item.setForeground(QColor('#aaaaaa'))   # lighter grey — pending virtual
         elif cross_check_failed:
             item.setForeground(QColor('#ffcc00')) # Orange/Gold warning
         elif not name:
@@ -2702,6 +2710,9 @@ class WarpCoreWindow(QMainWindow):
         """Pre-populate the completer model for the given slot (called on slot change)."""
         all_names = self._build_search_candidates(slot)
         self._completer_model.clear()
+        # Virtual names always appear at the top of the dropdown
+        for vname in sorted(VIRTUAL_ITEM_NAMES):
+            self._completer_model.appendRow(QStandardItem(vname))
         for name in all_names:
             self._completer_model.appendRow(QStandardItem(name))
 
