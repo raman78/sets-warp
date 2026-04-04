@@ -694,7 +694,7 @@ class WarpCoreWindow(QMainWindow):
         self._screen_types: dict[str, str] = {}
         self._screen_types_manual: set[str] = set()   # green — user confirmed
         self._screen_types_ml_auto: set[str] = set()  # yellow — ML ≥95% auto-accepted
-        self._screenshots_done: set[str] = set()      # fully annotated, locked
+        self._screenshots_done: set[str] = self._load_done()  # fully annotated, locked
         self._detect_trigger: str = 'unknown'
         self._recognition_cache: dict[str, list] = {}
         self._recognition_items: list[dict] = []
@@ -2892,7 +2892,7 @@ class WarpCoreWindow(QMainWindow):
 
     def _load_done(self) -> set[str]:
         try:
-            p = self._data_mgr.data_dir / 'screenshots_done.json'
+            p = self._data_mgr._dir / 'screenshots_done.json'
             if p.exists():
                 data = json.loads(p.read_text(encoding='utf-8'))
                 return set(data) if isinstance(data, list) else set()
@@ -2902,7 +2902,7 @@ class WarpCoreWindow(QMainWindow):
 
     def _save_done(self):
         try:
-            p = self._data_mgr.data_dir / 'screenshots_done.json'
+            p = self._data_mgr._dir / 'screenshots_done.json'
             p.write_text(json.dumps(sorted(self._screenshots_done), indent=2), encoding='utf-8')
         except Exception as e:
             log.warning(f'WarpCore: failed to save done state: {e}')
