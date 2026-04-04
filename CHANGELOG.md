@@ -16,6 +16,20 @@
 ### Fix: BOFF ability crops too small for HF upload
 - `sync.py`: `MIN_CROP_PX` lowered from 24 → 16. BOFF ability icons are naturally smaller (~22 px); the old threshold silently dropped all inactive BOFF crops.
 
+### Feature: runs-based layout learning for split-column BOFF seats
+- `layout_detector.py` `learn_layout()`: detects column gaps (> 2.5× median step between consecutive bboxes) and stores geometry as `runs: [{x0_rel, step_rel, count}]` instead of a single averaged `x0_rel`. Fixes 2×Tactical / 2×Eng / 2×Sci configurations where the same profession appears in two separate columns.
+- `_detect_via_learned_layouts()`: scoring and bbox generation handle both old flat format and new `runs` format (backward compatible with existing `anchors.json`).
+- BOFFS now try Strategy 1 (learned layout) before falling back to OCR / color classification: new `_detect_via_learned_layouts_boffs()` method; score threshold 0.3.
+
+### Fix: bbox draw threshold — allows small inactive BOFF slots
+- `annotation_widget.py`: minimum bbox size check changed from screen pixels (>8px, zoom-dependent) to image pixels (≥8×8). Previously at low zoom a 20px inactive BOFF icon was only ~6 screen pixels → rejected. Now passes at any zoom level.
+
+### Fix: model label shows trained time, not just date
+- `datafunctions.py`: `trained_at[:10]` → `[:16]` so the ML Model info label shows `trained 2026-04-04 23:53` instead of just `2026-04-04`.
+
+### Fix: sync "still pending" log noise
+- `sync.py` `SyncManager._on_finished()`: "upload OK — N crops still pending" demoted from INFO to DEBUG when N > 0 (normal state while user is actively annotating). INFO only fires when N == 0 ("all synced").
+
 ---
 
 ## v2.7 (2026-04-04) — Done state; layout learning fix; ground slot order
