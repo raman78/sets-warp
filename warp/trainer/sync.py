@@ -587,7 +587,10 @@ class SyncManager:
             uploaded  = self._load_uploaded_hashes(mgr)
             remaining = max(0, len(confirmed) - len(uploaded))
         if ok:
-            _slog.info(f'SyncManager: upload OK — {remaining} crops still pending')
+            if remaining == 0:
+                _slog.info('SyncManager: upload OK — all synced')
+            else:
+                _slog.debug(f'SyncManager: upload OK — {remaining} queued for next sync')
         else:
             _slog.warning(f'SyncManager: upload FAILED — {remaining} crops still pending')
 

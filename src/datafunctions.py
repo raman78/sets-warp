@@ -127,7 +127,7 @@ def _show_startup_dialog(self):
             ver_file = models_dir / 'model_version.json'
             if ver_file.exists():
                 ver = json.loads(ver_file.read_text(encoding='utf-8'))
-                trained    = ver.get('trained_at', '?')[:10]
+                trained    = ver.get('trained_at', '?')[:16].replace('T', ' ')
                 n_cls      = ver.get('n_classes', '?')
                 val_acc    = ver.get('val_acc', None)
                 downloaded = ver.get('downloaded_at', '')[:16].replace('T', ' ')
