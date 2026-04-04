@@ -102,6 +102,49 @@ When confirming, checks if bbox overlaps (> 70%) any existing confirmed bbox of 
 
 ---
 
+## Screenshot list — colour coding
+
+| Colour | Meaning |
+|--------|---------|
+| White | No annotations yet |
+| Light blue `#7ec8ff` | Has annotations — in progress |
+| Green `#7effc8` | Marked Done — locked |
+
+The colour is updated whenever annotations or done state changes.
+
+---
+
+## Done state (`_screenshots_done`)
+
+**Purpose:** explicitly mark a screenshot as fully annotated. Triggers a single definitive `learn_layout` write to `anchors.json` and locks the screenshot against further edits.
+
+**Persistence:** `warp/training_data/screenshots_done.json` — a JSON list of filenames, loaded when a folder is opened.
+
+**Button:** `✓ Mark Done` / `↩ Back to Edit` (toggle, `QPushButton` checkable) — below the progress bar in the left panel. Enabled only when a screenshot is loaded.
+
+**Shortcut:** `Alt+D`
+
+**Locking:** when a screenshot is Done—
+- `AnnotationWidget.set_locked(True)` — `mousePressEvent` returns early, no drawing possible
+- `_btn_add_bbox.setEnabled(False)` — Add BBox button disabled
+- Alt+LMB draw is blocked
+
+**Un-done (Back to Edit):** removes the screenshot from `_screenshots_done`, calls `LayoutDetector().remove_layout(path.name)` to remove its entry from `anchors.json`, unlocks drawing.
+
+### Layout learning flow
+
+| Moment | Action |
+|--------|--------|
+| Accept (Enter) on an item | Nothing — layout **not** saved per-accept |
+| Switching to another screenshot (if not Done) | `_learn_layout_for(prev_path)` — saves current confirmed bboxes as one entry |
+| Clicking `✓ Mark Done` | `_learn_layout_for(path)` — definitive save; screenshot locked |
+| Clicking `↩ Back to Edit` | `_remove_layout_for(path)` — removes entry from `anchors.json` |
+| Already-Done screenshot switched away from | Nothing — entry already saved, not duplicated |
+
+`learn_layout` stores `source_file: path.name` in each `anchors.json` entry so `remove_layout` can find and delete it by filename.
+
+---
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -109,6 +152,7 @@ When confirming, checks if bbox overlaps (> 70%) any existing confirmed bbox of 
 | Enter | Accept current item |
 | Del / Backspace | Remove selected bbox (canvas or review list) |
 | Alt+A | Toggle Add BBox mode |
+| Alt+D | Toggle Mark Done / Back to Edit |
 | Alt+R | Remove selected bbox |
 | Alt+LMB drag | Draw new bbox directly |
 | Ctrl+wheel | Zoom 1× – 6× anchored to cursor |

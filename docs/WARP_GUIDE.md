@@ -158,6 +158,24 @@ Auto-detected types start unchecked. If the classifier guesses wrong, change the
 
 Click a filename to load it into the canvas.
 
+#### Screenshot colour coding
+
+| Colour | Meaning |
+|--------|---------|
+| White | No annotations yet |
+| Light blue | Has annotations — in progress |
+| Green | Marked Done — fully annotated and locked |
+
+#### Marking a screenshot as Done
+
+When you have finished annotating all items on a screenshot, click **✓ Mark Done** (below the progress bar) or press **Alt+D**. This:
+
+- Locks the screenshot — no new bounding boxes can be added
+- Saves the confirmed slot layout to the local layout database (used to improve auto-detection on similar screenshots)
+- Colours the entry green in the list
+
+If you need to make changes, click **↩ Back to Edit** (same button) or press **Alt+D** again to unlock it.
+
 ### Center panel — Canvas
 
 Displays the current screenshot with coloured bounding boxes drawn over each detected item slot:
@@ -359,6 +377,7 @@ and never uploaded — ship names are treated as personal data.
 | **Enter** | Accept current item |
 | **Del** / **Backspace** | Remove selected bounding box |
 | **Alt + A** | Toggle Add BBox draw mode |
+| **Alt + D** | Toggle Mark Done / Back to Edit |
 | **Alt + R** | Remove selected bounding box |
 | **Alt + LMB drag** | Draw new bounding box directly |
 | **Ctrl + Wheel** | Zoom canvas in/out (1× – 6×, anchored to cursor) |

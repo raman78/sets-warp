@@ -694,6 +694,7 @@ class WarpCoreWindow(QMainWindow):
         self._screen_types: dict[str, str] = {}
         self._screen_types_manual: set[str] = set()   # green — user confirmed
         self._screen_types_ml_auto: set[str] = set()  # yellow — ML ≥95% auto-accepted
+        self._screenshots_done: set[str] = set()      # fully annotated, locked
         self._detect_trigger: str = 'unknown'
         self._recognition_cache: dict[str, list] = {}
         self._recognition_items: list[dict] = []
@@ -785,6 +786,11 @@ class WarpCoreWindow(QMainWindow):
         self._prog_bar.setTextVisible(False)
         ll.addWidget(self._prog_lbl)
         ll.addWidget(self._prog_bar)
+        self._btn_done = QPushButton('✓ Mark Done')
+        self._btn_done.setCheckable(True)
+        self._btn_done.setEnabled(False)
+        self._btn_done.clicked.connect(self._on_done_toggle)
+        ll.addWidget(self._btn_done)
         return left
 
     def _make_center_panel(self) -> QWidget:
@@ -1007,6 +1013,7 @@ class WarpCoreWindow(QMainWindow):
         self._screen_types.clear()
         self._screen_types_manual.clear()
         self._screen_types_ml_auto.clear()
+        self._screenshots_done = self._load_done()
         self._recognition_cache.clear()
         self._recognition_items = []
         self._current_idx = -1
@@ -1079,10 +1086,7 @@ class WarpCoreWindow(QMainWindow):
                     item.setCheckState(Qt.CheckState.Unchecked)
                     item.setIcon(QIcon())  # no dot yet — final state set in _on_detect_finished
                     self._file_list.blockSignals(False)
-                    if self._data_mgr.has_annotations(p):
-                        item.setForeground(QColor('#7effc8'))
-                    else:
-                        item.setForeground(Qt.GlobalColor.white)
+                    item.setForeground(self._file_item_color(p))
                 if row == 0 and self._current_idx < 0:
                     self._file_list.setCurrentRow(0)
                 break
@@ -1126,10 +1130,7 @@ class WarpCoreWindow(QMainWindow):
                 item.setCheckState(Qt.CheckState.Checked if (is_user or is_ml) else Qt.CheckState.Unchecked)
                 item.setIcon(_get_user_icon() if is_user else (_get_ml_icon() if is_ml else QIcon()))
                 self._file_list.blockSignals(False)
-                if self._data_mgr.has_annotations(p):
-                    item.setForeground(QColor('#7effc8'))
-                else:
-                    item.setForeground(Qt.GlobalColor.white)
+                item.setForeground(self._file_item_color(p))
 
         # --- Loop logic ---
         if self._detect_loop_max > 1:
@@ -1200,10 +1201,7 @@ class WarpCoreWindow(QMainWindow):
         is_ml   = p.name in self._screen_types_ml_auto
         item.setCheckState(Qt.CheckState.Checked if (is_user or is_ml) else Qt.CheckState.Unchecked)
         item.setIcon(_get_user_icon() if is_user else (_get_ml_icon() if is_ml else QIcon()))
-        if self._data_mgr.has_annotations(p):
-            item.setForeground(QColor('#7effc8'))
-        else:
-            item.setForeground(Qt.GlobalColor.white)
+        item.setForeground(self._file_item_color(p))
         return item
 
     def _update_file_item_check(self, row: int):
@@ -1249,7 +1247,21 @@ class WarpCoreWindow(QMainWindow):
 
     def _load_screenshot(self, row: int):
         if row < 0 or row >= len(self._screenshots): return
+        # Save layout for the screenshot we're leaving (if not marked Done)
+        prev_idx = self._current_idx
+        if 0 <= prev_idx < len(self._screenshots) and prev_idx != row:
+            prev_path = self._screenshots[prev_idx]
+            if prev_path.name not in self._screenshots_done:
+                self._learn_layout_for(prev_path)
         self._current_idx = row; path = self._screenshots[row]; stype = self._screen_types.get(path.name, 'UNKNOWN')
+        # Update Done toggle button state
+        is_done = path.name in self._screenshots_done
+        self._btn_done.setEnabled(True)
+        self._btn_done.blockSignals(True)
+        self._btn_done.setChecked(is_done)
+        self._btn_done.setText('↩ Back to Edit' if is_done else '✓ Mark Done')
+        self._btn_done.blockSignals(False)
+        self._ann_widget.set_locked(is_done)
         self._ann_widget.load_image(path); self._exit_manual_bbox_mode(); self._update_screen_type_ui(stype)
         from PySide6.QtCore import QTimer
         QTimer.singleShot(100, self._ann_widget.setFocus)
@@ -1610,6 +1622,8 @@ class WarpCoreWindow(QMainWindow):
                   activated=lambda: self._btn_add_bbox.click())
         QShortcut(QKeySequence('Alt+R'), self,
                   activated=self._on_remove_item)
+        QShortcut(QKeySequence('Alt+D'), self,
+                  activated=self._btn_done.click)
         QShortcut(QKeySequence('Return'), self,
                   activated=self._on_accept)
         QShortcut(QKeySequence('Delete'), self,
@@ -1747,7 +1761,9 @@ class WarpCoreWindow(QMainWindow):
             btn.setEnabled(enabled)
 
     def _update_add_bbox_btn(self):
-        self._btn_add_bbox.setEnabled(self._current_idx >= 0)
+        is_done = (self._current_idx >= 0
+                   and self._screenshots[self._current_idx].name in self._screenshots_done)
+        self._btn_add_bbox.setEnabled(self._current_idx >= 0 and not is_done)
 
     def _on_bbox_drawn(self, bbox: tuple):
         if self._manual_bbox_mode:
@@ -2449,9 +2465,6 @@ class WarpCoreWindow(QMainWindow):
         self._ann_widget.set_review_items(self._recognition_items)
         self._data_mgr.save()
         self._auto_sync()
-        # Update learned layout for this screenshot after each confirm
-        if self._current_idx >= 0:
-            self._learn_layout_for(self._screenshots[self._current_idx])
         # Refresh slot combo: hide confirmed NON_ICON_SLOTS except the one
         # currently displayed (after advance, so keep_slot reflects new row)
         if self._current_idx >= 0:
@@ -2875,6 +2888,61 @@ class WarpCoreWindow(QMainWindow):
         'GROUND_MIXED':    'GROUND',
     }
 
+    # ── Done state ────────────────────────────────────────────────────────────
+
+    def _load_done(self) -> set[str]:
+        try:
+            p = self._data_mgr.data_dir / 'screenshots_done.json'
+            if p.exists():
+                data = json.loads(p.read_text(encoding='utf-8'))
+                return set(data) if isinstance(data, list) else set()
+        except Exception:
+            pass
+        return set()
+
+    def _save_done(self):
+        try:
+            p = self._data_mgr.data_dir / 'screenshots_done.json'
+            p.write_text(json.dumps(sorted(self._screenshots_done), indent=2), encoding='utf-8')
+        except Exception as e:
+            log.warning(f'WarpCore: failed to save done state: {e}')
+
+    def _file_item_color(self, path: Path):
+        """Return foreground color for a file list item based on done/annotation state."""
+        if path.name in self._screenshots_done:
+            return QColor('#7effc8')   # green — done
+        if self._data_mgr.has_annotations(path):
+            return QColor('#7ec8ff')   # light blue — in progress
+        return QColor(Qt.GlobalColor.white)
+
+    def _on_done_toggle(self, checked: bool):
+        if self._current_idx < 0:
+            self._btn_done.setChecked(False)
+            return
+        path = self._screenshots[self._current_idx]
+        if checked:
+            self._screenshots_done.add(path.name)
+            self._learn_layout_for(path)
+            self._btn_done.setText('↩ Back to Edit')
+        else:
+            self._screenshots_done.discard(path.name)
+            self._remove_layout_for(path)
+            self._btn_done.setText('✓ Mark Done')
+        self._save_done()
+        self._ann_widget.set_locked(checked)
+        self._update_file_list_color(self._current_idx)
+        self._update_add_bbox_btn()
+
+    def _remove_layout_for(self, path: Path):
+        from warp.recognition.layout_detector import LayoutDetector
+        LayoutDetector().remove_layout(path.name)
+        log.info(f'Layout learn: removed entries for {path.name}')
+
+    def _update_file_list_color(self, row: int):
+        item = self._file_list.item(row)
+        if item is not None and row < len(self._screenshots):
+            item.setForeground(self._file_item_color(self._screenshots[row]))
+
     def _learn_layout_for(self, path: Path) -> bool:
         """Save confirmed layout for one screenshot to anchors.json. Returns True if saved."""
         try:
@@ -2893,7 +2961,7 @@ class WarpCoreWindow(QMainWindow):
             img = cv2.imread(str(path))
             if img is None:
                 return False
-            LayoutDetector().learn_layout(build_type, img.shape[:2], confirmed)
+            LayoutDetector().learn_layout(build_type, img.shape[:2], confirmed, source_file=path.name)
             log.info(f'Layout learn: {path.name} [{build_type}] — {len(confirmed)} slots saved to anchors.json')
             return True
         except Exception as e:
@@ -2953,10 +3021,7 @@ class WarpCoreWindow(QMainWindow):
                 item.setText(f'{icon} {label}\n  {p.name}')
                 item.setCheckState(
                     Qt.CheckState.Checked if confirmed else Qt.CheckState.Unchecked)
-                if self._data_mgr.has_annotations(p):
-                    item.setForeground(QColor('#7effc8'))
-                else:
-                    item.setForeground(Qt.GlobalColor.white)
+                item.setForeground(self._file_item_color(p))
         self._file_list.blockSignals(False)
 
     def _find_sets_root(self) -> Path:

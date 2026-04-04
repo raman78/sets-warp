@@ -188,6 +188,7 @@ DRAW_BBOX_COLOR = QColor(255, 200, 0)  # bbox rect + fill + crosshair cursor
 | Enter | Accept current item |
 | Del / Backspace | Remove selected bbox (canvas or review list) |
 | Alt+A | Toggle Add BBox mode |
+| Alt+D | Toggle Mark Done / Back to Edit |
 | Alt+R | Remove selected bbox |
 | Alt+LMB drag | Draw new bbox directly |
 | Ctrl+wheel | Zoom 1×–6× anchored to cursor |
