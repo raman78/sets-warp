@@ -60,6 +60,11 @@ Annotations are now **training data only** — slot counts are never read from `
 - `ShipDB._entry_to_profile()`: now calls `_boff_profile_from_shipdb` to include BOFF counts when ShipDB finds a specific entry.
 - `_process_image()` (non-trainer path): applies `_GAME_SLOT_MAXES`; T6-X2 tier adds Devices+1 automatically from OCR tier string. `_load_confirmed_profile` is called only for trainer (WARP CORE) imports where user-confirmed annotations are intentionally authoritative.
 
+### Known issue: ShipDB lookup hits keyword fallback for almost all ships
+`ShipDB._by_type` is keyed by the generic `type` field (`"Cruiser"`, `"Science Vessel"` — 44 unique values for 787 ships). `get_profile` searches by OCR ship_type (`"Tactical Fleet Support Cruiser"`) which never matches a generic key, so the lookup always falls through to `_type_keyword_profile` (rough category estimates, no BOFF data).
+
+Fix: extend `get_profile` to also search `_index` (keyed by catalog `name`) using a reverse-subset match — DB name words ⊂ OCR type words. This would give exact per-ship data (consoles, BOFF seating) instead of generic estimates. Not blocking — `_GAME_SLOT_MAXES` + layout_detector pixel analysis compensate at runtime.
+
 ---
 
 ## v2.7 (2026-04-04) — Done state; layout learning fix; ground slot order
