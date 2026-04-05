@@ -447,7 +447,7 @@ class ShipDB:
             try:    return int(v) if v is not None else default
             except: return default
 
-        return {
+        profile = {
             'Fore Weapons':         _int(e.get('fore'),         4),
             'Deflector':            1,
             'Sec-Def':              1 if e.get('secdeflector')  else 0,
@@ -463,6 +463,9 @@ class ShipDB:
             'Tactical Consoles':    _int(e.get('consolestac'),  3),
             'Hangars':              _int(e.get('hangars'),      0),
         }
+        # BOFF ability counts from ship seating — derived from rank × profession
+        profile.update(_boff_profile_from_shipdb(e.get('boffs') or []))
+        return profile
 
 
 # ── Keyword fallback profiles ──────────────────────────────────────────────────
@@ -673,17 +676,30 @@ class WarpImporter:
         else:
             profile = self._get_shipdb().get_profile(ship_name, ship_type)
             _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}: {dict((k,v) for k,v in profile.items() if v)}')
-        # Apply profile override from confirmed annotations
-        # Priority 1: explicitly passed override (from RecognitionWorker)
-        # Priority 2: load from training_data/annotations.json on disk
-        if not profile_override:
-            profile_override = self._load_confirmed_profile(source)
         ship_tier = text_info.get('ship_tier', '')
-        if profile_override:
-            for slot, count in profile_override.items():
+        if _is_trainer_call:
+            # Trainer (WARP CORE): annotation counts are authoritative —
+            # the user has confirmed every bbox, so the profile must match exactly.
+            if not profile_override:
+                profile_override = self._load_confirmed_profile(source)
+            for slot, count in (profile_override or {}).items():
                 if count > profile.get(slot, 0):
                     profile[slot] = count
-                    _slog.info(f'WarpImporter: profile override {slot}={count} (from confirmed annotations)')
+                    _slog.info(f'WarpImporter: trainer profile {slot}={count} (confirmed)')
+        else:
+            # WARP dialog import: coded game rules only — annotations are training data.
+            # Traits / Rep / Active Rep: fixed STO game caps.
+            # BOFF slots: already set by _boff_profile_from_shipdb via _entry_to_profile;
+            #   _GAME_SLOT_MAXES fallbacks apply only when ShipDB lookup failed (no boffs data).
+            for slot, max_val in _GAME_SLOT_MAXES.items():
+                if max_val > profile.get(slot, 0):
+                    profile[slot] = max_val
+            # T6-X2: +1 Device slot
+            if 'X2' in ship_tier and profile.get('Devices', 0) > 0:
+                profile['Devices'] = profile['Devices'] + 1
+                _slog.info(f'WarpImporter: T6-X2 — Devices +1 → {profile["Devices"]}')
+            _slog.debug(f'WarpImporter: game-rule profile (traits/rep/boff): '
+                        f'{dict((k,v) for k,v in profile.items() if "Boff" in k or "Trait" in k or "Rep" in k)}')
 
 
         result = ImportResult(
