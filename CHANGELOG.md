@@ -30,6 +30,30 @@
 ### Fix: sync "still pending" log noise
 - `sync.py` `SyncManager._on_finished()`: "upload OK — N crops still pending" demoted from INFO to DEBUG when N > 0 (normal state while user is actively annotating). INFO only fires when N == 0 ("all synced").
 
+### Fix: redistribute overflow uni_consoles items to eng/sci/tac slots
+- `warp_dialog.py`: when annotation labels a console row as "Universal Consoles" (item type vs row position confusion), items beyond the ship's `uni_consoles` count are redistributed to eng/sci/tac slots sorted by Y position instead of being silently dropped.
+- `warp_button.py`: log current ML model info at startup.
+- `updater.py`: renamed update logs to "SETS-WARP updater".
+
+### Feature: Strategy 2.5 — canonical layout + Y-offset scan (`layout_detector.py`)
+- `build_canonical_layout()` classmethod: aggregates all learned entries from `anchors.json` → computes median Y/W/H per slot per screen type → saves to `canonical_layout.json`. Called automatically after every `learn_layout()`.
+- `_detect_via_canonical_layout()` (Strategy 2.5): triggered when pixel analysis produces < 70% slot coverage. Loads canonical median Y positions, scans Y offsets −0.20…+0.20 in 0.01 steps, scores pixel brightness at predicted icon rows, picks best offset. Score threshold `_CANONICAL_MIN_SCORE = 0.35`.
+- `_detect_via_anchors()` (Strategy 4): now uses canonical learned Y values when available, falls back to hardcoded `SPACE_ANCHORS_REL` only when canonical has no data for the slot.
+- Effect: ships with unusual layouts that fool pixel analysis now benefit from the aggregate of all user-confirmed annotations instead of falling all the way back to OCR or hardcoded positions.
+
+### Feature: Phase 3 — annotation bypass for non-MIXED imports (`warp_importer.py`)
+- For SPACE / GROUND / BOFFS / TRAITS / SPEC build types, confirmed annotation slot labels are no longer used for direct SETS slot assignment — slot positions are always inferred via layout_detector strategies. Annotations serve as training data only.
+- MIXED screens retain the confirmed-layout path (they span multiple slot orders where position is the only reliable signal).
+
+### Fix: upgrade SPACE → SPACE_MIXED when OCR detects richer screen type
+- `warp_importer.py`: during import, if OCR finds BOFF headers or trait sections on a screen classified as SPACE, the build_type is upgraded to SPACE_MIXED so the importer processes all slot groups correctly. Rule: upgrade only (never downgrade), only from base SPACE/GROUND to MIXED.
+
+### Feature: BOFF profile from ShipDB seating data (`warp_importer.py`)
+- `_boff_profile_from_shipdb(boffs)`: computes BOFF ability-slot counts per profession from the ShipDB `boffs` field (e.g. `"Commander Tactical-Miracle Worker"`).
+- `_BOFF_RANK_SLOTS`: rank → ability count mapping (Commander=4, Lt Cmdr=3, Lieutenant=2, Ensign=1) including Romulan/KDF/Dominion equivalents.
+- `_BOFF_PROF_TO_SLOT`: profession name → canonical slot name mapping.
+- `_GAME_SLOT_MAXES`: fallback maximums for trait/rep/BOFF slots not in ShipDB equipment data.
+
 ---
 
 ## v2.7 (2026-04-04) — Done state; layout learning fix; ground slot order
