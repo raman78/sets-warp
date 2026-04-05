@@ -202,5 +202,81 @@ class TestConfirmedLayoutBypass(unittest.TestCase):
         imp._load_confirmed_layout.assert_called_once()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Build-type OCR upgrade: SPACE → SPACE_MIXED when OCR says richer type
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBuildTypeUpgrade(unittest.TestCase):
+    """
+    When dialog selects SPACE/GROUND but OCR detects a richer screen type
+    (SPACE_TRAITS, SPACE_MIXED, GROUND_TRAITS, GROUND_MIXED), the importer
+    must upgrade so that BOFFs/traits are processed via confirmed_layout.
+    """
+
+    def _make_importer_with_ocr(self, dialog_build_type: str, ocr_build: str):
+        try:
+            from warp.warp_importer import WarpImporter
+        except Exception as e:
+            self.skipTest(f'WarpImporter import failed: {e}')
+
+        imp = WarpImporter.__new__(WarpImporter)
+        imp._build_type          = dialog_build_type
+        imp._from_trainer        = False
+        imp._progress_callback   = None
+        imp._interrupt_check     = None
+
+        mock_text = MagicMock()
+        mock_text.extract_ship_info.return_value = {
+            'ship_name': '', 'ship_type': '', 'ship_tier': '',
+            'build_type': ocr_build,
+        }
+        imp._get_text    = lambda: mock_text
+        imp._get_layout  = lambda: MagicMock(detect=MagicMock(return_value={}))
+        imp._get_matcher = lambda: MagicMock()
+        imp._get_shipdb  = lambda: MagicMock(get_profile=lambda *a: {})
+
+        imp._load_confirmed_layout  = MagicMock(return_value=None)
+        imp._load_confirmed_profile = MagicMock(return_value={})
+        imp._build_slot_candidates  = MagicMock(return_value={})
+
+        return imp
+
+    def _run(self, imp):
+        import numpy as np
+        img = np.zeros((600, 1000, 3), dtype='uint8')
+        try:
+            imp._process_image(img, 'shot.jpg')
+        except Exception:
+            pass
+
+    def test_space_upgrades_on_space_traits_ocr(self):
+        imp = self._make_importer_with_ocr('SPACE', 'SPACE_TRAITS')
+        self._run(imp)
+        # SPACE_MIXED path → _load_confirmed_layout must be called
+        imp._load_confirmed_layout.assert_called_once()
+
+    def test_space_upgrades_on_space_mixed_ocr(self):
+        imp = self._make_importer_with_ocr('SPACE', 'SPACE_MIXED')
+        self._run(imp)
+        imp._load_confirmed_layout.assert_called_once()
+
+    def test_ground_upgrades_on_ground_traits_ocr(self):
+        imp = self._make_importer_with_ocr('GROUND', 'GROUND_TRAITS')
+        self._run(imp)
+        imp._load_confirmed_layout.assert_called_once()
+
+    def test_space_no_upgrade_on_space_ocr(self):
+        """Plain SPACE OCR result — no upgrade, no confirmed_layout."""
+        imp = self._make_importer_with_ocr('SPACE', 'SPACE')
+        self._run(imp)
+        imp._load_confirmed_layout.assert_not_called()
+
+    def test_space_traits_not_upgraded_further(self):
+        """Dialog-selected SPACE_TRAITS → not upgraded, stays SPACE_TRAITS."""
+        imp = self._make_importer_with_ocr('SPACE_TRAITS', 'SPACE_TRAITS')
+        self._run(imp)
+        imp._load_confirmed_layout.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
