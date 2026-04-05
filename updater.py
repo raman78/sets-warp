@@ -46,7 +46,7 @@ def schedule_update_check(sets_app) -> None:
     Skips silently if autoupdate is disabled in Settings.
     """
     if not is_autoupdate_enabled(sets_app):
-        log.debug('WARP updater: autoupdate disabled, skipping check')
+        log.debug('SETS-WARP updater: autoupdate disabled, skipping check')
         return
     threading.Thread(
         target=_check_worker,
@@ -109,14 +109,14 @@ def _check_worker(sets_app) -> None:
         if not remote_tag:
             return
         if remote_tag == current:
-            log.info(f'WARP updater: up to date (v{current})')
+            log.info(f'SETS-WARP updater: up to date (v{current})')
             return
 
         # Check snooze
         try:
             snoozed = sets_app.settings.value('warp_update/snoozed_version', '')
             if snoozed == remote_tag:
-                log.debug(f'WARP updater: v{remote_tag} snoozed by user, skipping')
+                log.debug(f'SETS-WARP updater: v{remote_tag} snoozed by user, skipping')
                 return
         except Exception:
             pass
@@ -125,7 +125,7 @@ def _check_worker(sets_app) -> None:
         notes = '\n'.join(notes_raw.splitlines()[:10]).strip()
 
         log.info(
-            f'WARP updater: new release v{remote_tag} available (current v{current})')
+            f'SETS-WARP updater: new release v{remote_tag} available (current v{current})')
 
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QApplication
@@ -134,7 +134,7 @@ def _check_worker(sets_app) -> None:
             lambda: _show_update_dialog(sets_app, current, remote_tag, notes))
 
     except Exception as e:
-        log.warning(f'WARP updater: check failed ({e})')
+        log.warning(f'SETS-WARP updater: check failed ({e})')
 
 
 # ── Dialog ─────────────────────────────────────────────────────────────────────
@@ -185,7 +185,7 @@ def _show_update_dialog(sets_app, current: str, new_tag: str, notes: str) -> Non
         # "Later" always snoozes this version — re-prompt only on the next release.
         try:
             sets_app.settings.setValue('warp_update/snoozed_version', new_tag)
-            log.info(f'WARP updater: snoozed notifications for v{new_tag}')
+            log.info(f'SETS-WARP updater: snoozed notifications for v{new_tag}')
         except Exception:
             pass
         return
@@ -254,7 +254,7 @@ def _do_zip_update(sets_app, new_tag: str) -> None:
     parent = getattr(sets_app, 'window', None)
     zip_url = (f'https://github.com/{GITHUB_REPO}'
                f'/archive/refs/tags/v{new_tag}.zip')
-    log.info(f'WARP updater: downloading {zip_url}')
+    log.info(f'SETS-WARP updater: downloading {zip_url}')
     try:
         with urllib.request.urlopen(zip_url, timeout=120) as resp:
             tmp = tempfile.NamedTemporaryFile(suffix='.zip', delete=False)
@@ -281,7 +281,7 @@ def _do_zip_update(sets_app, new_tag: str) -> None:
                         shutil.copyfileobj(src, dst)
 
         os.unlink(tmp.name)
-        log.info('WARP updater: extraction complete')
+        log.info('SETS-WARP updater: extraction complete')
 
     except Exception as e:
         QMessageBox.warning(parent, 'Update failed', str(e))
@@ -292,7 +292,7 @@ def _do_zip_update(sets_app, new_tag: str) -> None:
 
 def _restart() -> None:
     """Restart the process in-place. Cross-platform."""
-    log.info('WARP updater: restarting...')
+    log.info('SETS-WARP updater: restarting...')
     if sys.platform == 'win32':
         subprocess.Popen([sys.executable] + sys.argv)
         sys.exit(0)

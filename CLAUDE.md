@@ -261,6 +261,8 @@ log.debug('...')
 log.warning('...')
 ```
 
+**"Logging" always means both:** writing to the log file **and** printing to the terminal. Never log to only one destination. Always use `src.setsdebug.log` — do NOT use `logging.getLogger(__name__)` in WARP code, as that bypasses the SETS log panel and terminal output.
+
 All WARP CORE logs are prefixed with context (e.g. `WarpImporter:`, `LayoutDetector:`, `AW.zoom`).
 
 ---
