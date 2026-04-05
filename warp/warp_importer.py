@@ -118,6 +118,13 @@ SLOT_ORDER = {
     'GROUND_TRAITS': GROUND_TRAITS_SLOT_ORDER,
     'BOFFS':         BOFFS_SLOT_ORDER,
     'SPEC':          SPEC_SLOT_ORDER,
+    # MIXED = all slot groups combined; used as fallback when no confirmed_layout exists.
+    # layout_detector returns only the bboxes it actually finds, so unused slots
+    # simply produce 0 bboxes and are silently skipped.
+    'SPACE_MIXED':  (SPACE_SLOT_ORDER + BOFFS_SLOT_ORDER +
+                     SPACE_TRAITS_SLOT_ORDER + SPEC_SLOT_ORDER),
+    'GROUND_MIXED': (GROUND_SLOT_ORDER + BOFFS_SLOT_ORDER +
+                     GROUND_TRAITS_SLOT_ORDER + SPEC_SLOT_ORDER),
 }
 
 # Global slot_def lookup (slot_name → slot_def) across all slot orders, in canonical sequence.
