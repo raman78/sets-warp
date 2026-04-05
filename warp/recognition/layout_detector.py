@@ -28,7 +28,10 @@ except Exception:
 OCR_CONF_THRESHOLD = 0.40
 LABEL_FUZZY_CUTOFF = 0.68
 # Calibration file is stored in training_data
-CALIBRATION_FILE   = Path('warp') / 'training_data' / 'anchors.json'
+CALIBRATION_FILE        = Path('warp') / 'training_data' / 'anchors.json'
+CANONICAL_LAYOUT_FILE   = Path('warp') / 'training_data' / 'canonical_layout.json'
+# Minimum brightness score for canonical layout to be accepted
+_CANONICAL_MIN_SCORE    = 0.35
 
 # Slot order for space builds
 # Slot names must match warp_importer.py SPACE_SLOT_ORDER exactly
@@ -112,6 +115,16 @@ class LayoutDetector:
                     _slog.info(f'  [{slot}] bbox={b}')
             return result
 
+        # Strategy 2.5: Canonical layout + Y-offset scan
+        # Uses aggregate learned Y positions when pixel analysis under-covers the screen
+        canonical = self._detect_via_canonical_layout(img, build_type, slot_order, profile)
+        if canonical and len(canonical) >= max(3, int(len(slot_order) * 0.6)):
+            _slog.info(f'LayoutDetector: Strategy 2.5 (canonical) → {len(canonical)} slot groups, {sum(len(v) for v in canonical.values())} bboxes')
+            for slot, boxes in canonical.items():
+                for b in boxes:
+                    _slog.info(f'  [{slot}] bbox={b}')
+            return canonical
+
         # Strategy 3: OCR labels
         ocr_result = self._detect_via_ocr(img, slot_order, profile)
         if ocr_result and len(ocr_result) >= 2:
@@ -122,7 +135,8 @@ class LayoutDetector:
                     _slog.info(f'  [{slot}] bbox={b}')
             return filled
 
-        # Strategy 4: Hardcoded anchor fallback
+        # Strategy 4: Anchor fallback — uses canonical learned values if available,
+        # otherwise falls back to hardcoded SPACE_ANCHORS_REL
         fallback = self._detect_via_anchors(img, slot_order, profile)
         _slog.info(f'LayoutDetector: Strategy 4 (anchors) → {len(fallback)} slot groups, {sum(len(v) for v in fallback.values())} bboxes')
         for slot, boxes in fallback.items():
@@ -146,6 +160,209 @@ class LayoutDetector:
             _slog.info(f'LayoutDetector: removed {removed} layout entries for {source_file!r}')
             return True
         return False
+
+    # ── Canonical Layout (aggregate from anchors.json) ────────────────────────
+
+    @classmethod
+    def build_canonical_layout(cls) -> dict:
+        """
+        Aggregate all learned entries from anchors.json into canonical_layout.json.
+        Computes median Y/W/H per slot per screen type.
+        Called after learn_layout() and as a one-time bootstrap.
+        Returns the canonical dict (empty on failure).
+        """
+        import statistics as _st
+
+        # Locate anchors.json
+        p = Path(__file__).resolve().parent
+        cal_data = None
+        for _ in range(6):
+            cfile = p / CALIBRATION_FILE
+            if cfile.exists():
+                try:
+                    cal_data = json.loads(cfile.read_text(encoding='utf-8'))
+                except Exception:
+                    pass
+                break
+            p = p.parent
+        if not cal_data:
+            return {}
+
+        learned = cal_data.get('learned', [])
+        if not learned:
+            return {}
+
+        from collections import defaultdict
+        type_slots: dict[str, dict[str, dict]] = defaultdict(lambda: defaultdict(lambda: {'y': [], 'w': [], 'h': []}))
+
+        for entry in learned:
+            btype = entry.get('type')
+            if not btype:
+                continue
+            for slot_name, geo in entry.get('slots', {}).items():
+                if not isinstance(geo, dict):
+                    continue
+                sd = type_slots[btype][slot_name]
+                if 'y_rel' in geo:
+                    sd['y'].append(geo['y_rel'])
+                if 'w_rel' in geo:
+                    sd['w'].append(geo['w_rel'])
+                if 'h_rel' in geo:
+                    sd['h'].append(geo['h_rel'])
+
+        canonical: dict = {'version': 1, 'types': {}}
+        for btype, slot_data in type_slots.items():
+            slots_out = {}
+            for slot_name, vals in slot_data.items():
+                if len(vals['y']) < 2:
+                    continue
+                slots_out[slot_name] = {
+                    'y_rel': round(_st.median(vals['y']), 5),
+                    'y_std': round(_st.stdev(vals['y']), 5),
+                    'w_rel': round(_st.median(vals['w']), 5) if vals['w'] else 0.028,
+                    'h_rel': round(_st.median(vals['h']), 5) if vals['h'] else 0.055,
+                    'n':     len(vals['y']),
+                }
+            if slots_out:
+                canonical['types'][btype] = {
+                    'n_samples': sum(1 for e in learned if e.get('type') == btype),
+                    'slots':     slots_out,
+                }
+
+        # Save next to anchors.json
+        p2 = Path(__file__).resolve().parent
+        for _ in range(6):
+            if (p2 / 'pyproject.toml').exists():
+                out = p2 / CANONICAL_LAYOUT_FILE
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps(canonical, indent=2), encoding='utf-8')
+                _slog.info(
+                    f'LayoutDetector: canonical_layout.json saved '
+                    f'({len(canonical["types"])} types, '
+                    f'{sum(len(v["slots"]) for v in canonical["types"].values())} slot entries)'
+                )
+                break
+            p2 = p2.parent
+
+        return canonical
+
+    def _load_canonical_layout(self) -> dict | None:
+        """Load canonical_layout.json. Returns None if missing/corrupt."""
+        p = Path(__file__).resolve().parent
+        for _ in range(6):
+            cfile = p / CANONICAL_LAYOUT_FILE
+            if cfile.exists():
+                try:
+                    return json.loads(cfile.read_text(encoding='utf-8'))
+                except Exception:
+                    return None
+            p = p.parent
+        return None
+
+    def _detect_via_canonical_layout(
+        self,
+        img,
+        build_type: str,
+        slot_order: list,
+        profile: dict,
+    ) -> dict | None:
+        """
+        Strategy 2.5: canonical layout + vertical offset scan.
+
+        Loads the aggregate canonical Y positions (median across all learned entries),
+        then searches for the best Y offset by scoring pixel brightness at predicted
+        icon rows. Generates bboxes from the best-fit offset.
+
+        Triggered when pixel analysis produces < 70% coverage.
+        """
+        canonical = self._load_canonical_layout()
+        if not canonical:
+            return None
+        type_data = canonical.get('types', {}).get(build_type)
+        if not type_data or not type_data.get('slots'):
+            return None
+
+        can_slots: dict = type_data['slots']
+
+        import cv2
+        h, w = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        panel_right = self._find_panel_right_edge(img)
+
+        # High-coverage "anchor" slots used for brightness scoring
+        ANCHOR_CHECK = {
+            'Fore Weapons', 'Deflector', 'Engines', 'Warp Core', 'Shield', 'Aft Weapons',
+            'Boff Engineering', 'Boff Science', 'Boff Tactical',
+            'Personal Space Traits', 'Space Reputation', 'Starship Traits',
+            'Primary Specialization', 'Secondary Specialization',
+            'Kit Modules', 'Kit', 'Body Armor', 'Personal Shield',
+        }
+
+        def _score(dy: float) -> float:
+            sc = ck = 0
+            for slot_name, geo in can_slots.items():
+                if slot_name not in ANCHOR_CHECK:
+                    continue
+                cy = int((geo['y_rel'] + dy) * h)
+                bw = max(18, int(geo['w_rel'] * w))
+                bh = max(18, int(geo['h_rel'] * h))
+                y1 = max(0, cy - bh // 4)
+                y2 = min(h, cy + bh // 4)
+                if y1 >= y2:
+                    continue
+                # Check at panel right edge (STO icons are right-aligned)
+                x0 = max(0, panel_right - 5 * bw)
+                patch = gray[y1:y2, x0:panel_right]
+                if patch.size == 0:
+                    continue
+                ck += 1
+                if float(patch.mean()) > 40:
+                    sc += 1
+            return sc / max(ck, 1)
+
+        # Scan Y offsets -0.20 … +0.20 in 0.01 steps
+        best_dy, best_score = 0.0, _score(0.0)
+        for dy_i in range(-20, 21):
+            if dy_i == 0:
+                continue
+            dy = dy_i / 100.0
+            s = _score(dy)
+            if s > best_score:
+                best_score, best_dy = s, dy
+
+        if best_score < _CANONICAL_MIN_SCORE:
+            _slog.debug(
+                f'LayoutDetector: canonical [{build_type}] score={best_score:.2f} '
+                f'< {_CANONICAL_MIN_SCORE} — skipping'
+            )
+            return None
+
+        _slog.info(
+            f'LayoutDetector: Strategy 2.5 (canonical) [{build_type}] '
+            f'dy={best_dy:+.2f} score={best_score:.2f}'
+        )
+
+        row_h_est = int(h * 0.068)
+        cell_w    = max(30, int(row_h_est * 0.80))
+
+        result = {}
+        for slot_name in slot_order:
+            geo = can_slots.get(slot_name)
+            if geo is None:
+                continue
+            cy   = int((geo['y_rel'] + best_dy) * h)
+            bh   = max(26, int(geo['h_rel'] * h))
+            iy   = max(0, cy - bh // 2)
+            n    = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
+            if n == 0:
+                continue
+            bboxes = []
+            for j in range(n):
+                bboxes.append((max(0, panel_right - (j + 1) * cell_w + 2), iy, cell_w - 4, bh))
+            bboxes.reverse()
+            result[slot_name] = bboxes
+
+        return result if len(result) >= 3 else None
 
     def learn_layout(self, screen_type: str, img_size: tuple[int, int], annotations: list[dict], source_file: str = ''):
         """
@@ -272,13 +489,21 @@ class LayoutDetector:
             _slog.info(f'LayoutDetector: LRU eviction — trimmed to {MAX_LEARNED} entries')
 
         self._save_calibration()
-        total_bboxes = sum(v['count'] for v in slot_map.values())
+        total_bboxes = sum(
+            v['count'] if 'count' in v else sum(r['count'] for r in v.get('runs', []))
+            for v in slot_map.values()
+        )
         _slog.info(
             f'LayoutDetector: saved layout [{screen_type}] {w}x{h} '
             f'({len(slot_map)} slot groups, {total_bboxes} bboxes'
             + (f', src={source_file}' if source_file else '')
             + f', total entries={len(self._calibration["learned"])})'
         )
+        # Rebuild canonical layout so Strategy 2.5 benefits from new data
+        try:
+            LayoutDetector.build_canonical_layout()
+        except Exception as _ce:
+            _slog.debug(f'LayoutDetector: canonical rebuild failed: {_ce}')
 
     def _detect_via_learned_layouts(self, img, build_type, slot_order, profile):
         """Find the best matching learned layout by scoring pixel brightness.
@@ -904,16 +1129,35 @@ class LayoutDetector:
         h, w = img.shape[:2]
         panel_right, row_h_est = self._find_panel_right_edge(img), int(h * 0.072)
         cell_w, icon_h = max(30, int(row_h_est * 0.80)), max(26, int(row_h_est * 0.78))
+
+        # Load canonical learned Y values; fall back to hardcoded SPACE_ANCHORS_REL
+        canonical = self._load_canonical_layout()
+        can_slots = {}
+        if canonical:
+            # Use build_type='SPACE' as best general fallback for equipment screens
+            can_slots = canonical.get('types', {}).get('SPACE', {}).get('slots', {})
+
         cal = (self._calibration or {}).get('SPACE', {})
         result = {}
         for slot_name in slot_order:
-            y_rel, n_default = cal.get(slot_name, self.SPACE_ANCHORS_REL.get(slot_name, (None, 0)))
-            if y_rel is None: continue
+            # Priority: canonical learned > hardcoded
+            if slot_name in can_slots:
+                y_rel    = can_slots[slot_name]['y_rel']
+                n_default = SLOT_DEFAULT_COUNTS.get(slot_name, 1)
+            else:
+                anchor = cal.get(slot_name, self.SPACE_ANCHORS_REL.get(slot_name))
+                if anchor is None:
+                    continue
+                y_rel, n_default = anchor if isinstance(anchor, tuple) else (anchor, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
             n_icons = profile.get(slot_name, n_default)
-            if n_icons == 0: continue
-            iy, bboxes = int(h * y_rel) - icon_h // 2, []
-            for j in range(n_icons): bboxes.append((max(0, panel_right - (j + 1) * cell_w + 2), iy, cell_w - 4, icon_h))
-            bboxes.reverse(); result[slot_name] = bboxes
+            if n_icons == 0:
+                continue
+            iy = int(h * y_rel) - icon_h // 2
+            bboxes = []
+            for j in range(n_icons):
+                bboxes.append((max(0, panel_right - (j + 1) * cell_w + 2), iy, cell_w - 4, icon_h))
+            bboxes.reverse()
+            result[slot_name] = bboxes
         return result
 
     def _fill_gaps(self, found, slot_order, img, profile):
