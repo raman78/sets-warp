@@ -793,7 +793,12 @@ class WarpImporter:
 
         for slot_def in slot_defs_to_process:
             slot_name = slot_def['name']
-            max_count = profile.get(slot_name, 0)
+            # When confirmed_layout is available its bbox count IS the ground truth —
+            # do not let the profile (ShipDB estimate) silently cap or skip slots.
+            if confirmed_layout and slot_name in confirmed_layout:
+                max_count = len(confirmed_layout[slot_name])
+            else:
+                max_count = profile.get(slot_name, 0)
             if max_count == 0:
                 continue
 
