@@ -424,6 +424,11 @@ class WarpDialog(QDialog):
             _slog.warning(f'WARP: ship info widget update failed: {_e}')
 
         boff_items = []
+        # Console overflow: uni_consoles items that exceed the build's slot count are
+        # redistributed to eng/sci/tac after the main loop (sorted by Y position).
+        _overflow_console: list = []
+        _written_to: dict[str, int] = {}  # build_key → next available write index
+
         for ri in r.items:
             if not ri.name:
                 continue
@@ -447,17 +452,45 @@ class WarpDialog(QDialog):
                     if item_data:
                         build_list = self._sets.build[env].get(build_key, [])
                         if idx >= len(build_list):
-                            log.warning(
-                                f'WARP: slot {ri.slot}[{idx}] out of range '
-                                f'(build has {len(build_list)} slots) — skipping "{ri.name}"'
-                            )
+                            if build_key == 'uni_consoles':
+                                # Queue for redistribution to eng/sci/tac after main loop
+                                _overflow_console.append((ri, item_data, env))
+                            else:
+                                log.warning(
+                                    f'WARP: slot {ri.slot}[{idx}] out of range '
+                                    f'(build has {len(build_list)} slots) — skipping "{ri.name}"'
+                                )
                         else:
                             slot_equipment_item(self._sets, item_data, env, build_key, idx)
+                            if 'console' in build_key:
+                                _written_to[build_key] = max(
+                                    _written_to.get(build_key, 0), idx + 1)
                 else:
                     item_data = {'item': ri.name}
                     slot_trait_item(self._sets, item_data, env, build_key, idx)
             except Exception as e:
                 log.warning(f'WARP: Failed to import "{ri.name}" into {ri.slot}[{idx}]: {e}')
+
+        # Redistribute overflow uni_consoles items into available eng/sci/tac slots,
+        # sorted by Y position so screen order is preserved.
+        if _overflow_console:
+            _overflow_console.sort(key=lambda x: x[0].bbox[1] if x[0].bbox else 0)
+            for ri, item_data, env in _overflow_console:
+                placed = False
+                for ck in ('eng_consoles', 'sci_consoles', 'tac_consoles'):
+                    next_idx = _written_to.get(ck, 0)
+                    bl = self._sets.build[env].get(ck, [])
+                    if next_idx < len(bl):
+                        slot_equipment_item(self._sets, item_data, env, ck, next_idx)
+                        _written_to[ck] = next_idx + 1
+                        log.info(
+                            f'WARP: {ri.slot}[{ri.slot_index}] overflow → {ck}[{next_idx}] "{ri.name}"')
+                        placed = True
+                        break
+                if not placed:
+                    log.warning(
+                        f'WARP: {ri.slot}[{ri.slot_index}] overflow — no console slot available '
+                        f'for "{ri.name}"')
 
         if boff_items:
             self._write_boffs_to_build(boff_items, _ship_data)

@@ -82,6 +82,9 @@ def inject_warp_buttons(sets_app, menu_layout) -> None:
     from updater import schedule_update_check
     QTimer.singleShot(3000, lambda: schedule_update_check(sets_app))
 
+    # ML model update check — fires 15 s after app is ready (rate-limited to once per 15 min)
+    QTimer.singleShot(15_000, lambda: _check_model_update())
+
     # Background HF sync — only when hub_token.txt is present (full SETS-WARP install)
     _start_background_sync(sets_app)
 
@@ -114,6 +117,40 @@ def _open_warp_core(sets_app) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 # Background sync
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _check_model_update() -> None:
+    """Run ModelUpdater in background and log current model info regardless of update."""
+    try:
+        from src.setsdebug import log as _log
+    except Exception:
+        _log = log
+
+    try:
+        import json
+        models_dir = Path(__file__).resolve().parent / 'models'
+        ver_path = models_dir / 'model_version.json'
+        if ver_path.exists():
+            ver = json.loads(ver_path.read_text(encoding='utf-8'))
+            trained_at = ver.get('trained_at', '')
+            n_classes  = ver.get('n_classes', '?')
+            val_acc    = ver.get('val_acc', 0)
+            if trained_at:
+                _log.info(
+                    f'WARP model: trained {trained_at[:16].replace("T", " ")} UTC, '
+                    f'{n_classes} classes, val_acc={val_acc:.1%}'
+                )
+        else:
+            _log.info('WARP model: no local model yet — downloading...')
+    except Exception as e:
+        _log.debug(f'WARP model info read failed: {e}')
+
+    try:
+        from warp.trainer.model_updater import ModelUpdater
+        sets_root = Path(__file__).resolve().parent.parent
+        ModelUpdater().check_and_update(sets_root)
+    except Exception as e:
+        log.debug(f'WARP model update check failed: {e}')
+
 
 def _start_background_sync(sets_app) -> None:
     """
