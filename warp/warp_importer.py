@@ -246,6 +246,107 @@ def _profile_from_pixel_counts(pixel_counts: dict[str, int]) -> dict[str, int]:
     return merged
 
 
+# ── BOFF ability slot computation from ShipDB seating data ───────────────────
+# Rank names cover all STO factions (English / Klingon / Romulan / Dominion).
+# Dict is ordered longest-first so 'Lieutenant Commander' is matched before
+# 'Lieutenant' (simple startswith matching).
+_BOFF_RANK_SLOTS: dict[str, int] = {
+    'Lieutenant Commander': 3,
+    'Commander':            4,
+    'Lieutenant':           2,
+    'Ensign':               1,
+    # Romulan / KDF / Dominion faction equivalents
+    'Subcommander':         4,
+    'Centurion':            3,
+    'Fourth':               2,
+    'Warrior':              1,
+    'Citizen':              1,
+    'Fifth':                1,
+    'Third':                3,
+    'Second':               4,
+}
+
+_BOFF_PROF_TO_SLOT: dict[str, str] = {
+    'Tactical':           'Boff Tactical',
+    'Engineering':        'Boff Engineering',
+    'Science':            'Boff Science',
+    'Command':            'Boff Command',
+    'Intelligence':       'Boff Intelligence',
+    'Miracle Worker':     'Boff Miracle Worker',
+    'Temporal Operative': 'Boff Temporal',
+    'Pilot':              'Boff Pilot',
+    'Operations':         'Boff Operations',
+}
+
+# Game-defined maximums for slots not covered by ShipDB equipment data.
+# Applied when build_type is not a trainer call.
+# layout_detector pixel analysis returns the actual count (≤ these caps).
+_GAME_SLOT_MAXES: dict[str, int] = {
+    'Personal Space Traits':  11,  # character-level cap
+    'Personal Ground Traits': 11,
+    'Starship Traits':         7,  # max with T6-X2 mastery upgrade
+    'Space Reputation':        5,  # always 5 in STO
+    'Ground Reputation':       5,
+    'Active Space Rep':        5,
+    'Active Ground Rep':       5,
+    # BOFF fallback maximums — used only when ShipDB lookup fails.
+    # For successful lookups _boff_profile_from_shipdb() gives exact values.
+    'Boff Tactical':          12,
+    'Boff Engineering':       12,
+    'Boff Science':           12,
+    'Boff Command':            6,
+    'Boff Intelligence':       6,
+    'Boff Pilot':              6,
+    'Boff Miracle Worker':     6,
+    'Boff Temporal':           6,
+    'Boff Operations':         6,
+}
+
+
+def _boff_profile_from_shipdb(boffs: list) -> dict[str, int]:
+    """
+    Compute BOFF ability-slot counts per profession from ShipDB seating list.
+
+    Entry format: '<Rank> <Profession>[-<Specialization>]'
+    e.g. 'Commander Tactical-Miracle Worker', 'Lieutenant Commander Universal'
+
+    Universal seats can hold any profession's BOFF — their ability count is
+    added to every recognized profession so the layout_detector can find the
+    icons regardless of what the player placed there.
+    Returns empty dict for empty/invalid input.
+    """
+    dedicated: dict[str, int] = {}
+    universal_slots = 0
+
+    for b in (boffs or []):
+        if not b:
+            continue
+        rank_slots = 0
+        rest = b
+        for rank, slots in _BOFF_RANK_SLOTS.items():
+            if b.startswith(rank + ' ') or b == rank:
+                rank_slots = slots
+                rest = b[len(rank):].strip()
+                break
+        if not rank_slots:
+            continue
+        primary_prof = rest.split('-')[0].strip()
+        if primary_prof == 'Universal':
+            universal_slots += rank_slots
+        else:
+            slot = _BOFF_PROF_TO_SLOT.get(primary_prof)
+            if slot:
+                dedicated[slot] = dedicated.get(slot, 0) + rank_slots
+
+    if universal_slots:
+        # Distribute Universal slots to every profession present (or default three)
+        targets = list(dedicated) or ['Boff Tactical', 'Boff Engineering', 'Boff Science']
+        for slot in targets:
+            dedicated[slot] = dedicated.get(slot, 0) + universal_slots
+
+    return dedicated
+
+
 # ── ShipDB — primary source of truth for slot counts ──────────────────────────
 
 class ShipDB:
