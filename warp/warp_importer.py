@@ -543,13 +543,23 @@ class WarpImporter:
             text_info  = self._get_text().extract_ship_info(img)
             ship_name  = text_info.get('ship_name', '')
             ship_type  = text_info.get('ship_type', '')
-            # Use caller's build_type as primary, OCR as confirmation
+            # Use caller's build_type as primary, OCR as confirmation.
+            # Upgrade SPACE→SPACE_MIXED / GROUND→GROUND_MIXED when OCR signals
+            # a richer screen type (broadside screenshots contain equipment +
+            # traits + boffs simultaneously).  Never downgrade.
+            _ocr_bt = text_info.get('build_type', '')
             if self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
                                     'GROUND_TRAITS', 'BOFFS', 'SPEC',
                                     'SPACE_MIXED', 'GROUND_MIXED'):
                 build_type = self._build_type
+                if build_type == 'SPACE' and _ocr_bt in ('SPACE_TRAITS', 'SPACE_MIXED'):
+                    build_type = 'SPACE_MIXED'
+                    _slog.info('WarpImporter: upgraded SPACE → SPACE_MIXED (OCR detected richer screen)')
+                elif build_type == 'GROUND' and _ocr_bt in ('GROUND_TRAITS', 'GROUND_MIXED'):
+                    build_type = 'GROUND_MIXED'
+                    _slog.info('WarpImporter: upgraded GROUND → GROUND_MIXED (OCR detected richer screen)')
             else:
-                build_type = 'GROUND' if text_info.get('build_type') == 'GROUND' else 'SPACE'
+                build_type = 'GROUND' if _ocr_bt == 'GROUND' else 'SPACE'
             _slog.info(f'WarpImporter: OCR result: name={ship_name!r} type={ship_type!r} '
                        f'ocr_build={text_info.get("build_type")!r} → using build_type={build_type!r}')
 
