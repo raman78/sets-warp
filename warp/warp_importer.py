@@ -583,15 +583,19 @@ class WarpImporter:
             ship_profile = profile,
         )
 
-        # Step 3a — if confirmed annotations exist for this exact file,
-        # use them as ground-truth layout (exact bboxes, no pixel guessing)
-        confirmed_layout = self._load_confirmed_layout(source)
+        # Step 3 — layout detection.
+        # For MIXED screens confirmed annotations (exact bboxes + user labels) are used
+        # directly because MIXED spans multiple slot orders that cannot be inferred from
+        # SLOT_ORDER alone.  For all other build types (SPACE, GROUND, BOFFS, TRAITS,
+        # SPEC) the layout is always inferred via layout_detector strategies, keeping
+        # annotations strictly as ML training data — never as direct import output.
+        _use_confirmed = 'MIXED' in build_type
+        confirmed_layout = self._load_confirmed_layout(source) if _use_confirmed else None
         if confirmed_layout:
-            _slog.info(f'WarpImporter: using confirmed layout from annotations '
+            _slog.info(f'WarpImporter: MIXED screen — using confirmed layout from annotations '
                        f'({sum(len(v) for v in confirmed_layout.values())} bboxes)')
             layout = confirmed_layout
         else:
-            # Step 3b — layout detection from pixel analysis
             layout = self._get_layout().detect(img, build_type, profile)
 
         # If ShipDB gave generic fallback (ship_name empty), refine profile
