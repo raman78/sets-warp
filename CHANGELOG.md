@@ -48,11 +48,17 @@
 ### Fix: upgrade SPACE → SPACE_MIXED when OCR detects richer screen type
 - `warp_importer.py`: during import, if OCR finds BOFF headers or trait sections on a screen classified as SPACE, the build_type is upgraded to SPACE_MIXED so the importer processes all slot groups correctly. Rule: upgrade only (never downgrade), only from base SPACE/GROUND to MIXED.
 
-### Feature: BOFF profile from ShipDB seating data (`warp_importer.py`)
-- `_boff_profile_from_shipdb(boffs)`: computes BOFF ability-slot counts per profession from the ShipDB `boffs` field (e.g. `"Commander Tactical-Miracle Worker"`).
-- `_BOFF_RANK_SLOTS`: rank → ability count mapping (Commander=4, Lt Cmdr=3, Lieutenant=2, Ensign=1) including Romulan/KDF/Dominion equivalents.
-- `_BOFF_PROF_TO_SLOT`: profession name → canonical slot name mapping.
-- `_GAME_SLOT_MAXES`: fallback maximums for trait/rep/BOFF slots not in ShipDB equipment data.
+### Feature: annotation-free profile — game rules replace `_load_confirmed_profile` (`warp_importer.py`)
+Annotations are now **training data only** — slot counts are never read from `annotations.json` during a WARP dialog import.
+- `_GAME_SLOT_MAXES`: coded STO game caps for every slot not covered by ShipDB equipment data:
+  - Personal Traits (Space/Ground): max 11; Starship Traits: max 7
+  - Reputation / Active Rep (Space/Ground): always 5
+  - BOFF profession fallback maxes: 12 (Tactical/Eng/Sci), 6 (spec seats)
+- `_BOFF_RANK_SLOTS`: rank → ability-slot count (Commander=4, LtCmdr=3, Lt=2, Ensign=1) + Romulan/KDF/Dominion equivalents.
+- `_BOFF_PROF_TO_SLOT`: profession string → canonical WARP slot name; dual-spec seats (`Tactical-Miracle Worker`) count only toward the primary profession.
+- `_boff_profile_from_shipdb(boffs)`: sums rank slots per profession; Universal seats add their count to all recognised professions since the actual profession depends on the player's BOFF choice.
+- `ShipDB._entry_to_profile()`: now calls `_boff_profile_from_shipdb` to include BOFF counts when ShipDB finds a specific entry.
+- `_process_image()` (non-trainer path): applies `_GAME_SLOT_MAXES`; T6-X2 tier adds Devices+1 automatically from OCR tier string. `_load_confirmed_profile` is called only for trainer (WARP CORE) imports where user-confirmed annotations are intentionally authoritative.
 
 ---
 
