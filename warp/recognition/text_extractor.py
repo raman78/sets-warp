@@ -65,6 +65,7 @@ _BOFF_KEYWORDS: dict[str, str] = {
     'tactical ability':         'BOFFS',
     'engineering ability':      'BOFFS',
     'science ability':          'BOFFS',
+    'space stations':           'BOFFS',  # Bridge Officer Stations tab header
 }
 
 # Space equipment slot labels — presence of 2+ confirms SPACE_EQ
@@ -208,6 +209,7 @@ class TextExtractor:
             'ship_type':  '',
             'ship_tier':  '',
             'build_type': '',
+            'scan_scope': 'partial',  # 'partial' or 'full' — set below
         }
         try:
             h, w = img.shape[:2]
@@ -239,10 +241,12 @@ class TextExtractor:
                 full_lines = _ocr_region(img)
                 detected = _detect_type_from_text(full_lines)
                 all_lines = full_lines
+                result['scan_scope'] = 'full'
                 _slog.info(f'TextExtractor: full scan → {detected!r} '
                            f'({len(full_lines)} tokens)')
             else:
                 all_lines = partial_lines
+                result['scan_scope'] = 'partial'
 
             if detected:
                 result['build_type'] = detected
@@ -314,7 +318,8 @@ class TextExtractor:
                 # - If neither prefix nor valid above, fall back to same_row.
                 _SECTION_HEADER_RE = re.compile(
                     r'\b(traits|reputation|abilities|bridge.?officer|boff|'
-                    r'equipment|consoles?|weapons?|devices?|kit\b|armor)\b',
+                    r'equipment|consoles?|weapons?|devices?|kit\b|armor|'
+                    r'fore|aft|stations?)\b',
                     re.IGNORECASE
                 )
                 above_clean = [t for _, t in above if not _SECTION_HEADER_RE.search(t)]

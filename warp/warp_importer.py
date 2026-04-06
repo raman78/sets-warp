@@ -616,12 +616,17 @@ class WarpImporter:
                 img         = self._load_image(fpath)
                 file_result = self._process_image(
                     img, str(fpath), _base_pct=base_pct, _end_pct=end_pct)
-                if not result.ship_name and file_result.ship_name:
-                    result.ship_name    = file_result.ship_name
-                    result.ship_type    = file_result.ship_type
-                    result.ship_tier    = file_result.ship_tier
-                    result.ship_profile = file_result.ship_profile
-                    result.build_type   = file_result.build_type
+                if file_result.ship_name:
+                    _upgrade = (
+                        not result.ship_name or  # no result yet
+                        (file_result.ship_tier and not result.ship_tier)  # new has tier, current doesn't
+                    )
+                    if _upgrade:
+                        result.ship_name    = file_result.ship_name
+                        result.ship_type    = file_result.ship_type
+                        result.ship_tier    = file_result.ship_tier
+                        result.ship_profile = file_result.ship_profile
+                        result.build_type   = file_result.build_type
                 for item in file_result.items:
                     key = (item.slot, item.slot_index)
                     if key not in best or item.confidence > best[key].confidence:
@@ -666,6 +671,12 @@ class WarpImporter:
                 if build_type == 'SPACE' and _ocr_bt in ('SPACE_TRAITS', 'SPACE_MIXED'):
                     build_type = 'SPACE_MIXED'
                     _slog.info('WarpImporter: upgraded SPACE → SPACE_MIXED (OCR detected richer screen)')
+                elif build_type == 'SPACE' and _ocr_bt == 'BOFFS' and text_info.get('scan_scope') == 'full':
+                    build_type = 'BOFFS'
+                    _slog.info('WarpImporter: upgraded SPACE → BOFFS (dedicated BOFFS screen, full scan only)')
+                elif build_type == 'SPACE' and _ocr_bt == 'SPEC':
+                    build_type = 'SPEC'
+                    _slog.info('WarpImporter: upgraded SPACE → SPEC (OCR detected specialization screen)')
                 elif build_type == 'GROUND' and _ocr_bt in ('GROUND_TRAITS', 'GROUND_MIXED'):
                     build_type = 'GROUND_MIXED'
                     _slog.info('WarpImporter: upgraded GROUND → GROUND_MIXED (OCR detected richer screen)')
