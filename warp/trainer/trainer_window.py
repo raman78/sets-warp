@@ -1872,11 +1872,17 @@ class WarpCoreWindow(QMainWindow):
             allowed = SLOT_GROUPS.get(group_key)  # None means no restriction
             inferred = self._infer_slot_from_name(name, allowed_slots=allowed)
             if inferred:
+                # Weapon slots (Fore/Aft/Experimental) are positionally interchangeable
+                # for generic 'Ship Weapon' type items — the cache type only says "weapon",
+                # not fore vs aft.  P1 position suggestion is more accurate.
+                _weapon_slots = frozenset({'Fore Weapons', 'Aft Weapons', 'Experimental'})
                 # Universal Console items are valid in any console slot.
                 # If P1 position already identified a specific console slot, trust it.
                 _specific_console_slots = frozenset({
                     'Engineering Consoles', 'Science Consoles', 'Tactical Consoles'})
-                if inferred == 'Universal Consoles' and slot in _specific_console_slots:
+                if inferred in _weapon_slots and slot in _weapon_slots:
+                    pass  # keep P1 position suggestion — fore vs aft determined by position
+                elif inferred == 'Universal Consoles' and slot in _specific_console_slots:
                     pass  # keep P1 position suggestion
                 elif inferred in SINGLE_INSTANCE_SLOTS and self._current_idx >= 0:
                     # Skip suggestion if this single-instance slot is already confirmed
