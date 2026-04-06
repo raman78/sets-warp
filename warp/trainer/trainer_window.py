@@ -2113,16 +2113,14 @@ class WarpCoreWindow(QMainWindow):
             bx_center = bx + bw // 2
 
             # "Next in order" strategy: look at icon slots (not NON_ICON_SLOTS)
-            # that are above the new bbox AND in the same X region (within 4×bw).
-            # Text fields (Ship Name/Type/Tier) are at a completely different X
-            # from equipment icons and must not drive sequential slot ordering.
+            # that are above the new bbox. NON_ICON_SLOTS (Ship Name/Type/Tier)
+            # are excluded by name — no X guard needed.
             icon_above = []
             for slot, positions in slot_pos_map.items():
                 if slot in NON_ICON_SLOTS:
                     continue
-                avg_cx = sum(p[0] for p in positions) / len(positions)
                 avg_cy = sum(p[1] for p in positions) / len(positions)
-                if avg_cy < cy and abs(bx_center - avg_cx) <= bw * 4:
+                if avg_cy < cy:
                     icon_above.append((slot, avg_cy))
 
             if icon_above:
