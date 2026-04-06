@@ -145,6 +145,38 @@ The colour is updated whenever annotations or done state changes.
 
 ---
 
+## BOFF slot assignment (`warp_dialog.py`)
+
+### Cluster → seat matching (Phase 2)
+
+Abilities are grouped into Y-band clusters, then matched to ship seats in four passes:
+
+1. **Named non-Universal seats** — `_find_cluster(prof, spec_prof)`; if no match, fallback `_find_cluster(spec_prof, None)`. The fallback handles dual-spec seats (e.g. Engineering-Temporal) where all detected abilities belong to the spec profession.
+2. **Universal seats with spec** — `_find_cluster(spec_prof, None)`.
+3. **Universal seats without spec** — remaining clusters assigned in order.
+
+`_find_cluster` looks for a cluster whose `c_primary` matches the requested profession and (if given) the spec profession is somewhere in `c_profs`.
+
+### Slot index mapping (Phase 3)
+
+`_slot_indices_from_x(cluster_items, rank)` maps each ability to its correct seat slot index using X-position gaps:
+
+- `step = min(X-gaps)` between sorted active icons
+- `round(gap / step)` — a 2× gap means 1 empty slot between
+- Falls back to slot 0 for a single-ability cluster
+
+Replaces the old sequential `rank_slot = 0, 1, 2, …` fill, which misassigned abilities when a slot was empty in the middle of a seat row.
+
+### Empty / inactive slot positions
+
+`_fill_boff_gaps` in `LayoutDetector` adds virtual bboxes `(x, y, w, h, state='empty'/'inactive')` for positions not covered by detected active icons. These flow into the cluster as `RecognisedItem(name='__empty__'/'__inactive__', conf=1.0)`.
+
+- Virtual items are **included** in `cluster_items` → their X coordinates anchor `_slot_indices_from_x` precisely (1 active ability in a 4-slot seat still maps to the correct slot index)
+- Virtual items are **skipped** in the build-write loop via `VIRTUAL_ITEM_NAMES` check
+- Virtual item crops are uploaded to HF training data (no filter in `sync.py`) → EfficientNet learns to recognise empty/inactive states directly
+
+---
+
 ## Keyboard shortcuts
 
 | Key | Action |
