@@ -802,9 +802,9 @@ class LayoutDetector:
                     continue
                 bboxes = self._find_icon_bboxes_in_strip(strip, row_y, icon_est)
                 if bboxes:
-                    result.setdefault(section, []).extend(
-                        [(bx + x_start, by, bw, bh) for (bx, by, bw, bh) in bboxes]
-                    )
+                    abs_bboxes = [(bx + x_start, by, bw, bh) for (bx, by, bw, bh) in bboxes]
+                    filled = self._fill_boff_gaps(abs_bboxes, img, icon_est, x_min=x_start)
+                    result.setdefault(section, []).extend(filled)
             if result:
                 _slog.debug(f'LayoutDetector: _detect_boffs via OCR — {len(result)} sections')
                 return result
@@ -830,10 +830,84 @@ class LayoutDetector:
                         (bx + x_start, by, bw, bh)
                     )
 
+        # Fill gaps with empty/inactive positions per section
+        for slot_key in list(result.keys()):
+            result[slot_key] = self._fill_boff_gaps(
+                result[slot_key], img, icon_est, x_min=x_start
+            )
+
         _slog.debug(
             f'LayoutDetector: _detect_boffs color — {len(result)} sections, '
-            f'{sum(len(v) for v in result.values())} icons'
+            f'{sum(len(v) for v in result.values())} bboxes (active+virtual)'
         )
+        return result
+
+    def _fill_boff_gaps(self, bboxes_abs: list, img, icon_est: int,
+                        x_min: int = 0, max_slots: int = 4) -> list:
+        """
+        Given absolute-coordinate bboxes of active BOFF icons in one seat row,
+        fill in empty/inactive positions at expected grid intervals.
+
+        Returns list of (x, y, w, h, state) 5-tuples where state is
+        'active', 'empty', or 'inactive'.
+        """
+        if not bboxes_abs:
+            return []
+
+        sorted_bx = sorted(bboxes_abs, key=lambda b: b[0])
+        xs = [b[0] for b in sorted_bx]
+
+        # Step estimate: minimum positive X-gap, or icon_est for a single icon
+        if len(xs) >= 2:
+            gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+            pos_gaps = [g for g in gaps if g > 0]
+            step = min(pos_gaps) if pos_gaps else icon_est
+        else:
+            step = icon_est
+
+        x0, y0, w0, h0 = sorted_bx[0]
+        result: list = []
+        consumed: set = set()
+        consecutive_bg = 0
+
+        for slot_i in range(max_slots):
+            x_exp = x0 + slot_i * step
+            if x_exp + w0 > img.shape[1]:
+                break
+
+            # Find active bbox closest to expected position (within 45% of step)
+            match_i = None
+            for i, (bx, _, _, _) in enumerate(sorted_bx):
+                if i not in consumed and abs(bx - x_exp) < step * 0.45:
+                    match_i = i
+                    break
+
+            if match_i is not None:
+                result.append((*sorted_bx[match_i], 'active'))
+                consumed.add(match_i)
+                consecutive_bg = 0
+            else:
+                y1 = max(0, y0)
+                y2 = min(img.shape[0], y0 + h0)
+                x1 = max(0, int(x_exp))
+                x2 = min(img.shape[1], x1 + w0)
+                crop = img[y1:y2, x1:x2]
+                state = self._classify_cell(crop) if crop.size > 0 else 'empty'
+                if state == 'active':
+                    state = 'empty'  # no matched bbox here — treat as empty
+                if state in ('empty', 'inactive'):
+                    result.append((int(x_exp), y0, w0, h0, state))
+                    consecutive_bg = 0
+                else:
+                    # Pure background — outside BOFF grid
+                    consecutive_bg += 1
+                    if consecutive_bg >= 2:
+                        break
+
+        virtual_n = sum(1 for r in result if r[4] != 'active')
+        if virtual_n:
+            _slog.debug(f'LayoutDetector: _fill_boff_gaps — {virtual_n} virtual positions added '
+                        f'({len(result) - virtual_n} active)')
         return result
 
     @staticmethod
