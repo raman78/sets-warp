@@ -649,6 +649,26 @@ class WarpDialog(QDialog):
                 assigned[vis_i] = ci
 
         # ── Phase 3: write abilities to build ────────────────────────────────
+        def _slot_indices_from_x(items: list, rank: int) -> list[int]:
+            """Map abilities to slot indices using X-position gaps.
+
+            Abilities in a BOFF seat row are evenly spaced. A gap that is
+            ~2× the minimum step means one empty slot sits between them.
+            With only one item we default to slot 0.
+            """
+            xs = [ri.bbox[0] for ri in items]
+            if len(xs) <= 1:
+                return [0]
+            gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+            step = min(gaps)
+            if step <= 0:
+                return list(range(len(xs)))
+            indices = [0]
+            for gap in gaps:
+                jump = max(1, round(gap / step))
+                indices.append(min(indices[-1] + jump, rank - 1))
+            return indices
+
         # Base professions a Universal seat can be set to (same options as the
         # dropdown the user sees in the SETS UI).
         _BASE_PROFS = {'Tactical', 'Engineering', 'Science'}
@@ -676,16 +696,17 @@ class WarpDialog(QDialog):
                     boff_specs[seat_id][0] = primary_prof
                     _slog.info(f'WARP boff: seat[{seat_id}] Universal → set to {primary_prof}')
 
+            slot_indices = _slot_indices_from_x(cluster_items, rank)
             _slog.info(f'WARP boff: seat[{seat_id}] {profession}/{spec or "-"} rank={rank} '
-                       f'← {[ri.name for ri in cluster_items]}')
+                       f'← {[ri.name for ri in cluster_items]} slots={slot_indices}')
 
-            for rank_slot, ri in enumerate(cluster_items):
-                if rank_slot >= rank:
-                    break
+            for ri, slot_idx in zip(cluster_items, slot_indices):
+                if slot_idx >= rank:
+                    continue
                 if ri.name not in all_boff_cache:
                     _slog.info(f'WARP boff: {ri.name!r} not in boff cache — skip')
                     continue
-                boffs_build[seat_id][rank_slot] = {'item': ri.name}
+                boffs_build[seat_id][slot_idx] = {'item': ri.name}
                 written += 1
 
         if written:
