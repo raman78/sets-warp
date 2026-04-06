@@ -302,13 +302,15 @@ from src.widgets import exec_in_thread
 | `release.yml` | `push: tags: v*` | Creates GitHub Release from tag |
 | `build_installer.yml` | `push: tags: v*` | Builds Windows `.exe` installer and attaches to release |
 
-**Release flow**: push tag `vX.Yb` → both workflows fire simultaneously → release created + installer built and attached.
+**Release flow**: push tag `vX.Y` → both workflows fire simultaneously → release created + installer built and attached.
+
+**Tag format**: `vMAJOR.MINOR` — no `b` suffix (beta phase ended at v2.0). Examples: `v2.8`, `v2.9`, `v3.0`.
 
 **Known pitfall**: `build_installer.yml` previously triggered on `release: published`. This does NOT work when the release is created by another workflow using `GITHUB_TOKEN` — GitHub blocks cross-workflow event propagation with default tokens. Changed to `push: tags` to trigger directly.
 
 **Creating a release**:
 ```bash
-git tag v1.9b && git push origin v1.9b
+git tag v2.8 && git push origin v2.8
 ```
 
 ---

@@ -21,7 +21,7 @@ python scripts/upstream_sync.py --apply
 # 4. After all manual fixes are committed:
 git checkout main
 git merge upstream-merge-YYYY-MM-DD
-git tag vX.Yb && git push origin main --tags
+git tag vX.Y && git push origin main --tags
 ```
 
 **What the script auto-applies** (no manual work):
