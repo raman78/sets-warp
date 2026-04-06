@@ -638,7 +638,7 @@ class WarpImporter:
 
     def _process_image(self, img: np.ndarray, source: str, profile_override: dict | None = None,
                        _base_pct: int = 0, _end_pct: int = 90) -> ImportResult:
-        _slog.info(f'WarpImporter._process_image: source={source} build_type={self._build_type}')
+        _slog.info(f'####### WARP: {Path(source).name} | {self._build_type} #######')
         # Step 1 — extract ship info via OCR.
         # build_type from caller sets the import mode but we always try OCR
         # for ship name/type — unless called from trainer (has _data_mgr attr).
@@ -906,6 +906,7 @@ class WarpImporter:
             core_n      = _stat_core_n,
             core_conf   = _stat_core_conf,
         )
+        _slog.info(f'####### WARP: {Path(source).name} done #######')
         return result
 
     def _log_recognition_stats(
