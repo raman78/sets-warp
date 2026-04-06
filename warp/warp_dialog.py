@@ -703,6 +703,8 @@ class WarpDialog(QDialog):
             for ri, slot_idx in zip(cluster_items, slot_indices):
                 if slot_idx >= rank:
                     continue
+                if ri.name in VIRTUAL_ITEM_NAMES:
+                    continue  # empty/inactive placeholder — position used for gap detection only
                 if ri.name not in all_boff_cache:
                     _slog.info(f'WARP boff: {ri.name!r} not in boff cache — skip')
                     continue

@@ -812,7 +812,26 @@ class WarpImporter:
                     pct = _base_pct + int(processed_bboxes / total_bboxes * (_end_pct - _base_pct))
                     self._progress_callback(pct, f'{slot_name} {idx + 1}/{len(bboxes)}')
                 processed_bboxes += 1
-                
+
+                # 5-element bboxes carry a cell state from layout detection
+                # (empty/inactive positions added by _fill_boff_gaps)
+                if len(bbox) == 5:
+                    bx, by, bw, bh, cell_state = bbox
+                    bbox4 = (bx, by, bw, bh)
+                    if cell_state in ('empty', 'inactive'):
+                        vname = '__empty__' if cell_state == 'empty' else '__inactive__'
+                        result.items.append(RecognisedItem(
+                            slot        = slot_name,
+                            slot_index  = idx,
+                            name        = vname,
+                            confidence  = 1.0,
+                            thumbnail   = None,
+                            source_file = source,
+                            bbox        = bbox4,
+                        ))
+                        continue
+                    bbox = bbox4
+
                 # Apply current dynamic Y-offset (P5)
                 bx, by, bw, bh = bbox
                 crop = self._crop(img, (bx, by + current_dy, bw, bh))
