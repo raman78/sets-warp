@@ -288,7 +288,7 @@ between our `src/` and upstream SETS, including re-application instructions for 
 #### 4.3 Release stabilization
 
 - Run full test cycle
-- Tag `v1.9b` or `v2.0b` depending on scope of changes
+- Tag `vX.Y` (no `b` suffix — beta phase ended at v2.0)
 - Update CHANGELOG with upstream feature list we inherited
 
 ---
