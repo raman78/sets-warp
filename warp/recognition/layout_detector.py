@@ -868,7 +868,6 @@ class LayoutDetector:
         x0, y0, w0, h0 = sorted_bx[0]
         result: list = []
         consumed: set = set()
-        consecutive_bg = 0
 
         for slot_i in range(max_slots):
             x_exp = x0 + slot_i * step
@@ -885,7 +884,6 @@ class LayoutDetector:
             if match_i is not None:
                 result.append((*sorted_bx[match_i], 'active'))
                 consumed.add(match_i)
-                consecutive_bg = 0
             else:
                 y1 = max(0, y0)
                 y2 = min(img.shape[0], y0 + h0)
@@ -895,14 +893,7 @@ class LayoutDetector:
                 state = self._classify_cell(crop) if crop.size > 0 else 'empty'
                 if state == 'active':
                     state = 'empty'  # no matched bbox here — treat as empty
-                if state in ('empty', 'inactive'):
-                    result.append((int(x_exp), y0, w0, h0, state))
-                    consecutive_bg = 0
-                else:
-                    # Pure background — outside BOFF grid
-                    consecutive_bg += 1
-                    if consecutive_bg >= 2:
-                        break
+                result.append((int(x_exp), y0, w0, h0, state))
 
         virtual_n = sum(1 for r in result if r[4] != 'active')
         if virtual_n:
