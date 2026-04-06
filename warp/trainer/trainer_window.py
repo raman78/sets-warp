@@ -2090,17 +2090,37 @@ class WarpCoreWindow(QMainWindow):
         allowed = set(SLOT_GROUPS.get(group_key, ALL_SLOTS))
 
         # ── Source 1: existing annotations on this screenshot ────────────────
-        # Build a map: slot → average center-Y from current recognition items
+        # Build a map: slot → average center-Y from current recognition items.
+        # Exclude NON_ICON_SLOTS (Ship Name/Type/Tier) — they are annotated at
+        # the same Y as equipment icons and would cause wrong slot suggestions.
         slot_y_map: dict[str, list[int]] = {}
         for ri in self._recognition_items:
             ri_bbox = ri.get('bbox')
             ri_slot = ri.get('slot', '')
-            if ri_bbox and ri_slot and ri_slot in allowed:
+            if ri_bbox and ri_slot and ri_slot in allowed and ri_slot not in NON_ICON_SLOTS:
                 ri_cy = ri_bbox[1] + ri_bbox[3] // 2
                 slot_y_map.setdefault(ri_slot, []).append(ri_cy)
 
         if slot_y_map:
-            # Find the slot whose average Y is closest to our bbox
+            from src.setsdebug import log as _sl
+            slot_order = SLOT_GROUPS.get(group_key, ALL_SLOTS)
+
+            # "Next in order" strategy: if new bbox is clearly below the last
+            # annotated row (different row, not same-row multi-slot), use
+            # SLOT_GROUPS order to predict the next expected slot.
+            above = [(s, sum(ys) / len(ys)) for s, ys in slot_y_map.items()
+                     if sum(ys) / len(ys) < cy]
+            if above:
+                last_slot, last_cy = max(above, key=lambda x: x[1])
+                if cy > last_cy + bh * 0.4 and last_slot in slot_order:
+                    last_idx = slot_order.index(last_slot)
+                    for candidate in slot_order[last_idx + 1:]:
+                        if candidate in allowed and candidate not in NON_ICON_SLOTS:
+                            _sl.info(f'slot_suggest: bbox cy={cy} → {candidate!r} '
+                                     f'(next-in-order after {last_slot!r}@{last_cy:.0f}, source=slot_order)')
+                            return candidate
+
+            # Same-row fallback: nearest by Y
             best_slot = ''
             best_dist = float('inf')
             for slot, ys in slot_y_map.items():
@@ -2109,10 +2129,8 @@ class WarpCoreWindow(QMainWindow):
                 if dist < best_dist:
                     best_dist = dist
                     best_slot = slot
-            # Accept if within half an icon height (~30-40px typically)
             threshold = bh * 0.6
             if best_dist <= threshold:
-                from src.setsdebug import log as _sl
                 _sl.info(f'slot_suggest: bbox cy={cy} → {best_slot!r} (dist={best_dist:.0f}, '
                          f'threshold={threshold:.0f}, source=annotations)')
                 return best_slot
@@ -2141,7 +2159,7 @@ class WarpCoreWindow(QMainWindow):
                                 best_slot = ''
                                 best_dist = float('inf')
                                 for slot_name, geo in layout['slots'].items():
-                                    if slot_name not in allowed:
+                                    if slot_name not in allowed or slot_name in NON_ICON_SLOTS:
                                         continue
                                     if isinstance(geo, (int, float)):
                                         slot_cy = int(geo * h)
