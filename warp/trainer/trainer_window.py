@@ -730,12 +730,16 @@ class WarpCoreWindow(QMainWindow):
 
 
     def showEvent(self, event):
-        """Ensure canvas has focus once window is shown."""
+        """Ensure canvas has focus once window is shown; restore last folder."""
         super().showEvent(event)
         self.activateWindow()
         self.raise_()
         if hasattr(self, '_ann_widget'):
             self._ann_widget.setFocus()
+        if not self._screenshots:
+            last = self._settings.value(_KEY_LAST_DIR, '')
+            if last and Path(last).is_dir():
+                QTimer.singleShot(0, lambda: self._load_folder(Path(last)))
 
     def _set_popup_transient(self, popup) -> None:
         """Wayland fix: attach completer popup QWindow to main window so xdg_popup works."""
@@ -1005,6 +1009,9 @@ class WarpCoreWindow(QMainWindow):
             return
         folder = Path(dlg.selectedFiles()[0])
         self._settings.setValue(_KEY_LAST_DIR, str(folder))
+        self._load_folder(folder)
+
+    def _load_folder(self, folder: Path):
         exts = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
         self._screenshots = sorted([f for f in folder.iterdir() if f.suffix.lower() in exts])
         if not self._screenshots:
