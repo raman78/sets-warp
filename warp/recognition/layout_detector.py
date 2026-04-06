@@ -669,12 +669,68 @@ class LayoutDetector:
         result = {}
         for i, (section, hy, xr) in enumerate(headers):
             row_y = hy + int(icon_est * 0.5)
-            row_y_end = (headers[i + 1][1] - 10) if i + 1 < len(headers) else (row_y + icon_est + 20)
+            row_y_end = (headers[i + 1][1] - 10) if i + 1 < len(headers) else (row_y + icon_est * 4)
             strip = img[max(0, row_y): min(h, row_y_end), :]
             if strip.size == 0: continue
-            bboxes = self._find_icon_bboxes_in_strip(strip, max(0, row_y), icon_est)
-            if bboxes: result[section] = bboxes
+            # Detect individual icon rows within the section strip —
+            # a section may overflow to 2+ rows (e.g. 11 personal space traits).
+            row_centers = self._find_icon_rows_in_strip(strip, icon_est)
+            all_bboxes = []
+            for rc in row_centers:
+                r0 = max(0, rc - icon_est // 2)
+                r1 = min(strip.shape[0], rc + icon_est // 2 + 1)
+                row_strip = strip[r0:r1, :]
+                bboxes = self._find_icon_bboxes_in_strip(row_strip, max(0, row_y) + r0, icon_est)
+                all_bboxes.extend(bboxes)
+            if all_bboxes:
+                result[section] = all_bboxes
         return result
+
+    def _find_icon_rows_in_strip(self, strip: np.ndarray, icon_est: int) -> list[int]:
+        """
+        Find Y-centers of icon rows within a section strip.
+        Returns list of Y offsets (relative to strip top), one per row found.
+        Handles multi-row sections (e.g. 11 personal space traits = 2 rows).
+        """
+        sh, sw = strip.shape[:2]
+        if sh < icon_est // 2:
+            return [sh // 2]
+        import cv2
+        gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
+        # Row brightness: how many bright pixels per row
+        row_bright = np.sum(mask, axis=1).astype(float) / max(sw, 1)
+        # Smooth with a narrow kernel to reduce per-pixel noise
+        kernel = max(3, icon_est // 10)
+        smoothed = np.convolve(row_bright, np.ones(kernel) / kernel, mode='same')
+        # Use 90th-percentile instead of max to avoid a single bright separator line
+        # inflating the threshold above actual icon rows.
+        peak = float(np.percentile(smoothed, 90))
+        if peak < 5:          # almost no bright pixels → empty strip
+            return [sh // 2]
+        threshold = peak * 0.30
+        # Find bright runs (candidate icon rows), merge gaps < icon_est//3
+        min_sep = max(icon_est // 2, 20)
+        centers: list[int] = []
+        in_bright, run_start = False, 0
+        for y in range(sh):
+            if smoothed[y] >= threshold and not in_bright:
+                in_bright, run_start = True, y
+            elif smoothed[y] < threshold and in_bright:
+                in_bright = False
+                center = (run_start + y) // 2
+                run_len = y - run_start
+                # Filter out thin text labels (< icon_est/2 tall)
+                if run_len >= icon_est // 2:
+                    if not centers or center - centers[-1] >= min_sep:
+                        centers.append(center)
+        if in_bright:
+            center = (run_start + sh) // 2
+            run_len = sh - run_start
+            if run_len >= icon_est // 2:
+                if not centers or center - centers[-1] >= min_sep:
+                    centers.append(center)
+        return centers if centers else [sh // 2]
 
     def _find_icon_bboxes_in_strip(self, strip, y_offset, icon_size):
         import cv2
