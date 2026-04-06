@@ -622,6 +622,10 @@ class WarpDialog(QDialog):
                 continue
             spec_prof = _SPEC_TO_PROF.get(spec) if spec else None
             ci = _find_cluster(prof, spec_prof)
+            if ci is None and spec_prof:
+                # Fallback: combined seat (e.g. Engineering-Temporal) where all
+                # recognised abilities are from the spec profession cluster.
+                ci = _find_cluster(spec_prof, None)
             if ci is not None:
                 assigned[vis_i] = ci
                 unmatched.remove(ci)
