@@ -2090,28 +2090,37 @@ class WarpCoreWindow(QMainWindow):
         allowed = set(SLOT_GROUPS.get(group_key, ALL_SLOTS))
 
         # ── Source 1: existing annotations on this screenshot ────────────────
-        # Build a map: slot → average center-Y from current recognition items.
-        # Exclude NON_ICON_SLOTS (Ship Name/Type/Tier) — they are annotated at
-        # the same Y as equipment icons and would cause wrong slot suggestions.
-        slot_y_map: dict[str, list[int]] = {}
+        # Build a map: slot → list of (cx, cy) — includes NON_ICON_SLOTS so
+        # Ship Name/Type/Tier can still be suggested when the user draws near them.
+        slot_pos_map: dict[str, list[tuple[int, int]]] = {}
         for ri in self._recognition_items:
             ri_bbox = ri.get('bbox')
             ri_slot = ri.get('slot', '')
-            if ri_bbox and ri_slot and ri_slot in allowed and ri_slot not in NON_ICON_SLOTS:
+            if ri_bbox and ri_slot and ri_slot in allowed:
+                ri_cx = ri_bbox[0] + ri_bbox[2] // 2
                 ri_cy = ri_bbox[1] + ri_bbox[3] // 2
-                slot_y_map.setdefault(ri_slot, []).append(ri_cy)
+                slot_pos_map.setdefault(ri_slot, []).append((ri_cx, ri_cy))
 
-        if slot_y_map:
+        if slot_pos_map:
             from src.setsdebug import log as _sl
             slot_order = SLOT_GROUPS.get(group_key, ALL_SLOTS)
+            bx_center = bx + bw // 2
 
-            # "Next in order" strategy: if new bbox is clearly below the last
-            # annotated row (different row, not same-row multi-slot), use
-            # SLOT_GROUPS order to predict the next expected slot.
-            above = [(s, sum(ys) / len(ys)) for s, ys in slot_y_map.items()
-                     if sum(ys) / len(ys) < cy]
-            if above:
-                last_slot, last_cy = max(above, key=lambda x: x[1])
+            # "Next in order" strategy: look at icon slots (not NON_ICON_SLOTS)
+            # that are above the new bbox AND in the same X region (within 4×bw).
+            # Text fields (Ship Name/Type/Tier) are at a completely different X
+            # from equipment icons and must not drive sequential slot ordering.
+            icon_above = []
+            for slot, positions in slot_pos_map.items():
+                if slot in NON_ICON_SLOTS:
+                    continue
+                avg_cx = sum(p[0] for p in positions) / len(positions)
+                avg_cy = sum(p[1] for p in positions) / len(positions)
+                if avg_cy < cy and abs(bx_center - avg_cx) <= bw * 4:
+                    icon_above.append((slot, avg_cy))
+
+            if icon_above:
+                last_slot, last_cy = max(icon_above, key=lambda x: x[1])
                 if cy > last_cy + bh * 0.4 and last_slot in slot_order:
                     last_idx = slot_order.index(last_slot)
                     for candidate in slot_order[last_idx + 1:]:
@@ -2120,12 +2129,14 @@ class WarpCoreWindow(QMainWindow):
                                      f'(next-in-order after {last_slot!r}@{last_cy:.0f}, source=slot_order)')
                             return candidate
 
-            # Same-row fallback: nearest by Y
+            # Nearest fallback: 2D distance (Y dominant, X at 0.2 weight).
+            # This ensures text fields at different X never beat nearby icon slots.
             best_slot = ''
             best_dist = float('inf')
-            for slot, ys in slot_y_map.items():
-                avg_y = sum(ys) / len(ys)
-                dist = abs(cy - avg_y)
+            for slot, positions in slot_pos_map.items():
+                avg_cx = sum(p[0] for p in positions) / len(positions)
+                avg_cy = sum(p[1] for p in positions) / len(positions)
+                dist = abs(cy - avg_cy) + abs(bx_center - avg_cx) * 0.2
                 if dist < best_dist:
                     best_dist = dist
                     best_slot = slot
