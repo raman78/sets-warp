@@ -2117,24 +2117,31 @@ class WarpCoreWindow(QMainWindow):
             bx_center = bx + bw // 2
 
             # "Next in order" strategy: look at icon slots (not NON_ICON_SLOTS)
-            # that are above the new bbox. NON_ICON_SLOTS (Ship Name/Type/Tier)
-            # are excluded by name — no X guard needed.
+            # that are above OR in the same row as the new bbox.
+            # Same-row slots (|Δy| < 0.5*bh) count when the new bbox is to the
+            # right — handles Body Armor → EV Suit which are side-by-side.
             icon_above = []
             for slot, positions in slot_pos_map.items():
                 if slot in NON_ICON_SLOTS:
                     continue
+                avg_cx = sum(p[0] for p in positions) / len(positions)
                 avg_cy = sum(p[1] for p in positions) / len(positions)
-                if avg_cy < cy:
-                    icon_above.append((slot, avg_cy))
+                same_row = abs(avg_cy - cy) < bh * 0.5
+                if avg_cy < cy or (same_row and avg_cx < bx_center):
+                    icon_above.append((slot, avg_cy, avg_cx))
 
             if icon_above:
-                last_slot, last_cy = max(icon_above, key=lambda x: x[1])
-                if cy > last_cy + bh * 0.4 and last_slot in slot_order:
+                last_slot, last_cy, last_cx = max(icon_above, key=lambda x: x[1])
+                vertically_below = cy > last_cy + bh * 0.4
+                same_row_right   = abs(cy - last_cy) < bh * 0.5 and bx_center > last_cx + bw * 0.5
+                if (vertically_below or same_row_right) and last_slot in slot_order:
                     last_idx = slot_order.index(last_slot)
                     for candidate in slot_order[last_idx + 1:]:
                         if candidate in allowed and candidate not in NON_ICON_SLOTS:
+                            reason = 'below' if vertically_below else 'same-row-right'
                             _sl.info(f'slot_suggest: bbox cy={cy} → {candidate!r} '
-                                     f'(next-in-order after {last_slot!r}@{last_cy:.0f}, source=slot_order)')
+                                     f'(next-in-order after {last_slot!r}@{last_cy:.0f}, '
+                                     f'{reason}, source=slot_order)')
                             return candidate
 
             # Nearest fallback: 2D distance (Y dominant, X at 0.2 weight).
@@ -2155,7 +2162,9 @@ class WarpCoreWindow(QMainWindow):
                 return best_slot
 
         # ── Source 2: learned layouts from anchors.json ───────────────────────
-        if self._current_idx >= 0:
+        # Skip for MIXED screen types — their layout differs from pure EQ screens,
+        # so SPACE/GROUND anchors would suggest wrong slots for trait/boff regions.
+        if self._current_idx >= 0 and stype not in ('SPACE_MIXED', 'GROUND_MIXED'):
             try:
                 import cv2
                 from warp.recognition.layout_detector import LayoutDetector
