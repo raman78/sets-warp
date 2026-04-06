@@ -663,7 +663,9 @@ class LayoutDetector:
             if matched: headers.append((matched, int((bbox[0][1] + bbox[2][1]) / 2), int(max(p[0] for p in bbox))))
         if not headers: return {}
         headers.sort(key=lambda x: x[1])
-        icon_est = max(32, int(h * 0.055))
+        # Trait icons are ~44–55 px absolute regardless of screen height.
+        # h * 0.055 underestimates at low-res windows (gives 30 px at h=560).
+        icon_est = max(44, int(h * 0.065))
         result = {}
         for i, (section, hy, xr) in enumerate(headers):
             row_y = hy + int(icon_est * 0.5)
@@ -770,7 +772,7 @@ class LayoutDetector:
     def _detect_boffs(self, img):
         h, w = img.shape[:2]
         x_start = int(w * 0.55)
-        icon_est = max(32, int(h * 0.055))
+        icon_est = max(36, int(h * 0.055))
 
         # ── Strategy A: OCR finds profession header labels ────────────────────
         headers = []
