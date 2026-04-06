@@ -278,6 +278,20 @@ If WARP missed a slot entirely (no box drawn over an item):
 3. Drag over the item icon to draw a box.
 4. The box is recognised immediately. Correct the name if needed, then Accept.
 
+### Annotating empty and inactive Bridge Officer slots
+
+Bridge officer seats sometimes contain slots that are visually empty (nothing assigned yet) or inactive (locked/unavailable at this rank). Annotating these helps WARP correctly position recognised abilities even when some slots are unoccupied.
+
+**How to annotate:**
+
+1. Draw a bounding box over the empty or inactive slot icon as you would for a normal ability.
+2. In the **Item** field, type `__empty__` (for an unoccupied slot) or `__inactive__` (for a locked/unavailable slot).
+3. Press **Enter** to confirm.
+
+The review list shows these with grey labels `[empty slot]` / `[inactive slot]`. They write nothing to your SETS build but are uploaded to the community dataset so the model learns to recognise these slot states.
+
+> **Why bother?** WARP uses the position of all detected icons — including empty and inactive ones — to determine which ability belongs in which seat slot. Annotating gaps makes the positioning more accurate, especially for Commander seats (4 slots) where only 1–2 abilities are present.
+
 ### Removing a wrong bounding box
 
 If a box covers the wrong area or a non-slot area:

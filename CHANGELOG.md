@@ -1,5 +1,54 @@
 # CHANGELOG
 
+## v2.8 (2026-04-06) — BOFF slot assignment: position-based mapping + empty/inactive detection
+
+### Fix: dual-spec BOFF seat cluster matching (`warp_dialog.py`)
+
+When a seat like "Commander Engineering-Temporal Operative" had all recognised abilities
+from the spec profession (Temporal), `_find_cluster('Engineering', 'Temporal')` failed because
+`c_primary == 'Temporal'` ≠ `'Engineering'`. Added fallback: if the base-profession search fails
+for a seat with a spec, also try `_find_cluster(spec_prof, None)`. Covers all dual-spec seat
+combinations (Tactical-Temporal, Science-Command, etc.) symmetrically.
+
+### Fix: X-position gap detection for BOFF slot index assignment (`warp_dialog.py`)
+
+Replaced sequential `rank_slot = 0, 1, 2, …` filling with position-based index mapping.
+
+New `_slot_indices_from_x(cluster_items, rank)` helper:
+- Computes minimum X-gap between detected ability icons as the baseline "1 slot" step
+- A gap of ~2× step → slot index jumps by 2 (1 missing slot between)
+- Single ability defaults to slot 0
+- Slot indices are logged alongside ability names for diagnostics (`slots=[0, 2, 3]`)
+
+Previously an empty slot 1 between two detected abilities caused abilities to land on slot 1 and
+slot 2 instead of slot 0 and slot 2.
+
+### Feature: empty / inactive BOFF slot position detection (`layout_detector.py`, `warp_importer.py`, `warp_dialog.py`)
+
+`_fill_boff_gaps(bboxes_abs, img, icon_est, x_min, max_slots=4)` — new method on `LayoutDetector`:
+- Called after `_find_icon_bboxes_in_strip` in both OCR (Strategy A) and color (Strategy B) paths of `_detect_boffs`
+- Scans expected grid positions at `step` intervals from the leftmost active icon
+- For each position without an active bbox: extracts a crop and calls `_classify_cell()` → `'empty'` or `'inactive'`
+- Returns 5-tuples `(x, y, w, h, state)` — active icons unchanged, virtual positions added
+
+`warp_importer._process_image()`:
+- Detects 5-element bboxes before the normal `bx, by, bw, bh = bbox` unpack
+- For `state in ('empty', 'inactive')`: creates `RecognisedItem(name='__empty__'/'__inactive__', conf=1.0)` directly — no icon matcher call
+- Virtual items flow into BOFF clusters alongside active abilities
+
+`warp_dialog.py` Phase 3:
+- `VIRTUAL_ITEM_NAMES` check before boff-cache lookup — silent `continue`, no "not in cache" log noise
+- Virtual items contribute their X-position to `_slot_indices_from_x` for precise gap anchoring even when only 1 active ability is present in a seat
+
+### Training pipeline for `__empty__` / `__inactive__` crops
+
+`sync.py` has no filter on virtual names — confirmed `__empty__`/`__inactive__` crops are uploaded to
+HuggingFace alongside normal equipment crops. `admin_train.py` includes them as regular EfficientNet
+classes. When the model matures, `icon_matcher` will output these labels directly, making gap detection
+independent of `_fill_boff_gaps` heuristics.
+
+---
+
 ## v2.7 (2026-04-04) — Done state; layout learning fix; ground slot order; virtual items; empty/inactive detection
 
 ### Feature: virtual item names `__empty__` / `__inactive__`
