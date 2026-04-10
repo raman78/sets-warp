@@ -2195,12 +2195,31 @@ class WarpCoreWindow(QMainWindow):
                 last_slot, last_cy, last_cx = max(icon_above, key=lambda x: x[1])
                 vertically_below = cy > last_cy + bh * 0.4
                 same_row_right   = abs(cy - last_cy) < bh * 0.5 and bx_center > last_cx + bw * 0.5
-                # BOFF slots: icons in the same row are additional abilities for the
-                # same profession (multiple seats), not the next profession.
-                if same_row_right and last_slot.startswith('Boff '):
-                    _sl.info(f'slot_suggest: bbox cy={cy} → {last_slot!r} '
-                             f'(same-row BOFF — keep slot, source=slot_order)')
-                    return last_slot
+                # Same-row-right: Y = slot group, X = index within group.
+                # Stay in the same slot unless it is already at capacity.
+                # BOFF slots have no fixed max — always keep same slot.
+                _SAME_ROW_MULTI: dict[str, int] = {
+                    'Fore Weapons': 5, 'Aft Weapons': 5, 'Devices': 6,
+                    'Kit Modules': 6, 'Weapons': 2, 'Ground Devices': 3,
+                    'Engineering Consoles': 5, 'Science Consoles': 5,
+                    'Tactical Consoles': 5, 'Universal Consoles': 3, 'Hangars': 4,
+                    'Personal Space Traits': 10, 'Starship Traits': 7,
+                    'Space Reputation': 5, 'Active Space Rep': 5,
+                    'Personal Ground Traits': 10, 'Ground Reputation': 5,
+                    'Active Ground Rep': 5,
+                }
+                if same_row_right:
+                    if last_slot.startswith('Boff '):
+                        _sl.info(f'slot_suggest: bbox cy={cy} → {last_slot!r} '
+                                 f'(same-row BOFF — keep slot, source=slot_order)')
+                        return last_slot
+                    if last_slot in _SAME_ROW_MULTI:
+                        current = len(slot_pos_map.get(last_slot, []))
+                        cap = _SAME_ROW_MULTI[last_slot]
+                        if current < cap:
+                            _sl.info(f'slot_suggest: bbox cy={cy} → {last_slot!r} '
+                                     f'(same-row index {current + 1}/{cap}, source=slot_order)')
+                            return last_slot
 
                 if (vertically_below or same_row_right) and last_slot in slot_order:
                     last_idx = slot_order.index(last_slot)
