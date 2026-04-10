@@ -1888,8 +1888,25 @@ class WarpCoreWindow(QMainWindow):
                                                  f'→ advanced slot to {_next!r}')
                                         break
                         if _current_slot not in NON_ICON_SLOTS:
-                            _candidates = set(self._build_search_candidates(_current_slot)) or None
-                            self._start_match_worker(crop_bgr, bbox, _candidates)
+                            _candidates = set(self._build_search_candidates(_current_slot))
+                            # Optional slots (Sec-Def, Experimental, Hangars) may not exist on
+                            # the current ship. Expand candidates with the next mandatory slot so
+                            # the ML can determine which one this icon actually is.
+                            # _infer_slot_from_name will assign the correct slot after matching.
+                            _OPTIONAL_SLOTS = ('Sec-Def', 'Experimental', 'Hangars')
+                            if _current_slot in _OPTIONAL_SLOTS:
+                                _stype_key = self._screen_types.get(path.name, 'UNKNOWN')
+                                _grp = SCREEN_TO_SLOT_GROUP.get(_stype_key, 'ALL')
+                                _ord = SLOT_GROUPS.get(_grp, ALL_SLOTS)
+                                if _current_slot in _ord:
+                                    for _ns in _ord[_ord.index(_current_slot) + 1:]:
+                                        if _ns not in NON_ICON_SLOTS and _ns not in _OPTIONAL_SLOTS:
+                                            _candidates |= set(self._build_search_candidates(_ns))
+                                            _slog.info(
+                                                f'add_bbox: {_current_slot!r} is optional — '
+                                                f'expanding candidates with {_ns!r}')
+                                            break
+                            self._start_match_worker(crop_bgr, bbox, _candidates or None)
                             return
                         # NON_ICON_SLOT: icon matching skipped, fall through to _finish_bbox_drawn
                 except Exception as _e:
