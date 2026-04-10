@@ -290,50 +290,52 @@ diluted by correct crops from other users.
 
 ---
 
-## 12. MIXED image layout detection — intelligent approach
+## 12. MIXED + BOFFS layout detection — intelligent approach
 
-**Status: OPEN — pixel heuristics insufficient**
+**Status: COMPLETE (2026-04-10) — full scan implemented**
 
-**Problem:**
-For MIXED screenshots (SPACE_MIXED, GROUND_MIXED) the current `_find_panel_right_edge`
-heuristic fails when the image contains multiple panels (equipment + traits + BOFFs etc.)
-arranged arbitrarily by the user.  Pixel-column scanning finds the rightmost bright
-region (often traits/abilities, not equipment), placing all bboxes in the wrong area.
+**Problem (resolved):**
+For MIXED screenshots the `_find_panel_right_edge` heuristic failed when the image
+contains multiple panels arranged arbitrarily.  For BOFFS the same pixel-column scan
+was equally unreliable across different seat layouts.
 
-**Root cause identified (2026-04-10):**
-- `_find_panel_right_edge` returns the rightmost consistently-bright column, which in
-  MIXED screens is a non-equipment panel.
-- `from_trainer=True` skips OCR → Ship Type/Name not in `result.items` → no anchor for
-  equipment panel location.
-- Learned layouts (anchors.json) for these aspect ratios contain only Ship Name/Type
-  (no equipment slots confirmed yet) → Strategy 1 scoring: 1.00 from 1-slot check,
-  but result is empty → falls to Strategy 2 with wrong panel_right.
+**Solution implemented (2026-04-10):**
 
-**Why pixel heuristics cannot work for MIXED:**
-The user can compose MIXED screenshots freely — equipment left/right/center, traits
-anywhere, BOFFs pasted in non-standard positions.  There is no stable structural
-anchor to find equipment panel boundaries via pixel scanning.
+New `_detect_via_full_scan()` in `layout_detector.py`:
 
-**Proposed proper approach:**
-1. **OCR scan of full image** → find slot-label texts ("Fore Weapons", "Deflector",
-   "Stations", "Personal Space Traits") → determine approximate section locations.
-2. **ML scan of full image** → detect recognizable patterns:
-   - `__inactive__` (characteristic X pattern)
-   - `__empty__` (empty slot frame)
-   - Equipment icons, trait icons, boff ability icons
-   → build a "cluster map" of item regions across the image.
-3. **Cross-reference** OCR labels + icon clusters → assign section boundaries.
-4. **Determine section scale** (icon size / step) from cluster spacing → corrects for
-   different UI scale settings.
+1. **Phase B — OCR section labels:** Full-image EasyOCR scan → match text against
+   extended `SLOT_LABEL_ALIASES` (equipment + traits + boffs) → collect
+   `{slot_name: (cx, cy)}` anchor positions.
 
-**Non-MIXED screens** (SPACE_EQ, TRAITS, BOFFS, SPEC) are more predictable — single
-panel, right-aligned items.  Current pixel approach works adequately there.
+2. **Phase C — Dense icon scan:** Sliding window (stride = icon_est//2), skip uniform
+   patches (std < 12), run `icon_matcher.classify_patch()` (EfficientNet ML-only, no
+   template matching) → NMS deduplication → list of `(x, y, w, h, name, conf, type)`.
 
-**Priority:** Medium — MIXED images are already supported via WARP CORE manual annotation.
-Auto-detection for MIXED is a quality-of-life improvement, not a blocking issue.
+3. **Fusion — row scoring:** Cluster detections into rows by Y proximity.
+   For each (row, slot_name) pair compute score:
+   - `0.65 × type_score` — fraction of icons in row whose EfficientNet type matches
+     `_SCAN_SLOT_VALID_TYPES` (equipment), `_TRAIT_SLOT_MARKER` (traits), or
+     `__boff_*` marker (boff abilities)
+   - `0.35 × ocr_score` — proximity bonus if OCR label for that slot is nearby
+   Row is assigned to highest-scoring slot (≥ 0.30 threshold).
 
-**Current workaround:** User annotates extreme slot positions in WARP CORE → `learn_layout`
-saves to anchors.json → Strategy 1 uses correct positions on next run.
+**Screen types using full scan:**
+- `SPACE_MIXED`, `GROUND_MIXED` — full scan after learned layouts fail
+- `BOFFS`, `SPACE_BOFFS`, `GROUND_BOFFS` — full scan after learned layouts fail,
+  before old pixel-based `_detect_boffs()` fallback
+
+**Files changed:**
+- `warp/recognition/icon_matcher.py` — added `classify_patch()` public method
+- `warp/recognition/layout_detector.py` — module-level helpers + two new methods
+- `warp/warp_importer.py` — passes `icon_matcher` + `app_cache` for MIXED + BOFFS types
+
+**Detection chain (updated):**
+```
+MIXED / BOFFS:
+  Strategy 1: Learned layouts (anchors.json) — if ≥5 slots found
+  Strategy FS: Full scan (OCR + EfficientNet + fusion) — if ≥2/3 slots found
+  Strategy 2+: Existing pixel / canonical / OCR / anchors fallbacks
+```
 
 ---
 

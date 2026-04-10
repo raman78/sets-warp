@@ -1,7 +1,7 @@
 # WARP ML Roadmap — Layout + Content Recognition
 
-**Updated:** 2026-03-29
-**Status:** v2.3 — P0–P10 complete. P11 planned (community anchors.json).
+**Updated:** 2026-04-10
+**Status:** v2.9 — P0–P11 complete. Full scan (Item 12) implemented.
 
 ---
 
@@ -11,14 +11,21 @@
 
 Four strategies, tried in order:
 
-| Strategy | Mechanism | Problem |
-|----------|-----------|---------|
-| 1 — Learned layouts | Reads `anchors.json` saved from confirmed annotations | Geometric memory only — not ML. One entry per (build_type, aspect). Last-saved wins, no clustering. |
-| 2 — Pixel analysis | Scans right-to-left brightness, uses ShipDB profile for count floor | Unreliable without known ship; only knows *how many* icons, not *which* slot. |
-| 3 — OCR labels | EasyOCR reads slot label text ("Fore Weapons", "Deflector"…) | OCR is slow and fails on scaled/compressed screenshots. |
-| 4 — Static anchors | Hardcoded relative Y-positions in `SPACE_ANCHORS_REL` | Last resort; totally wrong for different window sizes. |
+| Strategy | Screen types | Mechanism |
+|----------|-------------|-----------|
+| 1 — Learned layouts | All | `anchors.json` from confirmed annotations — most accurate when populated |
+| FS — Full scan | MIXED, BOFFS | OCR labels + EfficientNet dense scan + fusion scoring — handles arbitrary layouts |
+| 2 — Pixel analysis | EQ, TRAITS | Right-to-left brightness scan, ShipDB profile floor |
+| 2.5 — Canonical | EQ, TRAITS | Median Y from anchors.json + brightness score |
+| 3 — OCR labels | EQ | EasyOCR slot label positions |
+| 4 — Static anchors | All | Hardcoded `SPACE_ANCHORS_REL` — last resort |
 
-**Key problem:** No dedicated ML for layout. "Learning" = storing confirmed pixel coordinates in a JSON file and replaying them. This works only when the next screenshot has the same resolution and window size as a previously confirmed one. It does NOT generalise.
+**Full scan (Strategy FS) — implemented 2026-04-10:**
+- Dense sliding window (stride = icon_est//2) across full image
+- `classify_patch()` → EfficientNet ML-only classification per patch
+- NMS deduplication → row clustering by Y proximity
+- Per-row scoring: `0.65 × type_score + 0.35 × ocr_score`
+- Used for MIXED and BOFFS when learned layouts are absent
 
 ### Icon recognition (SETSIconMatcher)
 

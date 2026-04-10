@@ -358,6 +358,38 @@ Credentials in `.env`: `HF_TOKEN`, `HF_REPO_ID=sets-sto/warp-knowledge`, `ADMIN_
 
 ---
 
+## Changes made in this development session (2026-04-10)
+
+### Item 12 — Full scan for MIXED + BOFFS (Phase A + B + C)
+
+| File | Change |
+|------|--------|
+| `warp/recognition/screen_classifier.py` | Added SPACE_BOFFS, GROUND_BOFFS to SCREEN_TYPES |
+| `warp/recognition/text_extractor.py` | Detect 'space stations' → SPACE_BOFFS, 'standard away team' → GROUND_BOFFS |
+| `warp/recognition/layout_detector.py` | Full-scan infrastructure: module-level helpers + `_detect_via_full_scan()` + `_ocr_section_labels()`; MIXED + BOFFS routed to full scan |
+| `warp/recognition/icon_matcher.py` | Added `classify_patch()` public method (ML-only, used by full scan) |
+| `warp/warp_importer.py` | Passes `icon_matcher` + `app_cache` for MIXED + BOFFS types; SPACE_BOFFS/GROUND_BOFFS in SLOT_ORDER + upgrade logic; `_write_boffs_to_build` ground path complete |
+| `warp/trainer/trainer_window.py` | SPACE_BOFFS/GROUND_BOFFS slot groups + screen type labels |
+| `warp/warp_dialog.py` | `_write_boffs_to_build` is_ground=True path — writes to ground boff seats |
+| `warp/trainer/training_data.py` | TEXT_LEARNING_SLOTS added |
+| `warp/trainer/sync.py` | OCR correction upload support |
+| `src/datafunctions.py` | Fix None image field crash in ship_images list |
+| `sets-warp-backend/admin_train.py` | SPACE_BOFFS/GROUND_BOFFS in SCREEN_TYPES; CrossEntropyLoss replaces FocalLoss |
+
+### Full scan architecture (layout_detector.py)
+
+```
+MIXED / BOFFS detection chain:
+  Strategy 1:  Learned layouts (anchors.json) — highest accuracy when present
+  Strategy FS: Full scan — OCR labels + EfficientNet dense window + fusion
+    Phase B: _ocr_section_labels() — full-image EasyOCR → {slot_name: (cx, cy)}
+    Phase C: sliding window stride=icon_est//2, classify_patch() per patch, NMS
+    Fusion:  cluster rows by Y → score(row, slot) = 0.65×type_score + 0.35×ocr_score
+  Strategy 2+: Existing pixel / canonical / OCR / anchors fallbacks
+```
+
+---
+
 ## Changes made in this development session (2026-03-20)
 
 ### Files modified
