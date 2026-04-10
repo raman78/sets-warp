@@ -1869,6 +1869,23 @@ class WarpCoreWindow(QMainWindow):
                             self._slot_combo.blockSignals(False)
                             _slog.info(f'add_bbox: P1 slot suggestion → {suggested!r}')
                         _current_slot = self._slot_combo.currentText()
+                        # If slot_suggest gave no suggestion and the combo still shows a
+                        # confirmed single-instance slot, skip matching entirely — the
+                        # icon is in a different panel (e.g. traits to the right of the
+                        # equipment column). Show unmatched; user picks slot manually.
+                        if (not suggested
+                                and _current_slot in SINGLE_INSTANCE_SLOTS
+                                and self._current_idx >= 0):
+                            _already = {
+                                ann.slot for ann in self._data_mgr.get_annotations(path)
+                                if ann.state == AnnotationState.CONFIRMED
+                            }
+                            if _current_slot in _already:
+                                _slog.info(
+                                    f'add_bbox: no suggestion, {_current_slot!r} already '
+                                    f'confirmed — skipping match (different panel)')
+                                self._finish_bbox_drawn('', 0.0, None, crop_bgr, bbox)
+                                return
                         # If current slot is a NON_ICON_SLOT already confirmed for this image,
                         # advance to the next unconfirmed NON_ICON_SLOT to prevent
                         # SINGLE_INSTANCE step from silently deleting the earlier annotation.
