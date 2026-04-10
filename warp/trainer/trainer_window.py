@@ -2219,10 +2219,15 @@ class WarpCoreWindow(QMainWindow):
                     'Personal Ground Traits': 10, 'Ground Reputation': 5,
                     'Active Ground Rep': 5,
                 }
-                # X gap limit for same-slot same-row returns:
-                # A row of N slots spans at most ~N×bw. Gap > 5×bw means a
-                # different panel — don't claim the icon belongs to this row.
-                same_row_close = same_row_right and bx_center - last_cx < bw * 5
+                # X gap limit for same-slot same-row returns.
+                # Use max_cx (rightmost confirmed item) not avg_cx — consecutive
+                # items in a row are ~1×bw apart; a different panel is 5-10×bw away.
+                # Threshold bw*2 allows one slot gap, rejects cross-panel jumps.
+                _last_max_cx = max(
+                    (p[0] for p in slot_pos_map.get(last_slot, [])),
+                    default=last_cx,
+                )
+                same_row_close = same_row_right and bx_center - _last_max_cx < bw * 2
                 if same_row_close:
                     if last_slot.startswith('Boff '):
                         _sl.info(f'slot_suggest: bbox cy={cy} → {last_slot!r} '
