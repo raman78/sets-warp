@@ -2219,7 +2219,11 @@ class WarpCoreWindow(QMainWindow):
                     'Personal Ground Traits': 10, 'Ground Reputation': 5,
                     'Active Ground Rep': 5,
                 }
-                if same_row_right:
+                # X gap limit for same-slot same-row returns:
+                # A row of N slots spans at most ~N×bw. Gap > 5×bw means a
+                # different panel — don't claim the icon belongs to this row.
+                same_row_close = same_row_right and bx_center - last_cx < bw * 5
+                if same_row_close:
                     if last_slot.startswith('Boff '):
                         _sl.info(f'slot_suggest: bbox cy={cy} → {last_slot!r} '
                                  f'(same-row BOFF — keep slot, source=slot_order)')
