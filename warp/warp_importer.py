@@ -766,6 +766,10 @@ class WarpImporter:
                 icon_matcher=self._get_matcher() if _use_full_scan else None,
                 app_cache=self._app.cache if _use_full_scan else None,
             )
+            _slog.info(
+                f'WarpImporter: layout → {len(layout)} slot groups, '
+                f'{sum(len(v) for v in layout.values())} bboxes ({build_type})'
+            )
 
         # If ShipDB gave generic fallback (ship_name empty), refine profile
         # using actual icon counts from layout + keyword profile matching.
