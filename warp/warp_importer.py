@@ -740,11 +740,13 @@ class WarpImporter:
         # SLOT_ORDER alone.  For all other build types (SPACE, GROUND, BOFFS, TRAITS,
         # SPEC) the layout is always inferred via layout_detector strategies, keeping
         # annotations strictly as ML training data — never as direct import output.
-        _use_confirmed = 'MIXED' in build_type
+        # Exception: trainer (WARP CORE) calls always use confirmed layout — every bbox
+        # was explicitly confirmed by the user and represents the ground truth.
+        _use_confirmed = 'MIXED' in build_type or _is_trainer_call
         confirmed_layout = self._load_confirmed_layout(source) if _use_confirmed else None
         if confirmed_layout:
-            _slog.info(f'WarpImporter: MIXED screen — using confirmed layout from annotations '
-                       f'({sum(len(v) for v in confirmed_layout.values())} bboxes)')
+            _slog.info(f'WarpImporter: confirmed layout ({build_type}) — '
+                       f'{sum(len(v) for v in confirmed_layout.values())} bboxes from annotations')
             layout = confirmed_layout
         else:
             layout = self._get_layout().detect(img, build_type, profile)
@@ -768,7 +770,9 @@ class WarpImporter:
                         profile[slot] = count
                         changed = True
                 if changed:
-                    layout = self._get_layout().detect(img, build_type, profile)
+                    # Keep confirmed layout — re-detection would overwrite pixel-perfect bboxes
+                    if not confirmed_layout:
+                        layout = self._get_layout().detect(img, build_type, profile)
                     _slog.info(f'WarpImporter: refined profile from pixel counts: '
                                f'{dict((k,v) for k,v in profile.items() if v)}')
 
@@ -1078,6 +1082,7 @@ class WarpImporter:
         so candidate_names=None is passed to match() → full index searched as before.
 
         Console slots include universal consoles since they are accepted everywhere.
+        Boff slots are restricted to boff abilities to prevent equipment from matching.
         """
         result: dict[str, set[str]] = {}
         try:
@@ -1099,6 +1104,20 @@ class WarpImporter:
                 names |= uni_names
             if names:
                 result[slot_name] = names
+
+        # Boff slots: restrict to boff abilities only.
+        # Without this, candidate_names=None → full index search → equipment items
+        # (Deflectors, Consoles, etc.) can match ability slots at conf=1.00 via
+        # session examples that were accidentally confirmed in the wrong slot.
+        try:
+            boff_names = set(self._app.cache.boff_abilities.get('all', {}).keys())
+        except Exception:
+            boff_names = set()
+        if boff_names:
+            for sd in slot_defs:
+                slot_name = sd['name']
+                if slot_name.startswith('Boff ') and slot_name not in result:
+                    result[slot_name] = boff_names
 
         return result
 
