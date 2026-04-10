@@ -2227,7 +2227,7 @@ class WarpCoreWindow(QMainWindow):
                     (p[0] for p in slot_pos_map.get(last_slot, [])),
                     default=last_cx,
                 )
-                same_row_close = same_row_right and bx_center - _last_max_cx < bw * 2
+                same_row_close = same_row_right and bx_center - _last_max_cx < bw * 1.5
                 if same_row_close:
                     if last_slot.startswith('Boff '):
                         _sl.info(f'slot_suggest: bbox cy={cy} → {last_slot!r} '
