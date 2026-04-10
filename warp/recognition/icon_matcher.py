@@ -230,6 +230,14 @@ class SETSIconMatcher:
                 sess_entry = entry
         return sess_name, sess_score, sess_entry
 
+    def classify_patch(self, patch_bgr: np.ndarray) -> tuple[str, float]:
+        """Classify a single BGR patch using ML only (fast path for dense scanning)."""
+        import cv2
+        if patch_bgr is None or patch_bgr.size == 0:
+            return '', 0.0
+        crop64 = cv2.resize(patch_bgr, (MATCH_SIZE, MATCH_SIZE), interpolation=cv2.INTER_AREA)
+        return self._classify_ml(crop64)
+
     def classify_ml_batch(
         self,
         thumbnails: list    # list[QImage | None]
