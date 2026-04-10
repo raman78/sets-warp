@@ -82,7 +82,7 @@ class LayoutDetector:
     def detect(self, img: np.ndarray, build_type: str, ship_profile: dict | None = None) -> dict[str, list[tuple[int, int, int, int]]]:
         if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
             return self._detect_traits(img, build_type)
-        if build_type == 'BOFFS':
+        if build_type in ('BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS'):
             learned_boffs = self._detect_via_learned_layouts_boffs(img)
             if learned_boffs:
                 return learned_boffs

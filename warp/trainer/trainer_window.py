@@ -68,6 +68,14 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
+    'SPACE_BOFFS': [
+        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
+    ],
+    'GROUND_BOFFS': [
+        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
+    ],
     'SPECIALIZATIONS': [
         'Primary Specialization', 'Secondary Specialization',
     ],
@@ -94,12 +102,14 @@ SLOT_GROUPS: dict[str, list[str]] = {
 
 SCREEN_TYPE_LABELS: dict[str, str] = {
     'SPACE_EQ': 'Space Equipment', 'GROUND_EQ': 'Ground Equipment', 'TRAITS': 'Traits',
-    'BOFFS': 'Bridge Officers', 'SPECIALIZATIONS': 'Specializations',
+    'BOFFS': 'Bridge Officers', 'SPACE_BOFFS': 'Space Bridge Officers',
+    'GROUND_BOFFS': 'Ground Bridge Officers', 'SPECIALIZATIONS': 'Specializations',
     'SPACE_MIXED': 'Space Mixed (merged)', 'GROUND_MIXED': 'Ground Mixed (merged)', 'UNKNOWN': 'Unknown',
 }
 
 SCREEN_TYPE_ICONS: dict[str, str] = {
-    'SPACE_EQ': '🚀', 'GROUND_EQ': '🦶', 'TRAITS': '✨', 'BOFFS': '👥',
+    'SPACE_EQ': '🚀', 'GROUND_EQ': '🦶', 'TRAITS': '✨',
+    'BOFFS': '👥', 'SPACE_BOFFS': '👥', 'GROUND_BOFFS': '👥',
     'SPECIALIZATIONS': '🎯', 'SPACE_MIXED': '🌌', 'GROUND_MIXED': '🗺️', 'UNKNOWN': '❓',
 }
 
@@ -108,6 +118,8 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
     'GROUND_EQ':      'GROUND_EQ',
     'TRAITS':         'TRAITS',
     'BOFFS':          'BOFFS',
+    'SPACE_BOFFS':    'SPACE_BOFFS',
+    'GROUND_BOFFS':   'GROUND_BOFFS',
     'SPECIALIZATIONS':'SPECIALIZATIONS',
     'SPACE_MIXED':    'SPACE_MIXED',
     'GROUND_MIXED':   'GROUND_MIXED',
@@ -444,6 +456,8 @@ class RecognitionWorker(QThread):
             'GROUND_EQ':       'GROUND',
             'TRAITS':          'SPACE_TRAITS',   # refined below via CNN
             'BOFFS':           'BOFFS',
+            'SPACE_BOFFS':     'SPACE_BOFFS',
+            'GROUND_BOFFS':    'GROUND_BOFFS',
             'SPECIALIZATIONS': 'SPEC',
             'SPACE_MIXED':     'SPACE',    # WarpImporter has no SPACE_MIXED order; confirmed_layout handles extras
             'GROUND_MIXED':    'GROUND',   # same rationale

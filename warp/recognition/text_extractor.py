@@ -57,15 +57,16 @@ _TRAIT_KEYWORDS: dict[str, str] = {
     'active ground reputation':    'GROUND_TRAITS',
 }
 
-# Bridge Officer screen
+# Bridge Officer screen — space vs ground distinguished by screen header
 _BOFF_KEYWORDS: dict[str, str] = {
+    'space stations':           'SPACE_BOFFS',   # STO header for space boff abilities
+    'standard away team':       'GROUND_BOFFS',  # STO header for ground boff abilities
     'bridge officer abilities': 'BOFFS',
     'bridge officer':           'BOFFS',
     'boff abilities':           'BOFFS',
     'tactical ability':         'BOFFS',
     'engineering ability':      'BOFFS',
     'science ability':          'BOFFS',
-    'space stations':           'BOFFS',  # Bridge Officer Stations tab header
 }
 
 # Space equipment slot labels — presence of 2+ confirms SPACE_EQ

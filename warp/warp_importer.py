@@ -117,6 +117,8 @@ SLOT_ORDER = {
     'SPACE_TRAITS':  SPACE_TRAITS_SLOT_ORDER,
     'GROUND_TRAITS': GROUND_TRAITS_SLOT_ORDER,
     'BOFFS':         BOFFS_SLOT_ORDER,
+    'SPACE_BOFFS':   BOFFS_SLOT_ORDER,   # same slot structure, different write target
+    'GROUND_BOFFS':  BOFFS_SLOT_ORDER,
     'SPEC':          SPEC_SLOT_ORDER,
     # MIXED = all slot groups combined; used as fallback when no confirmed_layout exists.
     # layout_detector returns only the bboxes it actually finds, so unused slots
@@ -665,21 +667,27 @@ class WarpImporter:
             # traits + boffs simultaneously).  Never downgrade.
             _ocr_bt = text_info.get('build_type', '')
             if self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
-                                    'GROUND_TRAITS', 'BOFFS', 'SPEC',
-                                    'SPACE_MIXED', 'GROUND_MIXED'):
+                                    'GROUND_TRAITS', 'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+                                    'SPEC', 'SPACE_MIXED', 'GROUND_MIXED'):
                 build_type = self._build_type
                 if build_type == 'SPACE' and _ocr_bt in ('SPACE_TRAITS', 'SPACE_MIXED'):
                     build_type = 'SPACE_MIXED'
                     _slog.info('WarpImporter: upgraded SPACE → SPACE_MIXED (OCR detected richer screen)')
-                elif build_type == 'SPACE' and _ocr_bt == 'BOFFS' and text_info.get('scan_scope') == 'full':
-                    build_type = 'BOFFS'
-                    _slog.info('WarpImporter: upgraded SPACE → BOFFS (dedicated BOFFS screen, full scan only)')
+                elif build_type == 'SPACE' and _ocr_bt in ('BOFFS', 'SPACE_BOFFS') and text_info.get('scan_scope') == 'full':
+                    build_type = _ocr_bt  # SPACE_BOFFS preferred over generic BOFFS
+                    _slog.info(f'WarpImporter: upgraded SPACE → {build_type} (dedicated BOFFS screen, full scan only)')
+                elif build_type == 'SPACE' and _ocr_bt == 'GROUND_BOFFS':
+                    build_type = 'GROUND_BOFFS'
+                    _slog.info('WarpImporter: upgraded SPACE → GROUND_BOFFS (OCR detected ground boff screen)')
                 elif build_type == 'SPACE' and _ocr_bt == 'SPEC':
                     build_type = 'SPEC'
                     _slog.info('WarpImporter: upgraded SPACE → SPEC (OCR detected specialization screen)')
                 elif build_type == 'GROUND' and _ocr_bt in ('GROUND_TRAITS', 'GROUND_MIXED'):
                     build_type = 'GROUND_MIXED'
                     _slog.info('WarpImporter: upgraded GROUND → GROUND_MIXED (OCR detected richer screen)')
+                elif build_type == 'GROUND' and _ocr_bt == 'GROUND_BOFFS':
+                    build_type = 'GROUND_BOFFS'
+                    _slog.info('WarpImporter: upgraded GROUND → GROUND_BOFFS (OCR detected ground boff screen)')
             else:
                 build_type = 'GROUND' if _ocr_bt == 'GROUND' else 'SPACE'
             _slog.info(f'WarpImporter: OCR result: name={ship_name!r} type={ship_type!r} '
