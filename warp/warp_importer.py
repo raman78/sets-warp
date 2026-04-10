@@ -757,11 +757,14 @@ class WarpImporter:
                        f'{sum(len(v) for v in confirmed_layout.values())} bboxes from annotations')
             layout = confirmed_layout
         else:
-            _is_mixed = build_type in ('SPACE_MIXED', 'GROUND_MIXED')
+            _use_full_scan = build_type in (
+                'SPACE_MIXED', 'GROUND_MIXED',
+                'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+            )
             layout = self._get_layout().detect(
                 img, build_type, profile,
-                icon_matcher=self._get_matcher() if _is_mixed else None,
-                app_cache=self._app.cache if _is_mixed else None,
+                icon_matcher=self._get_matcher() if _use_full_scan else None,
+                app_cache=self._app.cache if _use_full_scan else None,
             )
 
         # If ShipDB gave generic fallback (ship_name empty), refine profile

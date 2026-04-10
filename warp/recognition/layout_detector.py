@@ -281,6 +281,10 @@ class LayoutDetector:
             learned_boffs = self._detect_via_learned_layouts_boffs(img)
             if learned_boffs:
                 return learned_boffs
+            if icon_matcher is not None and app_cache is not None:
+                full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
+                if full and len(full) >= 2:
+                    return full
             return self._detect_boffs(img)
         if build_type == 'SPEC':
             return self._detect_spec(img)
