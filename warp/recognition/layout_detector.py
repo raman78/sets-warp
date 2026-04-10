@@ -675,12 +675,18 @@ class LayoutDetector:
             # Detect individual icon rows within the section strip —
             # a section may overflow to 2+ rows (e.g. 11 personal space traits).
             row_centers = self._find_icon_rows_in_strip(strip, icon_est)
+            _slog.debug(f'LayoutDetector._detect_traits: section={section!r} '
+                        f'strip y={max(0,row_y)}..{min(h,row_y_end)} '
+                        f'(h={strip.shape[0]}) icon_est={icon_est} '
+                        f'row_centers={row_centers}')
             all_bboxes = []
             for rc in row_centers:
                 r0 = max(0, rc - icon_est // 2)
                 r1 = min(strip.shape[0], rc + icon_est // 2 + 1)
                 row_strip = strip[r0:r1, :]
                 bboxes = self._find_icon_bboxes_in_strip(row_strip, max(0, row_y) + r0, icon_est)
+                _slog.debug(f'LayoutDetector._detect_traits:   rc={rc} '
+                            f'row_strip h={row_strip.shape[0]} → {len(bboxes)} bboxes')
                 all_bboxes.extend(bboxes)
             if all_bboxes:
                 result[section] = all_bboxes
@@ -706,9 +712,11 @@ class LayoutDetector:
         # Use 90th-percentile instead of max to avoid a single bright separator line
         # inflating the threshold above actual icon rows.
         peak = float(np.percentile(smoothed, 90))
+        _slog.debug(f'LayoutDetector._find_icon_rows: sh={sh} peak={peak:.1f}')
         if peak < 5:          # almost no bright pixels → empty strip
             return [sh // 2]
         threshold = peak * 0.30
+        _slog.debug(f'LayoutDetector._find_icon_rows: threshold={threshold:.1f}')
         # Find bright runs (candidate icon rows), merge gaps < icon_est//3
         min_sep = max(icon_est // 2, 20)
         centers: list[int] = []
@@ -721,15 +729,19 @@ class LayoutDetector:
                 center = (run_start + y) // 2
                 run_len = y - run_start
                 # Filter out thin text labels (< icon_est/2 tall)
-                if run_len >= icon_est // 2:
-                    if not centers or center - centers[-1] >= min_sep:
-                        centers.append(center)
+                accepted = run_len >= icon_est // 2 and (not centers or center - centers[-1] >= min_sep)
+                _slog.debug(f'LayoutDetector._find_icon_rows:   run y={run_start}..{y} '
+                            f'len={run_len} center={center} → {"OK" if accepted else "skip"}')
+                if accepted:
+                    centers.append(center)
         if in_bright:
             center = (run_start + sh) // 2
             run_len = sh - run_start
-            if run_len >= icon_est // 2:
-                if not centers or center - centers[-1] >= min_sep:
-                    centers.append(center)
+            accepted = run_len >= icon_est // 2 and (not centers or center - centers[-1] >= min_sep)
+            _slog.debug(f'LayoutDetector._find_icon_rows:   run y={run_start}..{sh} '
+                        f'len={run_len} center={center} → {"OK(tail)" if accepted else "skip(tail)"}')
+            if accepted:
+                centers.append(center)
         return centers if centers else [sh // 2]
 
     def _find_icon_bboxes_in_strip(self, strip, y_offset, icon_size):
@@ -741,8 +753,11 @@ class LayoutDetector:
         col_bright = np.sum(mask, axis=0).astype(float) / 255
         in_icon, start, bboxes = False, 0, []
         min_w = max(20, icon_size // 2)
+        # Threshold: 10% of strip height (was 20%). Dark-bordered icons can have
+        # columns with only 3–5 bright pixels; 20% broke their runs into sub-min_w
+        # fragments that were discarded, causing the first icon to be missed.
         for x in range(sw):
-            bright = col_bright[x] > sh * 0.2
+            bright = col_bright[x] > sh * 0.1
             if bright and not in_icon: in_icon, start = True, x
             elif not bright and in_icon:
                 in_icon, run_w = False, x - start

@@ -696,7 +696,7 @@ class WarpImporter:
             _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}: {dict((k,v) for k,v in profile.items() if v)}')
         ship_tier = text_info.get('ship_tier', '')
         if _is_trainer_call:
-            # Trainer (WARP CORE): annotation counts are authoritative —
+            # Trainer (WARP CORE): annotation counts are authoritative for equipment —
             # the user has confirmed every bbox, so the profile must match exactly.
             if not profile_override:
                 profile_override = self._load_confirmed_profile(source)
@@ -704,6 +704,12 @@ class WarpImporter:
                 if count > profile.get(slot, 0):
                     profile[slot] = count
                     _slog.info(f'WarpImporter: trainer profile {slot}={count} (confirmed)')
+            # Trait/rep/boff slots: confirmed count reflects partial annotation —
+            # user may not have confirmed all visible items. Apply game caps so the
+            # layout detector's full detection isn't artificially capped.
+            for slot, max_val in _GAME_SLOT_MAXES.items():
+                if max_val > profile.get(slot, 0):
+                    profile[slot] = max_val
         else:
             # WARP dialog import: coded game rules only — annotations are training data.
             # Traits / Rep / Active Rep: fixed STO game caps.
