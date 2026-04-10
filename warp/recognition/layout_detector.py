@@ -530,12 +530,17 @@ class LayoutDetector:
                     sc += 1
             return sc / max(ck, 1)
 
+        # Clamp dy range: don't allow shifts that push any slot above the image top
+        min_y_rel = min((geo['y_rel'] for geo in can_slots.values()), default=0.0)
+
         # Scan Y offsets -0.20 … +0.20 in 0.01 steps
         best_dy, best_score = 0.0, _score(0.0)
         for dy_i in range(-20, 21):
             if dy_i == 0:
                 continue
             dy = dy_i / 100.0
+            if min_y_rel + dy < 0:  # would push topmost slot above image top
+                continue
             s = _score(dy)
             if s > best_score:
                 best_score, best_dy = s, dy

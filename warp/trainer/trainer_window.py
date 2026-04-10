@@ -2195,6 +2195,13 @@ class WarpCoreWindow(QMainWindow):
                 last_slot, last_cy, last_cx = max(icon_above, key=lambda x: x[1])
                 vertically_below = cy > last_cy + bh * 0.4
                 same_row_right   = abs(cy - last_cy) < bh * 0.5 and bx_center > last_cx + bw * 0.5
+                # BOFF slots: icons in the same row are additional abilities for the
+                # same profession (multiple seats), not the next profession.
+                if same_row_right and last_slot.startswith('Boff '):
+                    _sl.info(f'slot_suggest: bbox cy={cy} → {last_slot!r} '
+                             f'(same-row BOFF — keep slot, source=slot_order)')
+                    return last_slot
+
                 if (vertically_below or same_row_right) and last_slot in slot_order:
                     last_idx = slot_order.index(last_slot)
                     for candidate in slot_order[last_idx + 1:]:
