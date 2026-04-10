@@ -263,7 +263,7 @@ diluted by correct crops from other users.
 
 ## 11. GROUND_MIXED screen classifier regression
 
-**Status: PARTIAL FIX (2026-04-03) — backend improvement pending**
+**Status: COMPLETE (2026-04-10)**
 
 **Symptoms (observed 2026-04-03):**
 - `ScreenTypeDetector` returned UNKNOWN for 96% of 119 screenshots (threshold 0.70).
