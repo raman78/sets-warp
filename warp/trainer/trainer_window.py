@@ -2205,7 +2205,11 @@ class WarpCoreWindow(QMainWindow):
             if icon_above:
                 last_slot, last_cy, last_cx = max(icon_above, key=lambda x: x[1])
                 vertically_below = cy > last_cy + bh * 0.4
-                same_row_right   = abs(cy - last_cy) < bh * 0.5 and bx_center > last_cx + bw * 0.5
+                # X gap limit: within a single panel a 5-slot row spans ~7 icon widths.
+                # A gap > 10×bw means a different panel (e.g. equipment → traits).
+                same_row_right   = (abs(cy - last_cy) < bh * 0.5
+                                    and bx_center > last_cx + bw * 0.5
+                                    and bx_center - last_cx < bw * 10)
                 # Same-row-right: Y = slot group, X = index within group.
                 # Stay in the same slot unless it is already at capacity.
                 # BOFF slots have no fixed max — always keep same slot.
