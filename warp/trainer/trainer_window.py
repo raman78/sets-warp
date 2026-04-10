@@ -2205,11 +2205,7 @@ class WarpCoreWindow(QMainWindow):
             if icon_above:
                 last_slot, last_cy, last_cx = max(icon_above, key=lambda x: x[1])
                 vertically_below = cy > last_cy + bh * 0.4
-                # X gap limit: within a single panel a 5-slot row spans ~7 icon widths.
-                # A gap > 10×bw means a different panel (e.g. equipment → traits).
-                same_row_right   = (abs(cy - last_cy) < bh * 0.5
-                                    and bx_center > last_cx + bw * 0.5
-                                    and bx_center - last_cx < bw * 10)
+                same_row_right   = abs(cy - last_cy) < bh * 0.5 and bx_center > last_cx + bw * 0.5
                 # Same-row-right: Y = slot group, X = index within group.
                 # Stay in the same slot unless it is already at capacity.
                 # BOFF slots have no fixed max — always keep same slot.
@@ -2236,7 +2232,13 @@ class WarpCoreWindow(QMainWindow):
                                      f'(same-row index {current + 1}/{cap}, source=slot_order)')
                             return last_slot
 
-                if (vertically_below or same_row_right) and last_slot in slot_order:
+                # Next-in-order via same_row_right only for slots that are genuinely
+                # side-by-side horizontally (ground layout: Body Armor → EV Suit).
+                # Vertical equipment column slots (Deflector, Engines, Sec-Def…) must
+                # only advance via vertically_below — they share a column, not a row.
+                _HORIZONTAL_ADVANCE = frozenset({'Body Armor', 'EV Suit', 'Personal Shield'})
+                advance = vertically_below or (same_row_right and last_slot in _HORIZONTAL_ADVANCE)
+                if advance and last_slot in slot_order:
                     last_idx = slot_order.index(last_slot)
                     for candidate in slot_order[last_idx + 1:]:
                         if candidate in allowed and candidate not in NON_ICON_SLOTS:
