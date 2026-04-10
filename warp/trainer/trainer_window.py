@@ -2248,14 +2248,18 @@ class WarpCoreWindow(QMainWindow):
                                      f'{reason}, source=slot_order)')
                             return candidate
 
-            # Nearest fallback: 2D distance (Y dominant, X at 0.2 weight).
-            # This ensures text fields at different X never beat nearby icon slots.
+            # Nearest fallback: 2D distance (Y dominant, X at 0.4 weight).
+            # Skip single-instance slots already in slot_pos_map — they are
+            # already confirmed and a new bbox at a different position belongs
+            # to a different slot (e.g. traits to the right of Engines).
             best_slot = ''
             best_dist = float('inf')
             for slot, positions in slot_pos_map.items():
+                if slot in SINGLE_INSTANCE_SLOTS:
+                    continue
                 avg_cx = sum(p[0] for p in positions) / len(positions)
                 avg_cy = sum(p[1] for p in positions) / len(positions)
-                dist = abs(cy - avg_cy) + abs(bx_center - avg_cx) * 0.2
+                dist = abs(cy - avg_cy) + abs(bx_center - avg_cx) * 0.4
                 if dist < best_dist:
                     best_dist = dist
                     best_slot = slot
