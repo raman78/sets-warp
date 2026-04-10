@@ -80,27 +80,16 @@ where icons are. A related idea: let users draw bboxes around the **slot label t
 
 ## 5. Central model pipeline — verification
 
-**Status: CODE REVIEW COMPLETE (2026-03-29) — runtime test pending**
+**Status: COMPLETE (2026-04-10)**
 
-**Findings from `model_updater.py` code review:**
-- `_CHECK_INTERVAL_HOURS = 0.25` (15 min) — correct.
-- Backend endpoint: `GET https://sets-warp-backend.onrender.com/model/version`
-- Downloads 6 files from `sets-sto/warp-knowledge`: `icon_classifier.pt`, `label_map.json`,
-  `icon_classifier_meta.json`, `model_version.json`, `screen_classifier.pt`, `screen_classifier_labels.json`.
-- Timestamp comparison: `remote_ts > local_ts` → download; otherwise skip.
-- After download: calls `SETSIconMatcher.reset_ml_session()` to reload immediately.
-- `_ensure_screen_classifier()`: runs on every check, downloads screen classifier if missing
-  (bypasses rate limit for this one-time bootstrap).
-- Logic is correct and complete. No bugs found.
-
-**Pending:** Actual runtime verification (open WARP CORE, wait 15 min, confirm model update
-from log output). Use test script if needed:
-```python
-from pathlib import Path
-from warp.trainer.model_updater import ModelUpdater
-result = ModelUpdater().check_and_update(Path('.'))
-print('update result:', result)
+**Verified in runtime log (2026-04-10):**
 ```
+ModelUpdater: checking for remote model update...
+ModelUpdater: remote model is newer (remote=2026-04-08, local=2026-04-06) — downloading...
+ModelUpdater: model downloaded at 16:34 UTC — 3199 classes, val_acc=74.2%
+ModelUpdater: icon matcher reloaded with new model
+```
+Full cycle confirmed: version check → download → matcher reload. No issues.
 
 ---
 
@@ -125,7 +114,7 @@ community_anchors.json is generated. Code is complete.
 
 ## 7. Ship Type / Ship Tier — community OCR correction data
 
-**Status: COMPLETE (2026-04-03)**
+**Status: COMPLETE (2026-04-10)**
 
 **Previous design (opt-in) superseded.**
 

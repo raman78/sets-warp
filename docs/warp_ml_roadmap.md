@@ -53,7 +53,7 @@ When user draws a bbox and selects `Ship Name`, `Ship Tier`, or `Ship Type`:
 **Mechanism:** Dedicated `OCRWorker` using EasyOCR with smart text parsing.
 *   **Upscaling**: Automatically resizes text crops 2x for better recognition of small game fonts.
 *   **Regex / Fuzzy Matching**: Uses `RE_TIER` regex and `difflib` to map raw OCR text to valid STO tiers (T6, T6-X2, etc.) and ship types.
-*   **Correction Learning**: Learns from user corrections via `ocr_typos.json`.
+*   **Correction Learning**: User corrections update `TextExtractor._corrections` in-memory and are uploaded to HF staging as TEXT_LEARNING_SLOTS crops; `ship_type_corrections.json` downloaded by `ModelUpdater` populates community corrections on startup.
 
 **Files:** `trainer_window.py`.
 

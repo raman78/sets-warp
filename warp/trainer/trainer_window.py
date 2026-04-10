@@ -115,7 +115,7 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
 }
 
 FIXED_VALUE_SLOTS: frozenset[str] = frozenset(['Ship Tier', 'Ship Type'])
-from warp.trainer.training_data import NON_ICON_SLOTS, SINGLE_INSTANCE_SLOTS, VIRTUAL_ITEM_NAMES
+from warp.trainer.training_data import NON_ICON_SLOTS, SINGLE_INSTANCE_SLOTS, VIRTUAL_ITEM_NAMES, TEXT_LEARNING_SLOTS
 SHIP_TIER_VALUES: list[str] = ['T1', 'T2', 'T3', 'T4', 'T5', 'T5-U', 'T5-X', 'T5-X2', 'T6', 'T6-X', 'T6-X2']
 _SHIP_INFO_SLOTS = ['Ship Name', 'Ship Type', 'Ship Tier']
 
@@ -330,18 +330,14 @@ class OCRWorker(QThread):
             best_conf = max(res[2] for res in result)
             ocr_raw = full_text
             
-            # Typo correction (Learning)
-            from pathlib import Path
-            import json
-            typo_file = Path('warp') / 'training_data' / 'ocr_typos.json'
-            if typo_file.exists():
-                try:
-                    with open(typo_file, 'r') as f:
-                        typos = json.load(f)
-                    if full_text in typos:
-                        full_text = typos[full_text]
-                        best_conf = 1.0 # Force max conf since user previously corrected it
-                except: pass
+            # Apply community + in-session OCR corrections
+            try:
+                from warp.recognition.text_extractor import TextExtractor
+                if full_text in TextExtractor._corrections:
+                    full_text = TextExtractor._corrections[full_text]
+                    best_conf = 1.0
+            except Exception:
+                pass
             
             text = full_text
             conf = best_conf
@@ -2544,27 +2540,13 @@ class WarpCoreWindow(QMainWindow):
                 from warp.recognition.icon_matcher import SETSIconMatcher
                 SETSIconMatcher.add_session_example(ri['crop_bgr'], name)
                 self._contribute(ri, name)
-            elif name and slot in NON_ICON_SLOTS:
+            elif name and slot in TEXT_LEARNING_SLOTS:
                 ocr_raw = ri.get('ocr_raw', '')
-                # Only log OCR typo if the user actually chose a name different from what OCR settled on
-                if ocr_raw and prev_name != name:
+                if ocr_raw and ocr_raw != name:
                     from src.setsdebug import log as _slog
-                    _slog.info(f"Learned new OCR typo correction: {ocr_raw!r} -> {name!r}")
-                    from pathlib import Path
-                    import json
-                    typo_file = Path('warp') / 'training_data' / 'ocr_typos.json'
-                    try:
-                        typos = {}
-                        if typo_file.exists():
-                            with open(typo_file, 'r') as f:
-                                typos = json.load(f)
-                        if typos.get(ocr_raw) != name:
-                            typos[ocr_raw] = name
-                            with open(typo_file, 'w') as f:
-                                json.dump(typos, f, indent=2)
-                    except Exception as e:
-                        from src.setsdebug import log as _slog2
-                        _slog2.warning(f"Failed to save ocr_typos: {e}")
+                    _slog.info(f'OCR correction: {ocr_raw!r} → {name!r} (queued for HF upload)')
+                    from warp.recognition.text_extractor import TextExtractor
+                    TextExtractor._corrections[ocr_raw] = name
         else:
             self._ann_widget.confirm_current(slot=slot, name=name)
         # Keep name_edit showing the accepted value — don't clear after accept
