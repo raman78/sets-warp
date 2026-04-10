@@ -23,21 +23,11 @@ Items here are not yet scheduled. Each has a status and open questions to resolv
 
 ## 2. User-drawn slot label bboxes (Fore Weapons, Deflector, …)
 
-**Decision needed:** Implement label bbox annotation / skip in favour of P11.
+**Status: SKIPPED (2026-04-10)**
 
-**Context:** WARP CORE lets users draw bboxes for icon slots. Currently the intent is to mark
-where icons are. A related idea: let users draw bboxes around the **slot label text** (e.g.
-"Fore Weapons", "Deflector") to provide ground truth for layout detection.
-
-**Open questions:**
-- Is this worth the UI complexity? Slot label positions can already be inferred from icon
-  positions once icons are confirmed.
-- If implemented: label bboxes would be a new slot type (e.g. `Label: Fore Weapons`) — they
-  feed only into `anchors.json` / community anchors (P11), not into icon training.
-- Alternative: skip label bboxes entirely; P11 community anchors cover this use case without
-  requiring users to annotate text.
-
-**Recommendation:** Skip — P11 community anchors cover this without extra UI complexity.
+P11 community anchors cover the layout anchoring use case without requiring users to
+annotate text labels separately. Adding label bbox annotation would increase UI complexity
+for no practical gain — icon bbox positions already imply label positions. Decision final.
 
 ---
 
