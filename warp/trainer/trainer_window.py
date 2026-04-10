@@ -412,14 +412,8 @@ class MatchWorker(QThread):
                 matcher._find_sets_root() / 'warp' / 'training_data')
             name, conf, thumb, _ = matcher.match(
                 self._crop, candidate_names=self._candidates)
-            _slog.info(f'match_worker pass1 → name={name!r} conf={conf:.2f} '
+            _slog.info(f'match_worker → name={name!r} conf={conf:.2f} '
                        f'(pool={len(self._candidates) if self._candidates else "all"})')
-            if conf < 0.40 and self._candidates:
-                name2, conf2, thumb2, _ = matcher.match(
-                    self._crop, candidate_names=None)
-                _slog.info(f'match_worker pass2 (unrestricted) → name={name2!r} conf={conf2:.2f}')
-                if conf2 > conf:
-                    name, conf, thumb = name2, conf2, thumb2
             if conf < 0.40:
                 _slog.info(f'match_worker: conf {conf:.2f} < 0.40 — treating as unmatched')
                 name, conf, thumb = '', 0.0, None
