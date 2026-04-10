@@ -298,3 +298,64 @@ diluted by correct crops from other users.
 - Log per-class sample counts in training output so imbalance is visible.
 - Consider replacing `_FocalLoss` with plain `CrossEntropyLoss` + class weights only;
   Focal Loss adds miscalibration without clear benefit on a 7-class balanced dataset.
+
+---
+
+## 12. MIXED image layout detection — intelligent approach
+
+**Status: OPEN — pixel heuristics insufficient**
+
+**Problem:**
+For MIXED screenshots (SPACE_MIXED, GROUND_MIXED) the current `_find_panel_right_edge`
+heuristic fails when the image contains multiple panels (equipment + traits + BOFFs etc.)
+arranged arbitrarily by the user.  Pixel-column scanning finds the rightmost bright
+region (often traits/abilities, not equipment), placing all bboxes in the wrong area.
+
+**Root cause identified (2026-04-10):**
+- `_find_panel_right_edge` returns the rightmost consistently-bright column, which in
+  MIXED screens is a non-equipment panel.
+- `from_trainer=True` skips OCR → Ship Type/Name not in `result.items` → no anchor for
+  equipment panel location.
+- Learned layouts (anchors.json) for these aspect ratios contain only Ship Name/Type
+  (no equipment slots confirmed yet) → Strategy 1 scoring: 1.00 from 1-slot check,
+  but result is empty → falls to Strategy 2 with wrong panel_right.
+
+**Why pixel heuristics cannot work for MIXED:**
+The user can compose MIXED screenshots freely — equipment left/right/center, traits
+anywhere, BOFFs pasted in non-standard positions.  There is no stable structural
+anchor to find equipment panel boundaries via pixel scanning.
+
+**Proposed proper approach:**
+1. **OCR scan of full image** → find slot-label texts ("Fore Weapons", "Deflector",
+   "Stations", "Personal Space Traits") → determine approximate section locations.
+2. **ML scan of full image** → detect recognizable patterns:
+   - `__inactive__` (characteristic X pattern)
+   - `__empty__` (empty slot frame)
+   - Equipment icons, trait icons, boff ability icons
+   → build a "cluster map" of item regions across the image.
+3. **Cross-reference** OCR labels + icon clusters → assign section boundaries.
+4. **Determine section scale** (icon size / step) from cluster spacing → corrects for
+   different UI scale settings.
+
+**Non-MIXED screens** (SPACE_EQ, TRAITS, BOFFS, SPEC) are more predictable — single
+panel, right-aligned items.  Current pixel approach works adequately there.
+
+**Priority:** Medium — MIXED images are already supported via WARP CORE manual annotation.
+Auto-detection for MIXED is a quality-of-life improvement, not a blocking issue.
+
+**Current workaround:** User annotates extreme slot positions in WARP CORE → `learn_layout`
+saves to anchors.json → Strategy 1 uses correct positions on next run.
+
+---
+
+## 13. `__inactive__` / `__empty__` slot discarded in WARP CORE add_bbox
+
+**Status: FIXED (2026-04-10)**
+
+`_finish_bbox_drawn` was calling `_infer_slot_from_name` for all matched names, including
+virtual names (`__inactive__`, `__empty__`).  Since these are not cache items, inference
+returned `None`, triggering the discard branch with "not valid for stype=..." message.
+
+**Fix:** In the `elif name not in VIRTUAL_ITEM_NAMES:` discard branch — virtual names
+bypass slot inference and keep the positional slot suggestion.  They are always valid
+training labels regardless of screen type.  File: `warp/trainer/trainer_window.py`.

@@ -1446,6 +1446,52 @@ class WarpCoreWindow(QMainWindow):
             # Run auto-accept after panel is populated
             self._run_auto_accept()
 
+    def _ocr_empty_non_icon_items(self):
+        """Re-run OCR for any confirmed NON_ICON_SLOT items that have an empty name.
+
+        This covers the case where Ship Type/Tier was confirmed before OCR finished
+        (or OCR failed), leaving a blank name saved to disk.  On every panel refresh
+        we detect such entries and kick off OCRWorker to fill them in.
+        """
+        if self._current_idx < 0:
+            return
+        try:
+            import cv2
+            path = self._screenshots[self._current_idx]
+            img = None  # lazy-load
+            if self._ship_type_combo.count() == 0:
+                self._populate_ship_type_combo()
+            v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
+            v_types = [self._ship_type_combo.itemText(i) for i in range(self._ship_type_combo.count())]
+            for row, ri in enumerate(self._recognition_items):
+                if ri.get('slot') not in NON_ICON_SLOTS:
+                    continue
+                if ri.get('slot') == 'Ship Name':
+                    continue  # position-only, never store name
+                if ri.get('name'):
+                    continue  # already has a name
+                bbox = ri.get('bbox')
+                if not bbox:
+                    continue
+                if img is None:
+                    img = cv2.imread(str(path))
+                    if img is None:
+                        break
+                x, y, w, h = bbox
+                crop = img[y:y+h, x:x+w].copy()
+                if crop.size == 0:
+                    continue
+                ri['crop_bgr'] = crop
+                worker = OCRWorker(row, crop, ri['slot'], v_tiers, v_types, parent=self)
+                worker.finished.connect(self._on_ocr_finished)
+                worker.start()
+                if not hasattr(self, '_ocr_workers'):
+                    self._ocr_workers = []
+                self._ocr_workers.append(worker)
+        except Exception as _e:
+            from src.setsdebug import log as _sl
+            _sl.debug(f'_ocr_empty_non_icon_items: {_e}')
+
     def _on_recognition_error(self, msg: str):
         if self._recog_dlg:
             self._recog_dlg.close()
@@ -1511,6 +1557,9 @@ class WarpCoreWindow(QMainWindow):
         self._refresh_slot_combo(stype)
         if n > 0:
             self._review_list.setCurrentRow(0)
+        # For confirmed NON_ICON_SLOT items with empty name (e.g. Ship Type confirmed
+        # before OCR finished), re-run OCR now so the name is filled in.
+        self._ocr_empty_non_icon_items()
 
     def _add_review_row(self, name: str, slot: str, conf: float, confirmed: bool = False, cross_check_failed: bool = False):
         is_virtual = name in VIRTUAL_ITEM_NAMES
@@ -1900,9 +1949,11 @@ class WarpCoreWindow(QMainWindow):
                     # else: keep P1 position suggestion — slot is taken
                 else:
                     slot = inferred
-            else:
+            elif name not in VIRTUAL_ITEM_NAMES:
                 # Name found by matcher but doesn't belong to any allowed slot
-                # for this screen type — discard to avoid wrong slot assignment
+                # for this screen type — discard to avoid wrong slot assignment.
+                # Virtual names (__inactive__, __empty__) are always valid training labels,
+                # so they keep the positional slot suggestion and are never discarded here.
                 from src.setsdebug import log as _slog2
                 _slog2.info(f'add_bbox: discarding {name!r} — not valid for stype={stype}')
                 name, conf, thumb = '', 0.0, None
