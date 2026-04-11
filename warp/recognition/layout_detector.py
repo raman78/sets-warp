@@ -1279,8 +1279,7 @@ class LayoutDetector:
 
     def _detect_spec(self, img):
         h, w = img.shape[:2]
-        y_off = int(h * 0.75)
-        try: ocr_out = self._get_ocr().readtext(img[y_off:, :])
+        try: ocr_out = self._get_ocr().readtext(img)
         except: return {}
         KNOWN = {'temporal operative', 'strategist', 'intelligence', 'commando', 'miracle worker', 'pilot', 'command', 'constable', 'emergence'}
         found = []
@@ -1288,7 +1287,9 @@ class LayoutDetector:
             if conf < 0.3: continue
             if any(s in text.lower() for s in KNOWN):
                 icon_sz = max(40, int(h * 0.07))
-                found.append((max(0, int(bbox[0][0]) - icon_sz - 5), max(0, int(bbox[0][1]) + y_off - icon_sz // 4), icon_sz, icon_sz))
+                found.append((max(0, int(bbox[0][0]) - icon_sz - 5), max(0, int(bbox[0][1]) - icon_sz // 4), icon_sz, icon_sz))
+        # Sort by Y so Primary (higher on screen) always comes first
+        found.sort(key=lambda b: b[1])
         res = {}
         if len(found) >= 1: res['Primary Specialization'] = [found[0]]
         if len(found) >= 2: res['Secondary Specialization'] = [found[1]]

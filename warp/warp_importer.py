@@ -696,9 +696,11 @@ class WarpImporter:
         # Step 2 — get exact slot profile from ship_list.json
         # Skip for GROUND/GROUND_MIXED — ShipDB contains space ship data only
         _is_ground = build_type in ('GROUND', 'GROUND_MIXED')
-        if _is_ground:
+        _no_ship_profile = _is_ground or build_type in ('SPEC', 'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+                                                         'SPACE_TRAITS', 'GROUND_TRAITS')
+        if _no_ship_profile:
             profile = {}
-            _slog.info(f'WarpImporter: GROUND build — skipping ShipDB lookup')
+            _slog.info(f'WarpImporter: {build_type} build — skipping ShipDB lookup')
         else:
             profile = self._get_shipdb().get_profile(ship_name, ship_type)
             _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}: {dict((k,v) for k,v in profile.items() if v)}')
