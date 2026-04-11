@@ -493,7 +493,7 @@ class WarpDialog(QDialog):
                         f'for "{ri.name}"')
 
         if boff_items:
-            _is_ground_boffs = getattr(self._result, 'build_type', '') == 'GROUND_BOFFS'
+            _is_ground_boffs = getattr(self.result, 'build_type', '') == 'GROUND_BOFFS'
             self._write_boffs_to_build(boff_items, _ship_data, is_ground=_is_ground_boffs)
 
         # Switch to the correct build tab
