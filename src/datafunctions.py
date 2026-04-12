@@ -233,7 +233,7 @@ def populate_cache(self, threaded_worker: ThreadObject):
     # build ship images list from cargo — image field is "File:Filename.ext", strip "File:"
     ship_images = [
         ship['image'][5:] for ship in self.cache.ships.values()
-        if ship.get('image', '').startswith('File:')
+        if (ship.get('image') or '').startswith('File:')
     ]
     # splash text will be set by ImageManager.download_images itself
     self.images.download_images(self.cache.skills, threaded_worker, ship_images=ship_images)

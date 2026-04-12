@@ -287,7 +287,7 @@ class LayoutDetector:
                     return full
             return self._detect_boffs(img)
         if build_type == 'SPEC':
-            return self._detect_spec(img)
+            return {}
 
         profile = ship_profile or {}
         if build_type == 'GROUND':
@@ -1278,21 +1278,89 @@ class LayoutDetector:
         return 'science'
 
     def _detect_spec(self, img):
+        """Detect Primary / Secondary Specialization icons on a SPEC screen.
+
+        STO marks each selected spec with a diamond icon to the right of the
+        spec name.  The diamond contains a Roman numeral:
+          I  (single bar) → Primary Specialization
+          II (two bars)   → Secondary Specialization
+
+        Detection steps:
+          1. OCR full image → find spec name label positions.
+          2. For each label, sample the region immediately right of the text.
+          3. If the region has significant brightness variance → icon present.
+          4. Horizontal bright-cluster count in the interior of the icon:
+               1 cluster → "I" → Primary
+               2 clusters → "II" → Secondary
+        """
+        import cv2
         h, w = img.shape[:2]
-        try: ocr_out = self._get_ocr().readtext(img)
-        except: return {}
-        KNOWN = {'temporal operative', 'strategist', 'intelligence', 'commando', 'miracle worker', 'pilot', 'command', 'constable', 'emergence'}
-        found = []
-        for (bbox, text, conf) in ocr_out:
-            if conf < 0.3: continue
-            if any(s in text.lower() for s in KNOWN):
-                icon_sz = max(40, int(h * 0.07))
-                found.append((max(0, int(bbox[0][0]) - icon_sz - 5), max(0, int(bbox[0][1]) - icon_sz // 4), icon_sz, icon_sz))
-        # Sort by Y so Primary (higher on screen) always comes first
-        found.sort(key=lambda b: b[1])
+        try:
+            ocr_out = self._get_ocr().readtext(img)
+        except:
+            return {}
+
+        KNOWN = {'temporal operative', 'strategist', 'intelligence', 'commando',
+                 'miracle worker', 'pilot', 'command', 'constable', 'emergence'}
+
+        # Collect candidate rows: (tx1, ty1, tx2, ty2)
+        candidates = []
+        for (pts, text, conf) in ocr_out:
+            if conf < 0.3:
+                continue
+            if not any(s in text.lower() for s in KNOWN):
+                continue
+            tx1 = int(min(p[0] for p in pts))
+            ty1 = int(min(p[1] for p in pts))
+            tx2 = int(max(p[0] for p in pts))
+            ty2 = int(max(p[1] for p in pts))
+            candidates.append((tx1, ty1, tx2, ty2))
+
+        results = []  # (ty1, is_primary, bbox_xywh)
+        for (tx1, ty1, tx2, ty2) in candidates:
+            row_h = max(ty2 - ty1, 12)
+            # Sample region to the right of the text where the diamond icon sits
+            ix1 = tx2 + 2
+            ix2 = min(w, tx2 + row_h * 2)
+            iy1 = max(0, ty1 - 2)
+            iy2 = min(h, ty2 + 2)
+            if ix1 >= ix2 or iy1 >= iy2:
+                continue
+            icon_crop = img[iy1:iy2, ix1:ix2]
+            gray = cv2.cvtColor(icon_crop, cv2.COLOR_BGR2GRAY)
+
+            # Skip if no significant content (spec not selected — no icon present)
+            if int(gray.max()) - int(gray.min()) < 30:
+                continue
+
+            # Threshold: pixels clearly brighter than the crop's mean
+            bright = (gray > gray.mean() + 15).astype('uint8')
+
+            # Horizontal center strip, interior 60% (avoids diamond border edges)
+            cy = bright.shape[0] // 2
+            sh = max(1, bright.shape[0] // 5)
+            strip = bright[cy - sh: cy + sh + 1, :]
+            iw = strip.shape[1]
+            interior = strip[:, iw // 5: 4 * iw // 5]
+            col_on = interior.mean(axis=0) > 0.3
+
+            # Count 0→1 transitions = number of distinct bright clusters
+            clusters = sum(1 for i in range(1, len(col_on))
+                           if col_on[i] and not col_on[i - 1])
+
+            is_primary = (clusters <= 1)
+            # Bbox covers text + icon
+            bbox_xywh = (tx1, ty1, ix2 - tx1, ty2 - ty1)
+            results.append((ty1, is_primary, bbox_xywh))
+
+        if not results:
+            return {}
+
         res = {}
-        if len(found) >= 1: res['Primary Specialization'] = [found[0]]
-        if len(found) >= 2: res['Secondary Specialization'] = [found[1]]
+        for (_ty, is_primary, bbox) in results:
+            slot = 'Primary Specialization' if is_primary else 'Secondary Specialization'
+            if slot not in res:
+                res[slot] = [bbox]
         return res
 
     @staticmethod

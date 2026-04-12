@@ -1835,9 +1835,25 @@ class WarpCoreWindow(QMainWindow):
     def _update_add_bbox_btn(self):
         is_done = (self._current_idx >= 0
                    and self._screenshots[self._current_idx].name in self._screenshots_done)
-        self._btn_add_bbox.setEnabled(self._current_idx >= 0 and not is_done)
+        is_spec = (self._current_idx >= 0
+                   and self._screen_types.get(
+                       self._screenshots[self._current_idx].name, 'UNKNOWN') == 'SPECIALIZATIONS')
+        enabled = self._current_idx >= 0 and not is_done and not is_spec
+        self._btn_add_bbox.setEnabled(enabled)
+        if is_spec:
+            self._btn_add_bbox.setToolTip(
+                'Specialization screens are used only for screen-type training.\n'
+                'Icon annotation is not supported for this screen type.')
+        else:
+            self._btn_add_bbox.setToolTip('')
 
     def _on_bbox_drawn(self, bbox: tuple):
+        if self._current_idx >= 0 and self._screen_types.get(
+                self._screenshots[self._current_idx].name, 'UNKNOWN') == 'SPECIALIZATIONS':
+            self._add_bbox_mode = False
+            self._btn_add_bbox.setChecked(False)
+            self._ann_widget.set_draw_mode(False)
+            return
         if self._manual_bbox_mode:
             row = self._review_list.currentRow()
             if 0 <= row < len(self._recognition_items):
