@@ -293,7 +293,7 @@ class LayoutDetector:
         if build_type == 'GROUND':
             slot_order = GROUND_SLOT_ORDER
         else:
-            slot_order = (SPACE_SLOT_ORDER_CARRIER if profile.get('Hangar', 0) > 0 else SPACE_SLOT_ORDER_STANDARD)
+            slot_order = (SPACE_SLOT_ORDER_CARRIER if profile.get('Hangars', 0) > 0 else SPACE_SLOT_ORDER_STANDARD)
 
         # Full scan path for MIXED — try after learned layouts (which are always most accurate)
         if build_type in ('SPACE_MIXED', 'GROUND_MIXED') and icon_matcher is not None and app_cache is not None:
@@ -310,6 +310,17 @@ class LayoutDetector:
         # user-confirmed slot counts, more reliable than ShipDB generic fallback
         learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
         if learned:
+            # Supplement with pixel analysis for any profile slots missing from learned layout.
+            # This handles optional slots (Hangars, Universal Consoles, Sec-Def, Experimental)
+            # that may not have been annotated when the layout template was created.
+            missing = [s for s in slot_order if s not in learned and profile.get(s, 0) > 0]
+            if missing:
+                pixel = self._detect_via_pixel_analysis(img, slot_order, profile)
+                for slot in missing:
+                    if pixel.get(slot):
+                        learned[slot] = pixel[slot]
+                        _slog.info(f'LayoutDetector: Strategy 1 supplement [{slot}] '
+                                   f'from pixel analysis ({len(pixel[slot])} bboxes)')
             _slog.info(f'LayoutDetector: Strategy 1 (learned) → {len(learned)} slot groups, {sum(len(v) for v in learned.values())} bboxes')
             for slot, boxes in learned.items():
                 for b in boxes:
