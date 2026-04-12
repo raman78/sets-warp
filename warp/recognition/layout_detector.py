@@ -279,12 +279,19 @@ class LayoutDetector:
             return self._detect_traits(img, build_type)
         if build_type in ('BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS'):
             learned_boffs = self._detect_via_learned_layouts_boffs(img)
-            if learned_boffs:
-                return learned_boffs
             if icon_matcher is not None and app_cache is not None:
+                # Full scan runs regardless of learned layout — it uses OCR + sliding-window ML
+                # to find actual icon positions, overriding potentially stale learned templates.
+                # Learned layout supplements only for slots full scan did not find.
                 full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
                 if full and len(full) >= 2:
+                    if learned_boffs:
+                        for slot, boxes in learned_boffs.items():
+                            if slot not in full:
+                                full[slot] = boxes
                     return full
+            if learned_boffs:
+                return learned_boffs
             return self._detect_boffs(img)
         if build_type == 'SPEC':
             return {}
