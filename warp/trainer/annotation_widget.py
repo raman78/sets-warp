@@ -691,6 +691,10 @@ class AnnotationWidget(QWidget):
                 self.update()
             return False
         if etype in (QEvent.Type.MouseMove, QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            # Only react when WARP CORE window is active
+            _top = self.window()
+            if not (_top and _top.isActiveWindow()):
+                return False
             # Only react when mouse is over this widget or its general area
             from PySide6.QtGui import QCursor as _QC
             gpos = _QC.pos()

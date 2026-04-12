@@ -1736,7 +1736,8 @@ class WarpCoreWindow(QMainWindow):
                 self._on_remove_item()
                 return True
         # Forward wheel events from anywhere in scroll area to the canvas widget
-        if event.type() == QEvent.Type.Wheel and sa and aw:
+        # (only when WARP CORE is the active window)
+        if event.type() == QEvent.Type.Wheel and sa and aw and self.isActiveWindow():
             from PySide6.QtGui import QCursor
             gpos = QCursor.pos()
             sa_pos = sa.mapFromGlobal(gpos)
