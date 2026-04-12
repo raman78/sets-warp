@@ -1325,7 +1325,7 @@ class WarpCoreWindow(QMainWindow):
         self._btn_accept.setEnabled(not is_spec)
         if is_spec:
             self._slot_combo.blockSignals(True)
-            self._slot_combo.setCurrentIndex(-1)
+            self._slot_combo.clear()
             self._slot_combo.blockSignals(False)
             self._name_edit.blockSignals(True)
             self._name_edit.clear()
