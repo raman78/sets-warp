@@ -278,19 +278,21 @@ class LayoutDetector:
         if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
             return self._detect_traits(img, build_type)
         if build_type in ('BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS'):
+            # Learned layout first — provides the most accurate positions (from user-confirmed
+            # annotations).  Bad seat-type labels in old entries have been cleaned from
+            # anchors.json; remaining entries have correct slot names.
+            learned_boffs = self._detect_via_learned_layouts_boffs(img)
             if icon_matcher is not None and app_cache is not None:
                 full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
                 if full and len(full) >= 2:
+                    if learned_boffs:
+                        for slot, boxes in learned_boffs.items():
+                            if slot not in full:
+                                full[slot] = boxes
                     return full
-            # OCR/color classification reads actual profession labels from the screen
-            # (ground truth) — preferred over learned layout whose labels come from
-            # potentially-wrong user annotations.
-            ocr_result = self._detect_boffs(img)
-            if ocr_result and len(ocr_result) >= 2:
-                return ocr_result
-            # Learned layout as last resort when OCR finds nothing
-            learned_boffs = self._detect_via_learned_layouts_boffs(img)
-            return learned_boffs or ocr_result or {}
+            if learned_boffs:
+                return learned_boffs
+            return self._detect_boffs(img)
         if build_type == 'SPEC':
             return {}
 
@@ -1073,66 +1075,76 @@ class LayoutDetector:
 
     def _detect_boffs(self, img):
         h, w = img.shape[:2]
+        x_start = int(w * 0.55)
         icon_est = max(36, int(h * 0.055))
 
-        # Step 1: OCR — find the y-centers of icon rows from profession header text.
-        # We collect distinct y positions (de-dup by proximity), not profession names,
-        # because the same profession can appear in multiple rows (different seats) and
-        # multiple professions can share the same row (side-by-side seats).
-        row_ys: list[int] = []
+        # ── Strategy A: OCR finds profession header labels ────────────────────
+        headers = []
         try:
-            ocr_out = self._get_ocr().readtext(img)
+            ocr_out = self._get_ocr().readtext(img[:, x_start:])
             for (bbox, text, conf) in ocr_out:
                 if conf < 0.3:
                     continue
                 text_low = text.lower().strip()
-                if any(k in text_low for k in self._PROF_MAP):
-                    cy = int((bbox[0][1] + bbox[2][1]) / 2)
-                    if not row_ys or cy - row_ys[-1] > icon_est // 2:
-                        row_ys.append(cy)
+                kw = next((k for k in self._PROF_MAP if k in text_low), None)
+                if kw:
+                    headers.append((self._PROF_MAP[kw], int((bbox[0][1] + bbox[2][1]) / 2)))
         except Exception:
             pass
 
-        # Step 2: collect candidate icon bboxes.
-        # If OCR found row positions, scan a narrow icon_est-height band just below
-        # each header (low threshold → adjacent icons stay separated).
-        # Otherwise fall back to scanning the whole image in icon_est-height bands.
-        all_bboxes: list[tuple] = []
-        if row_ys:
-            row_ys.sort()
-            for ry in row_ys:
-                row_y = ry + int(icon_est * 0.3)
-                band = img[max(0, row_y): min(h, row_y + icon_est), :]
-                all_bboxes.extend(self._find_icon_bboxes_in_strip(band, row_y, icon_est))
-        else:
-            for band_y in range(0, max(1, h - icon_est + 1), icon_est):
-                band = img[band_y: band_y + icon_est, :]
-                all_bboxes.extend(self._find_icon_bboxes_in_strip(band, band_y, icon_est))
+        if headers:
+            headers.sort(key=lambda x: x[1])
+            seen, merged = set(), []
+            for n, y in headers:
+                if n not in seen:
+                    seen.add(n)
+                    merged.append((n, y))
+            result = {}
+            for i, (section, hy) in enumerate(merged):
+                row_y     = hy + int(icon_est * 0.3)
+                row_y_end = min(h, (merged[i + 1][1] - 5) if i + 1 < len(merged) else h)
+                strip = img[max(0, row_y): row_y_end, x_start:]
+                if strip.size == 0:
+                    continue
+                bboxes = self._find_icon_bboxes_in_strip(strip, row_y, icon_est)
+                if bboxes:
+                    abs_bboxes = [(bx + x_start, by, bw, bh) for (bx, by, bw, bh) in bboxes]
+                    filled = self._fill_boff_gaps(abs_bboxes, img, icon_est, x_min=x_start)
+                    result.setdefault(section, []).extend(filled)
+            if result:
+                _slog.debug(f'LayoutDetector: _detect_boffs via OCR — {len(result)} sections')
+                return result
+            _slog.debug('LayoutDetector: _detect_boffs OCR found headers but no icons — trying color fallback')
 
+        # ── Strategy B: color-based profession detection (no OCR needed) ─────
+        _slog.debug('LayoutDetector: _detect_boffs — no OCR headers, using icon color classification')
+        panel = img[:, x_start:]
+        all_bboxes = self._find_icon_bboxes_in_strip(panel, 0, icon_est)
         if not all_bboxes:
             return {}
 
-        # Step 3: color-classify each candidate icon to determine profession.
-        # This is done here (not via OCR label) so that mixed-profession rows
-        # (e.g. Temporal + Tactical side-by-side) assign each icon correctly.
-        result: dict[str, list] = {}
+        result = {}
         for bx, by, bw, bh in all_bboxes:
-            crop = img[by: by + bh, bx: bx + bw]
+            crop = panel[by: by + bh, bx: bx + bw]
             if crop.size == 0:
                 continue
             prof = self._classify_boff_profession(crop)
             if prof:
                 slot = self._PROF_MAP.get(prof)
                 if slot:
-                    result.setdefault(slot, []).append((bx, by, bw, bh))
+                    result.setdefault(slot, []).append(
+                        (bx + x_start, by, bw, bh)
+                    )
 
-        # Step 4: fill gaps (empty/inactive slots) per profession row.
+        # Fill gaps with empty/inactive positions per section
         for slot_key in list(result.keys()):
-            result[slot_key] = self._fill_boff_gaps(result[slot_key], img, icon_est, x_min=0)
+            result[slot_key] = self._fill_boff_gaps(
+                result[slot_key], img, icon_est, x_min=x_start
+            )
 
         _slog.debug(
-            f'LayoutDetector: _detect_boffs — {len(result)} sections, '
-            f'{sum(len(v) for v in result.values())} bboxes'
+            f'LayoutDetector: _detect_boffs color — {len(result)} sections, '
+            f'{sum(len(v) for v in result.values())} bboxes (active+virtual)'
         )
         return result
 
