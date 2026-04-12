@@ -293,7 +293,7 @@ _BOFF_PROF_TO_SLOT: dict[str, str] = {
 _GAME_SLOT_MAXES: dict[str, int] = {
     'Personal Space Traits':  11,  # character-level cap
     'Personal Ground Traits': 11,
-    'Starship Traits':         7,  # max with T6-X2 mastery upgrade
+    'Starship Traits':         5,  # base T6 cap; T6-X/X2 adds +1/+2 via tier logic below
     'Space Reputation':        5,  # always 5 in STO
     'Ground Reputation':       5,
     'Active Space Rep':        5,
@@ -728,10 +728,18 @@ class WarpImporter:
             for slot, max_val in _GAME_SLOT_MAXES.items():
                 if max_val > profile.get(slot, 0):
                     profile[slot] = max_val
-            # T6-X2: +1 Device slot
-            if 'X2' in ship_tier and profile.get('Devices', 0) > 0:
-                profile['Devices'] = profile['Devices'] + 1
-                _slog.info(f'WarpImporter: T6-X2 — Devices +1 → {profile["Devices"]}')
+            # T6-X / T6-X2 tier upgrades (cumulative per level):
+            #   T6-X  (level 1): +1 Universal Console, +1 Starship Trait, +1 Device
+            #   T6-X2 (level 2): additional +1 each → total +2 vs base T6
+            if '-X' in ship_tier:
+                _x_bonus = 2 if 'X2' in ship_tier else 1
+                if profile.get('Devices', 0) > 0:
+                    profile['Devices'] += _x_bonus
+                    _slog.info(f'WarpImporter: {ship_tier} — Devices +{_x_bonus} → {profile["Devices"]}')
+                profile['Universal Consoles'] = profile.get('Universal Consoles', 0) + _x_bonus
+                _slog.info(f'WarpImporter: {ship_tier} — Universal Consoles +{_x_bonus} → {profile["Universal Consoles"]}')
+                profile['Starship Traits'] = profile.get('Starship Traits', 5) + _x_bonus
+                _slog.info(f'WarpImporter: {ship_tier} — Starship Traits +{_x_bonus} → {profile["Starship Traits"]}')
             _slog.debug(f'WarpImporter: game-rule profile (traits/rep/boff): '
                         f'{dict((k,v) for k,v in profile.items() if "Boff" in k or "Trait" in k or "Rep" in k)}')
 
