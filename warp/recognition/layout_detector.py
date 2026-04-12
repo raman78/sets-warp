@@ -291,7 +291,10 @@ class LayoutDetector:
                                 full[slot] = boxes
                     return full
             if learned_boffs:
-                return learned_boffs
+                # Re-classify seat types by icon border color — position from
+                # learned layout is accurate, but labels can be wrong when the user
+                # annotated with the wrong seat type (e.g. Command instead of Science).
+                return self._reclassify_boff_labels(img, learned_boffs)
             return self._detect_boffs(img)
         if build_type == 'SPEC':
             return {}
@@ -1072,6 +1075,33 @@ class LayoutDetector:
                 result[slot_name] = bboxes
         _slog.info(f'LayoutDetector: Strategy 1 (learned BOFFS) score={best_score:.2f}, {len(result)} sections, {sum(len(v) for v in result.values())} bboxes')
         return result if result else None
+
+    def _reclassify_boff_labels(self, img, layout: dict) -> dict:
+        """Correct BOFFS seat-type labels using per-icon color classification.
+
+        The learned layout provides accurate icon positions but slot labels can be
+        wrong when the user annotated with the wrong seat type.  Color-classifying
+        the icon border ring (which carries the profession glow) gives the actual
+        seat type directly from screen content.
+        """
+        result: dict[str, list] = {}
+        for bboxes in layout.values():
+            for bbox in bboxes:
+                bx, by, bw, bh = bbox[:4]
+                crop = img[by: by + bh, bx: bx + bw]
+                if crop.size == 0:
+                    continue
+                prof = self._classify_boff_profession(crop)
+                if prof:
+                    slot = self._PROF_MAP.get(prof)
+                    if slot:
+                        result.setdefault(slot, []).append((bx, by, bw, bh))
+        if not result:
+            return layout  # fallback: all classifications returned None
+        _slog.debug(
+            f'LayoutDetector: BOFFS reclassify {list(layout.keys())} → {list(result.keys())}'
+        )
+        return result
 
     def _detect_boffs(self, img):
         h, w = img.shape[:2]
