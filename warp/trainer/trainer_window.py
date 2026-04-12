@@ -1319,6 +1319,21 @@ class WarpCoreWindow(QMainWindow):
         label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
         self._screen_type_badge.setText(f'Screen: {icon} {label}')
         self._refresh_slot_combo(stype)
+        is_spec = (stype == 'SPECIALIZATIONS')
+        self._slot_combo.setEnabled(not is_spec)
+        self._name_edit.setEnabled(not is_spec)
+        self._btn_accept.setEnabled(not is_spec)
+        if is_spec:
+            self._slot_combo.blockSignals(True)
+            self._slot_combo.setCurrentIndex(-1)
+            self._slot_combo.blockSignals(False)
+            self._name_edit.blockSignals(True)
+            self._name_edit.clear()
+            self._name_edit.blockSignals(False)
+            self._name_edit.setPlaceholderText(
+                'No bboxes can be added to specializations screens')
+        else:
+            self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
 
     def _refresh_slot_combo(self, stype: str, keep_slot: str = ''):
         """Rebuild slot combo for screen type, hiding confirmed NON_ICON_SLOTS.
