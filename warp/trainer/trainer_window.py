@@ -76,9 +76,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
-    'SPECIALIZATIONS': [
-        'Primary Specialization', 'Secondary Specialization',
-    ],
+    'SPECIALIZATIONS': [],
     # SPACE_MIXED: merged space screenshot — equipment + traits + boffs + specs, no ground gear
     'SPACE_MIXED': [
         'Fore Weapons', 'Deflector', 'Sec-Def', 'Engines', 'Warp Core', 'Shield',
