@@ -278,21 +278,19 @@ class LayoutDetector:
         if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
             return self._detect_traits(img, build_type)
         if build_type in ('BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS'):
-            learned_boffs = self._detect_via_learned_layouts_boffs(img)
             if icon_matcher is not None and app_cache is not None:
-                # Full scan runs regardless of learned layout — it uses OCR + sliding-window ML
-                # to find actual icon positions, overriding potentially stale learned templates.
-                # Learned layout supplements only for slots full scan did not find.
                 full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
                 if full and len(full) >= 2:
-                    if learned_boffs:
-                        for slot, boxes in learned_boffs.items():
-                            if slot not in full:
-                                full[slot] = boxes
                     return full
-            if learned_boffs:
-                return learned_boffs
-            return self._detect_boffs(img)
+            # OCR/color classification reads actual profession labels from the screen
+            # (ground truth) — preferred over learned layout whose labels come from
+            # potentially-wrong user annotations.
+            ocr_result = self._detect_boffs(img)
+            if ocr_result and len(ocr_result) >= 2:
+                return ocr_result
+            # Learned layout as last resort when OCR finds nothing
+            learned_boffs = self._detect_via_learned_layouts_boffs(img)
+            return learned_boffs or ocr_result or {}
         if build_type == 'SPEC':
             return {}
 
@@ -1075,7 +1073,7 @@ class LayoutDetector:
 
     def _detect_boffs(self, img):
         h, w = img.shape[:2]
-        x_start = int(w * 0.55)
+        x_start = 0  # scan full image — BOFFS seats can appear anywhere on screen
         icon_est = max(36, int(h * 0.055))
 
         # ── Strategy A: OCR finds profession header labels ────────────────────
