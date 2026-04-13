@@ -169,7 +169,7 @@ _FULL_SCAN_SLOT_NAMES = (
     + list(GROUND_SLOT_ORDER)
     + ['Personal Space Traits', 'Starship Traits', 'Space Reputation', 'Active Space Rep',
        'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep']
-    + ['Boff Tactical', 'Boff Engineering', 'Boff Science']
+    + sorted(_BOFF_SLOT_NAMES)
 )
 
 
@@ -222,10 +222,12 @@ def _get_item_type(item_name: str, eq_cache: dict, trait_cache: dict,
             if item_name in (trait_cache or {}).get(env, {}).get(cat, {}):
                 return marker
     for env in ('space', 'ground'):
-        for prof_data in (boff_cache or {}).get(env, {}).values():
-            for rank_list in prof_data.values():
-                if isinstance(rank_list, list) and item_name in rank_list:
-                    return f'__boff_{env}'
+        for prof_name, rank_lists in (boff_cache or {}).get(env, {}).items():
+            if not isinstance(rank_lists, list):
+                continue
+            for rank_dict in rank_lists:
+                if isinstance(rank_dict, dict) and item_name in rank_dict:
+                    return f'__boff_{prof_name.lower()}'
     return ''
 
 
@@ -240,7 +242,11 @@ def _score_row_for_slot(row_types: list[str], slot_name: str,
         needed = _TRAIT_SLOT_MARKER[slot_name]
         type_score = sum(1 for t in row_types if t == needed) / len(row_types)
     elif slot_name in _BOFF_SLOT_NAMES:
-        type_score = sum(1 for t in row_types if t.startswith('__boff')) / len(row_types)
+        # 'Boff Tactical' → 'tactical', 'Boff Miracle Worker' → 'miracle worker'
+        prof_key = slot_name.split(' ', 1)[1].lower()
+        exact = sum(1 for t in row_types if t == f'__boff_{prof_key}')
+        generic = sum(1 for t in row_types if t.startswith('__boff') and t != f'__boff_{prof_key}')
+        type_score = (exact + 0.2 * generic) / len(row_types)
     else:
         valid = _SCAN_SLOT_VALID_TYPES.get(slot_name)
         if not valid:
@@ -278,6 +284,10 @@ class LayoutDetector:
         if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
             return self._detect_traits(img, build_type)
         if build_type in ('BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS'):
+            if icon_matcher is not None and app_cache is not None:
+                full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
+                if full and len(full) >= 2:
+                    return full
             return self._detect_boffs(img)
         if build_type == 'SPEC':
             return {}
@@ -1490,11 +1500,21 @@ class LayoutDetector:
         dets = _nms_boxes(raw_dets)
         _slog.info(f'LayoutDetector FullScan: {len(raw_dets)} raw → {len(dets)} after NMS')
 
-        # Enrich detections with item type (computed once, reused across scoring)
-        enriched = [
-            det + (_get_item_type(det[4], eq_cache, trait_cache, starship_traits, boff_cache),)
-            for det in dets
-        ]  # each entry: (x, y, w, h, name, conf, item_type)
+        # Enrich detections with item type (computed once, reused across scoring).
+        # For unrecognised patches in BOFF screens, try color classification as fallback.
+        _is_boff_screen = build_type in ('BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS')
+        enriched = []
+        for det in dets:
+            itype = _get_item_type(det[4], eq_cache, trait_cache, starship_traits, boff_cache)
+            if not itype and _is_boff_screen:
+                x, y, bw, bh = det[:4]
+                crop = img[y:y+bh, x:x+bw]
+                if crop.size > 0:
+                    prof = self._classify_boff_profession(crop)
+                    if prof:
+                        itype = f'__boff_{prof}'
+            enriched.append(det + (itype,))
+        # each entry: (x, y, w, h, name, conf, item_type)
 
         # Phase 3: Cluster into rows
         rows = _cluster_rows_by_y(enriched, icon_est)
@@ -1505,17 +1525,18 @@ class LayoutDetector:
         used_slots: set[str] = set()
 
         # Only consider slot names relevant to this build type
-        if 'SPACE' in build_type:
+        boff_slots = sorted(_BOFF_SLOT_NAMES)
+        if 'SPACE' in build_type or build_type in ('BOFFS',):
             candidates = (
                 list(SPACE_SLOT_ORDER_STANDARD) + ['Hangars', 'Experimental', 'Sec-Def']
                 + ['Personal Space Traits', 'Starship Traits', 'Space Reputation', 'Active Space Rep']
-                + ['Boff Tactical', 'Boff Engineering', 'Boff Science']
+                + boff_slots
             )
         else:
             candidates = (
                 list(GROUND_SLOT_ORDER)
                 + ['Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep']
-                + ['Boff Tactical', 'Boff Engineering', 'Boff Science']
+                + boff_slots
             )
 
         for row in sorted(rows, key=lambda r: min(it[1] for it in r)):

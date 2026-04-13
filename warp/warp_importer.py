@@ -841,6 +841,9 @@ class WarpImporter:
         _stat_core_n    = 0   # items recognized via WARP CORE session examples
         _stat_auto_conf = 0.0
         _stat_core_conf = 0.0
+        _stat_skip_conf = 0   # skipped due to low confidence
+        _stat_skip_type = 0   # skipped due to wrong type for slot
+        _stat_per_slot: dict[str, dict] = {}  # per-slot hit/skip counters
 
         for slot_def in slot_defs_to_process:
             slot_name = slot_def['name']
@@ -919,16 +922,21 @@ class WarpImporter:
                 # Reject low-confidence results — below threshold is a guess
                 if conf < MIN_ACCEPT_CONF:
                     _slog.info(f'  [{slot_name}][{idx}] SKIP — conf {conf:.2f} < {MIN_ACCEPT_CONF}')
+                    _stat_skip_conf += 1
+                    _stat_per_slot.setdefault(slot_name, {'ok': 0, 'skip': 0})['skip'] += 1
                     continue
                 # Validate item type matches slot category
                 if not self._item_valid_for_slot(name, slot_name):
                     _slog.info(f'  [{slot_name}][{idx}] SKIP — {name!r} wrong type for slot')
+                    _stat_skip_type += 1
+                    _stat_per_slot.setdefault(slot_name, {'ok': 0, 'skip': 0})['skip'] += 1
                     continue
                 # Experimental slot: only Experimental Weapon items allowed
                 if slot_def['exp'] and not self._is_experimental(name):
                     _slog.info(f'  [{slot_name}][{idx}] SKIP — not experimental weapon: {name!r}')
                     continue
                 # Track recognition stats
+                _stat_per_slot.setdefault(slot_name, {'ok': 0, 'skip': 0})['ok'] += 1
                 if used_session:
                     _stat_core_n    += 1
                     _stat_core_conf += conf
@@ -956,6 +964,11 @@ class WarpImporter:
             auto_conf   = _stat_auto_conf,
             core_n      = _stat_core_n,
             core_conf   = _stat_core_conf,
+            skip_conf   = _stat_skip_conf,
+            skip_type   = _stat_skip_type,
+            slots_found = len(layout),
+            bboxes_found= sum(len(v) for v in layout.values()),
+            per_slot    = _stat_per_slot,
         )
         _slog.info(f'####### WARP: {Path(source).name} done #######')
         return result
@@ -967,38 +980,70 @@ class WarpImporter:
         auto_conf: float,
         core_n: int,
         core_conf: float,
+        skip_conf: int = 0,
+        skip_type: int = 0,
+        slots_found: int = 0,
+        bboxes_found: int = 0,
+        per_slot: dict | None = None,
     ) -> None:
-        """Log per-session recognition stats and compare to rolling average."""
+        """Log per-session recognition stats with per-slot breakdown and trend analysis."""
         import datetime, json as _json
 
         total = auto_n + core_n
-        if total == 0:
-            return
+        attempted = total + skip_conf + skip_type
 
-        auto_pct      = 100.0 * auto_n / total
+        auto_pct      = 100.0 * auto_n / total if total else 0.0
         avg_auto_conf = auto_conf / auto_n if auto_n else 0.0
         avg_core_conf = core_conf / core_n if core_n else 0.0
+        hit_rate      = 100.0 * total / attempted if attempted else 0.0
 
-        # Load history
+        # ── Summary table ─────────────────────────────────────────────────
+        _slog.info(f'┌── Recognition Report [{build_type}] ──────────────────────')
+        _slog.info(f'│ Layout:    {slots_found} slot groups, {bboxes_found} bboxes')
+        _slog.info(f'│ Matched:   {total}/{attempted}  hit rate {hit_rate:.0f}%')
+        if total:
+            _slog.info(f'│   Autodetect: {auto_n} ({auto_pct:.0f}%)  avg conf {avg_auto_conf:.2f}')
+        if core_n:
+            _slog.info(f'│   WARP CORE:  {core_n} ({100-auto_pct:.0f}%)  avg conf {avg_core_conf:.2f}')
+        if skip_conf:
+            _slog.info(f'│ Skipped (low conf): {skip_conf}')
+        if skip_type:
+            _slog.info(f'│ Skipped (wrong type): {skip_type}')
+
+        # Per-slot breakdown
+        if per_slot:
+            _slog.info(f'│ Per-slot:')
+            for slot_name in sorted(per_slot.keys()):
+                s = per_slot[slot_name]
+                ok, skip = s['ok'], s['skip']
+                bar = '█' * ok + '░' * skip
+                _slog.info(f'│   {slot_name:30s}  {ok:2d}/{ok+skip:2d}  {bar}')
+
+        # ── Persist + trend ───────────────────────────────────────────────
         stats_path = Path(__file__).resolve().parent.parent / '.config' / 'recognition_stats.json'
         try:
             history: list[dict] = _json.loads(stats_path.read_text(encoding='utf-8'))
         except Exception:
             history = []
 
-        # Append current session (keep last 50)
         entry = {
             'ts':           datetime.datetime.now().isoformat(timespec='seconds'),
             'build_type':   build_type,
             'total':        total,
+            'attempted':    attempted,
             'auto_n':       auto_n,
             'core_n':       core_n,
+            'skip_conf':    skip_conf,
+            'skip_type':    skip_type,
+            'hit_rate':     round(hit_rate, 1),
             'auto_pct':     round(auto_pct, 1),
             'avg_auto_conf': round(avg_auto_conf, 3),
             'avg_core_conf': round(avg_core_conf, 3),
+            'slots_found':  slots_found,
+            'bboxes_found': bboxes_found,
         }
         history.append(entry)
-        history = history[-50:]
+        history = history[-100:]
 
         try:
             stats_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1006,28 +1051,22 @@ class WarpImporter:
         except Exception as e:
             _slog.debug(f'WarpImporter: could not save recognition stats: {e}')
 
-        # Rolling average over previous sessions (same build_type, excluding current)
+        # Rolling average over previous sessions (same build_type)
         prev = [h for h in history[:-1] if h.get('build_type') == build_type]
         if prev:
-            avg_auto_pct_hist  = sum(h['auto_pct']      for h in prev) / len(prev)
-            avg_auto_conf_hist = sum(h['avg_auto_conf']  for h in prev) / len(prev)
-            delta_pct  = auto_pct - avg_auto_pct_hist
-            delta_conf = avg_auto_conf - avg_auto_conf_hist
-            trend_pct  = '↑' if delta_pct  > 1.0 else ('↓' if delta_pct  < -1.0 else '→')
+            avg_hit_hist = sum(h.get('hit_rate', 0) for h in prev) / len(prev)
+            avg_conf_hist = sum(h.get('avg_auto_conf', 0) for h in prev) / len(prev)
+            delta_hit  = hit_rate - avg_hit_hist
+            delta_conf = avg_auto_conf - avg_conf_hist
+            trend_hit  = '↑' if delta_hit  > 2.0 else ('↓' if delta_hit  < -2.0 else '→')
             trend_conf = '↑' if delta_conf > 0.02 else ('↓' if delta_conf < -0.02 else '→')
-            hist_str = (f'  vs {len(prev)}-session avg: '
-                        f'Autodetect {avg_auto_pct_hist:.1f}% {trend_pct}  '
-                        f'conf {avg_auto_conf_hist:.2f} {trend_conf}')
+            _slog.info(
+                f'│ Trend (vs {len(prev)} prev):  '
+                f'hit {avg_hit_hist:.0f}%{trend_hit}  conf {avg_conf_hist:.2f}{trend_conf}'
+            )
         else:
-            hist_str = '  (no history yet for comparison)'
-
-        _slog.info(
-            f'WarpImporter stats [{build_type}]: '
-            f'total={total}  '
-            f'Autodetect={auto_n} ({auto_pct:.1f}%) avg_conf={avg_auto_conf:.2f}  |  '
-            f'WARP CORE={core_n} ({100-auto_pct:.1f}%) avg_conf={avg_core_conf:.2f}'
-        )
-        _slog.info(hist_str)
+            _slog.info(f'│ Trend: first session for {build_type}')
+        _slog.info(f'└─────────────────────────────────────────────────────')
 
 
     def _load_confirmed_layout(self, source: str) -> dict[str, list] | None:
