@@ -278,23 +278,6 @@ class LayoutDetector:
         if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
             return self._detect_traits(img, build_type)
         if build_type in ('BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS'):
-            # Learned layout first — provides the most accurate positions (from user-confirmed
-            # annotations).  Bad seat-type labels in old entries have been cleaned from
-            # anchors.json; remaining entries have correct slot names.
-            learned_boffs = self._detect_via_learned_layouts_boffs(img)
-            if icon_matcher is not None and app_cache is not None:
-                full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
-                if full and len(full) >= 2:
-                    if learned_boffs:
-                        for slot, boxes in learned_boffs.items():
-                            if slot not in full:
-                                full[slot] = boxes
-                    return full
-            if learned_boffs:
-                # Re-classify seat types by icon border color — position from
-                # learned layout is accurate, but labels can be wrong when the user
-                # annotated with the wrong seat type (e.g. Command instead of Science).
-                return self._reclassify_boff_labels(img, learned_boffs)
             return self._detect_boffs(img)
         if build_type == 'SPEC':
             return {}
@@ -1017,77 +1000,27 @@ class LayoutDetector:
         'medical':       'Boff Science',
     }
 
-    def _detect_via_learned_layouts_boffs(self, img) -> dict | None:
-        """Strategy 1 for BOFFS: score learned entries, build bboxes from runs."""
-        if not self._calibration or 'learned' not in self._calibration:
-            return None
-        import cv2
-        h, w = img.shape[:2]
-        aspect = round(w / h, 3)
-        candidates = [e for e in self._calibration['learned']
-                      if e.get('type') == 'BOFFS' and abs(e.get('aspect', 0) - aspect) < 0.05]
-        if not candidates:
-            return None
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        best_score, best_entry = -1.0, None
-        for entry in candidates:
-            score, checked = 0, 0
-            for geo in entry['slots'].values():
-                if isinstance(geo, (int, float)):
-                    continue
-                bw = max(1, int(geo['w_rel'] * w))
-                bh = max(1, int(geo['h_rel'] * h))
-                cy = int(geo['y_rel'] * h)
-                y1, y2 = max(0, cy - bh // 4), min(h, cy + bh // 4)
-                runs = geo.get('runs') or [{'x0_rel': geo['x0_rel'], 'step_rel': geo['step_rel'], 'count': geo.get('count', 1)}]
-                for run in runs:
-                    x0   = int(run['x0_rel'] * w)
-                    step = max(bw, int(run['step_rel'] * w))
-                    for j in range(min(run['count'], 8)):
-                        ix = x0 + j * step
-                        patch = gray[y1:y2, ix:min(w, ix + bw)]
-                        if patch.size == 0 or ix >= w:
-                            continue
-                        checked += 1
-                        if float(patch.mean()) > 40:
-                            score += 1
-            norm = score / max(checked, 1)
-            if norm > best_score or (norm == best_score and entry.get('timestamp', 0) > (best_entry or {}).get('timestamp', 0)):
-                best_score, best_entry = norm, entry
-        if best_entry is None or best_score < 0.3:
-            return None
-        result = {}
-        for slot_name, geo in best_entry['slots'].items():
-            if isinstance(geo, (int, float)):
-                continue
-            cy = int(geo['y_rel'] * h)
-            bw = max(1, int(geo['w_rel'] * w))
-            bh = max(1, int(geo['h_rel'] * h))
-            iy = max(0, cy - bh // 2)
-            bboxes = []
-            runs = geo.get('runs') or [{'x0_rel': geo['x0_rel'], 'step_rel': geo['step_rel'], 'count': geo.get('count', 1)}]
-            for run in runs:
-                x0   = int(run['x0_rel'] * w)
-                step = max(bw, int(run['step_rel'] * w))
-                for j in range(run['count']):
-                    bboxes.append((max(0, x0 + j * step), iy, bw, bh))
-            if bboxes:
-                result[slot_name] = bboxes
-        _slog.info(f'LayoutDetector: Strategy 1 (learned BOFFS) score={best_score:.2f}, {len(result)} sections, {sum(len(v) for v in result.values())} bboxes')
-        return result if result else None
+    def _detect_boffs(self, img):
+        """Detect BOFF skill icons by scanning the full image in narrow horizontal bands.
 
-    def _reclassify_boff_labels(self, img, layout: dict) -> dict:
-        """Correct BOFFS seat-type labels using per-icon color classification.
-
-        The learned layout provides accurate icon positions but slot labels can be
-        wrong when the user annotated with the wrong seat type.  Color-classifying
-        the icon border ring (which carries the profession glow) gives the actual
-        seat type directly from screen content.
+        Scans every icon_est//2 pixels vertically, finds bright column runs in each band,
+        classifies each candidate by profession glow color, deduplicates across overlapping
+        bands.  No dependence on anchors.json or learned layouts.
         """
+        h, w = img.shape[:2]
+        icon_est = max(36, int(h * 0.055))
+
         result: dict[str, list] = {}
-        for bboxes in layout.values():
-            for bbox in bboxes:
-                bx, by, bw, bh = bbox[:4]
+        seen: list[tuple] = []  # (bx, by) of already-added icons for dedup
+
+        stride = max(1, icon_est // 2)
+        for band_y in range(0, max(1, h - icon_est + 1), stride):
+            band = img[band_y: band_y + icon_est, :]
+            for bx, by, bw, bh in self._find_icon_bboxes_in_strip(band, band_y, icon_est):
+                # Skip if a very similar position was already accepted in an adjacent band
+                if any(abs(bx - sx) < icon_est // 2 and abs(by - sy) <= icon_est
+                       for sx, sy in seen):
+                    continue
                 crop = img[by: by + bh, bx: bx + bw]
                 if crop.size == 0:
                     continue
@@ -1096,85 +1029,16 @@ class LayoutDetector:
                     slot = self._PROF_MAP.get(prof)
                     if slot:
                         result.setdefault(slot, []).append((bx, by, bw, bh))
-        if not result:
-            return layout  # fallback: all classifications returned None
-        _slog.debug(
-            f'LayoutDetector: BOFFS reclassify {list(layout.keys())} → {list(result.keys())}'
-        )
-        return result
+                        seen.append((bx, by))
 
-    def _detect_boffs(self, img):
-        h, w = img.shape[:2]
-        x_start = int(w * 0.55)
-        icon_est = max(36, int(h * 0.055))
-
-        # ── Strategy A: OCR finds profession header labels ────────────────────
-        headers = []
-        try:
-            ocr_out = self._get_ocr().readtext(img[:, x_start:])
-            for (bbox, text, conf) in ocr_out:
-                if conf < 0.3:
-                    continue
-                text_low = text.lower().strip()
-                kw = next((k for k in self._PROF_MAP if k in text_low), None)
-                if kw:
-                    headers.append((self._PROF_MAP[kw], int((bbox[0][1] + bbox[2][1]) / 2)))
-        except Exception:
-            pass
-
-        if headers:
-            headers.sort(key=lambda x: x[1])
-            seen, merged = set(), []
-            for n, y in headers:
-                if n not in seen:
-                    seen.add(n)
-                    merged.append((n, y))
-            result = {}
-            for i, (section, hy) in enumerate(merged):
-                row_y     = hy + int(icon_est * 0.3)
-                row_y_end = min(h, (merged[i + 1][1] - 5) if i + 1 < len(merged) else h)
-                strip = img[max(0, row_y): row_y_end, x_start:]
-                if strip.size == 0:
-                    continue
-                bboxes = self._find_icon_bboxes_in_strip(strip, row_y, icon_est)
-                if bboxes:
-                    abs_bboxes = [(bx + x_start, by, bw, bh) for (bx, by, bw, bh) in bboxes]
-                    filled = self._fill_boff_gaps(abs_bboxes, img, icon_est, x_min=x_start)
-                    result.setdefault(section, []).extend(filled)
-            if result:
-                _slog.debug(f'LayoutDetector: _detect_boffs via OCR — {len(result)} sections')
-                return result
-            _slog.debug('LayoutDetector: _detect_boffs OCR found headers but no icons — trying color fallback')
-
-        # ── Strategy B: color-based profession detection (no OCR needed) ─────
-        _slog.debug('LayoutDetector: _detect_boffs — no OCR headers, using icon color classification')
-        panel = img[:, x_start:]
-        all_bboxes = self._find_icon_bboxes_in_strip(panel, 0, icon_est)
-        if not all_bboxes:
-            return {}
-
-        result = {}
-        for bx, by, bw, bh in all_bboxes:
-            crop = panel[by: by + bh, bx: bx + bw]
-            if crop.size == 0:
-                continue
-            prof = self._classify_boff_profession(crop)
-            if prof:
-                slot = self._PROF_MAP.get(prof)
-                if slot:
-                    result.setdefault(slot, []).append(
-                        (bx + x_start, by, bw, bh)
-                    )
-
-        # Fill gaps with empty/inactive positions per section
         for slot_key in list(result.keys()):
             result[slot_key] = self._fill_boff_gaps(
-                result[slot_key], img, icon_est, x_min=x_start
+                result[slot_key], img, icon_est, x_min=0
             )
 
         _slog.debug(
-            f'LayoutDetector: _detect_boffs color — {len(result)} sections, '
-            f'{sum(len(v) for v in result.values())} bboxes (active+virtual)'
+            f'LayoutDetector: _detect_boffs band-scan — {len(result)} sections, '
+            f'{sum(len(v) for v in result.values())} bboxes'
         )
         return result
 
