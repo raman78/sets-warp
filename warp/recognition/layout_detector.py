@@ -306,6 +306,14 @@ class LayoutDetector:
                 return learned
             full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
             if full and len(full) >= 3:
+                # Full scan handles equipment/traits via ML but can't classify BOFF icons.
+                # Try structural BOFF detection and merge results.
+                has_boff = any(k.startswith('Boff ') for k in full)
+                if not has_boff:
+                    boff_result = self._detect_boffs_in_mixed(img)
+                    if boff_result:
+                        full.update(boff_result)
+                        _slog.info(f'LayoutDetector: MIXED merged → {len(full)} slot groups total')
                 return full
             # Fall through to standard strategies if full scan returns too few slots
 
@@ -1010,11 +1018,20 @@ class LayoutDetector:
         'medical':       'Boff Science',
     }
 
-    def _detect_boffs(self, img):
+    def _detect_boffs(self, img, icon_dims=None, offset=(0, 0), max_bands=3):
         """Detect BOFF ability icons using structural knowledge of BOFFS screen.
 
         BOFFS layout: 2 columns (left: max 3 seats, right: max 2 seats).
         Each seat has up to 4 ability icons in a horizontal row.
+
+        Args:
+            img: BGR image (full BOFFS screen or sub-region of MIXED).
+            icon_dims: optional (icon_w, icon_h, spacing) override — used when
+                       detecting BOFFs in a MIXED sub-region where proportional
+                       sizing relative to the sub-region width would be wrong.
+            offset: (x_off, y_off) added to all output coordinates — used when
+                    detecting in a sub-region to translate back to full-image space.
+            max_bands: max row bands to keep (3 for standalone BOFFS, more for MIXED).
 
         Approach:
         1. Find icon row bands via vertical brightness/variance profile
@@ -1025,10 +1042,14 @@ class LayoutDetector:
         import cv2
         from collections import Counter
         h, w = img.shape[:2]
+        x_off, y_off = offset
 
-        icon_w = max(20, round(w * 0.078))
-        icon_h = max(28, round(h * 0.110))
-        spacing = max(24, round(w * 0.093))
+        if icon_dims:
+            icon_w, icon_h, spacing = icon_dims
+        else:
+            icon_w = max(20, round(w * 0.078))
+            icon_h = max(28, round(h * 0.110))
+            spacing = max(24, round(w * 0.093))
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -1169,14 +1190,15 @@ class LayoutDetector:
                     std = float(crop_g.std()) if crop_g.size > 0 else 0
                     state = 'active' if std > 30 else (
                         'inactive' if std > 8 else 'empty')
-                    bboxes.append((ix, icon_y, icon_w, icon_h, state))
+                    bboxes.append((ix + x_off, icon_y + y_off, icon_w, icon_h, state))
 
                 # Classify profession by majority vote — only on active crops.
                 profs: list[str] = []
                 for ix, iy, iw, ih, state in bboxes:
                     if state != 'active':
                         continue
-                    crop = img[iy:iy + ih, ix:ix + iw]
+                    # Use local coords for crop (subtract offset)
+                    crop = img[iy - y_off:iy - y_off + ih, ix - x_off:ix - x_off + iw]
                     if crop.size > 0:
                         prof = self._classify_boff_profession(crop)
                         if prof:
@@ -1197,6 +1219,50 @@ class LayoutDetector:
             f'{sum(len(v) for v in result.values())} bboxes'
         )
         return result
+
+    def _detect_boffs_in_mixed(self, img) -> dict[str, list]:
+        """Detect BOFF ability icons within a MIXED screen.
+
+        BOFF icons in MIXED screens are much smaller relative to the full image
+        than in standalone BOFFS screens, so proportional sizing fails.
+        Strategy: estimate absolute icon dimensions from full image width,
+        crop to the lower portion (BOFF section is always below y=30%),
+        then try left 40% and right 50% sub-regions. Keep whichever has more.
+        """
+        h, w = img.shape[:2]
+
+        # BOFF icon dimensions scale with overall UI, not sub-region size.
+        # Empirical: icon_w ≈ w * 0.021, icon_h ≈ h * 0.047, spacing ≈ w * 0.023
+        icon_w = max(20, round(w * 0.021))
+        icon_h = max(28, round(h * 0.047))
+        spacing = max(24, round(w * 0.023))
+        dims = (icon_w, icon_h, spacing)
+
+        # BOFF section in MIXED is always in the lower 70% (skip ship image/header)
+        y_start = int(h * 0.30)
+
+        # Try left sub-region (x: 0..40%) and right sub-region (x: 50%..100%)
+        left_x = int(w * 0.40)
+        right_x = int(w * 0.50)
+
+        left_img = img[y_start:, :left_x]
+        right_img = img[y_start:, right_x:]
+
+        left_result = self._detect_boffs(left_img, icon_dims=dims, offset=(0, y_start))
+        right_result = self._detect_boffs(right_img, icon_dims=dims, offset=(right_x, y_start))
+
+        left_count = sum(len(v) for v in left_result.values())
+        right_count = sum(len(v) for v in right_result.values())
+
+        if left_count >= right_count and left_count >= 4:
+            _slog.info(f'LayoutDetector: BOFF-in-MIXED (left) → {len(left_result)} seats, {left_count} bboxes')
+            return left_result
+        elif right_count >= 4:
+            _slog.info(f'LayoutDetector: BOFF-in-MIXED (right) → {len(right_result)} seats, {right_count} bboxes')
+            return right_result
+
+        _slog.debug(f'LayoutDetector: BOFF-in-MIXED — no BOFF seats found (left={left_count}, right={right_count})')
+        return {}
 
     def _fill_boff_gaps(self, bboxes_abs: list, img, icon_est: int,
                         x_min: int = 0, max_slots: int = 4) -> list:
