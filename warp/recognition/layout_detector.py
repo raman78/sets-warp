@@ -1048,7 +1048,7 @@ class LayoutDetector:
             icon_w, icon_h, spacing = icon_dims
         else:
             icon_w = max(20, round(w * 0.078))
-            icon_h = max(28, round(h * 0.110))
+            icon_h = max(28, round(icon_w * 1.33))
             spacing = max(24, round(w * 0.093))
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -1061,12 +1061,12 @@ class LayoutDetector:
         band_start = 0
         skip_y = round(h * 0.12)  # skip header area
 
-        for y in range(skip_y, h - win):
+        for y in range(0, h - win):
             strip = gray[y:y + win, :]
             mn = float(strip.mean())
             sd = float(strip.std())
             # Icon rows: moderate brightness + high variance (NOT name plates)
-            is_icon = 30 < mn < 85 and sd > 30
+            is_icon = 30 < mn < 100 and sd > 30
             if is_icon:
                 if not in_band:
                     band_start = y
@@ -1094,16 +1094,6 @@ class LayoutDetector:
         # BOFFS has max 3 row positions — drop extra bands (name plate noise)
         row_bands = row_bands[:3]
 
-        # Expand narrow bands to at least icon_h (band edges may miss icon top/bottom)
-        expanded: list[tuple[int, int]] = []
-        for y1, y2 in row_bands:
-            if y2 - y1 < icon_h:
-                center = (y1 + y2) // 2
-                y1 = max(0, center - icon_h // 2)
-                y2 = min(h, y1 + icon_h)
-            expanded.append((y1, y2))
-        row_bands = expanded
-
         _slog.debug(
             f'LayoutDetector: _detect_boffs — {len(row_bands)} row bands: '
             + ', '.join(f'y={y1}-{y2}' for y1, y2 in row_bands)
@@ -1117,9 +1107,12 @@ class LayoutDetector:
         result: dict[str, list] = {}
 
         for band_y1, band_y2 in row_bands:
+            # 3a. Find horizontal alignment (best_x) per cell
+            col_best_x = []
             for col_x1, col_x2 in columns:
                 cell_w = col_x2 - col_x1
                 if cell_w < spacing * 2:
+                    col_best_x.append(None)
                     continue
 
                 # Use vertical center of band for the horizontal profile
@@ -1127,6 +1120,7 @@ class LayoutDetector:
                 mid_y2 = min(mid_y1 + icon_h, band_y2)
                 cell = gray[mid_y1:mid_y2, col_x1:col_x2]
                 if cell.size == 0:
+                    col_best_x.append(None)
                     continue
 
                 # Score using horizontal std profile (icon artwork has high variance;
@@ -1134,10 +1128,6 @@ class LayoutDetector:
                 h_std = cell.std(axis=0).astype(float)
                 h_mean = cell.mean(axis=0).astype(float)
 
-                # Slide 4-icon template: score = sum of (mean * std) at 4 positions.
-                # Profession indicators at each row's left edge create a false peak.
-                # Strategy: find all scores, then pick the rightmost strong peak
-                # (correct icons are always to the right of the indicators).
                 search_end = max(1, cell_w - 3 * spacing - icon_w + 1)
                 all_scores: list[tuple[float, int]] = []
                 for x_start in range(search_end):
@@ -1152,13 +1142,13 @@ class LayoutDetector:
                     all_scores.append((score, x_start))
 
                 if not all_scores:
+                    col_best_x.append(None)
                     continue
 
                 all_scores.sort(reverse=True)
                 best_score, best_x = all_scores[0]
 
-                # If the global peak is in the indicator zone (very left of cell),
-                # look for a rightward peak — real icons are always to the right.
+                # If the global peak is in the indicator zone, look for a rightward peak
                 if best_x < icon_w // 2:
                     for sc, xs in all_scores:
                         if xs > best_x + icon_w and sc > best_score * 0.60:
@@ -1167,29 +1157,30 @@ class LayoutDetector:
                             break
 
                 if best_score < 500:
+                    col_best_x.append(None)
+                else:
+                    col_best_x.append(best_x)
+
+            if not any(bx is not None for bx in col_best_x):
+                continue
+
+            # 3b. Find UNIFIED vertical alignment (icon_y) for the entire row
+            # For BOFFs, band_y1 is the highly precise top edge of the icon row.
+            # Using try_y search on the whole strip gets pulled downwards by bright text labels.
+            icon_y = band_y1 + 2
+
+            # 3c. Build bboxes for valid columns and classify professions
+            for c_idx, (col_x1, col_x2) in enumerate(columns):
+                best_x = col_best_x[c_idx]
+                if best_x is None:
                     continue
 
-                # Refine: find exact Y within band for each icon
-                icon_y = mid_y1
-                # Try to find the best y alignment by scanning vertically
-                best_y_score = 0.0
-                for try_y in range(band_y1, max(band_y1 + 1, band_y2 - icon_h + 1)):
-                    strip = gray[try_y:try_y + icon_h,
-                                 col_x1 + best_x:min(col_x1 + best_x + icon_w, col_x2)]
-                    if strip.size > 0:
-                        sc = float(strip.std())
-                        if sc > best_y_score:
-                            best_y_score = sc
-                            icon_y = try_y
-
-                # Build bboxes for 4 icon positions with state classification
                 bboxes = []
                 for k in range(4):
                     ix = col_x1 + best_x + k * spacing
                     crop_g = gray[icon_y:icon_y + icon_h, ix:ix + icon_w]
                     std = float(crop_g.std()) if crop_g.size > 0 else 0
-                    state = 'active' if std > 30 else (
-                        'inactive' if std > 8 else 'empty')
+                    state = 'active' if std > 30 else ('inactive' if std > 8 else 'empty')
                     bboxes.append((ix + x_off, icon_y + y_off, icon_w, icon_h, state))
 
                 # Classify profession by majority vote — only on active crops.
@@ -1197,7 +1188,6 @@ class LayoutDetector:
                 for ix, iy, iw, ih, state in bboxes:
                     if state != 'active':
                         continue
-                    # Use local coords for crop (subtract offset)
                     crop = img[iy - y_off:iy - y_off + ih, ix - x_off:ix - x_off + iw]
                     if crop.size > 0:
                         prof = self._classify_boff_profession(crop)

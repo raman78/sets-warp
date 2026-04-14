@@ -30,7 +30,7 @@ SCREENSHOT_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 TEMPLATE_CONF_THRESHOLD = 0.72
 # Minimum confidence to include a recognition result in output
 # Below this threshold the matcher is essentially guessing
-MIN_ACCEPT_CONF = 0.40
+MIN_ACCEPT_CONF = 0.35
 # ── P5: Anchoring constants ──────────────────────────────────────────────────
 # Slots used as reference points for layout recalibration
 ANCHOR_SLOTS = frozenset({'Deflector', 'Engines', 'Warp Core', 'Shield'})

@@ -1669,6 +1669,8 @@ class WarpCoreWindow(QMainWindow):
                 self._name_edit.blockSignals(True)
                 self._name_edit.setText(ri['name'])
                 self._name_edit.blockSignals(False)
+                if hasattr(self, '_completer'):
+                    self._completer.setCompletionPrefix(ri['name'])
                 if ri.get('bbox'):
                     self._ann_widget.set_highlighted_row(row)
                 else:
