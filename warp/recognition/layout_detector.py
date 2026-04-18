@@ -1308,13 +1308,26 @@ class LayoutDetector:
 
         left_count = sum(len(v) for v in left_result.values())
         right_count = sum(len(v) for v in right_result.values())
+        left_groups = len(left_result)
+        right_groups = len(right_result)
 
-        if left_count >= right_count and left_count >= 4:
-            _slog.info(f'LayoutDetector: BOFF-in-MIXED (left) → {len(left_result)} seats, {left_count} bboxes')
-            return left_result
-        elif right_count >= 4:
-            _slog.info(f'LayoutDetector: BOFF-in-MIXED (right) → {len(right_result)} seats, {right_count} bboxes')
-            return right_result
+        # Tiebreak by (slot_groups, item_count) — more professions = more likely
+        # real BOFF panel. Raw count alone misfires when one side (e.g. traits
+        # panel) is periodic but all classifies as one profession (e.g. 16 items
+        # → "Boff Science" via color default). Real BOFF panels have 3-5
+        # distinct professions across seats.
+        candidates = []
+        if left_count >= 4:
+            candidates.append(('left', left_groups, left_count, left_result))
+        if right_count >= 4:
+            candidates.append(('right', right_groups, right_count, right_result))
+
+        if candidates:
+            candidates.sort(key=lambda c: (c[1], c[2]), reverse=True)
+            side, groups, count, result = candidates[0]
+            _slog.info(f'LayoutDetector: BOFF-in-MIXED ({side}) → {groups} seats, {count} bboxes '
+                       f'(left={left_count}/{left_groups}g, right={right_count}/{right_groups}g)')
+            return result
 
         _slog.debug(f'LayoutDetector: BOFF-in-MIXED — no BOFF seats found (left={left_count}, right={right_count})')
         return {}
