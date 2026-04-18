@@ -31,6 +31,26 @@ Star Trek Online build planning tool with ML-based screenshot recognition.
 
 ---
 
+## CORE ARCHITECTURAL RULE
+
+**WARP = detection. WARP CORE = trains WARP. `annotations.json` = training data ONLY.**
+
+WARP must NEVER use `annotations.json` as direct import output. If WARP falls back to
+reading user-confirmed ground truth instead of performing detection, we:
+- Hide real detection bugs behind seemingly-good recognition results
+- Cannot measure actual recognition quality
+- Defeat the whole purpose of improving the detector
+
+Only **WARP CORE** (the trainer) reads annotations — to display for user review and
+feed back into training data for the EfficientNet / MobileNetV3 models.
+
+**Enforcement:** `_use_confirmed = _is_trainer_call` in `warp_importer.py:~763`.
+The old condition `'MIXED' in build_type or _is_trainer_call` was disabled on
+2026-04-19 by user request. Old line preserved as comment — do NOT re-enable
+without explicit user approval.
+
+---
+
 ## Repository structure
 
 ```

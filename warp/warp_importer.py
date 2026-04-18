@@ -753,14 +753,18 @@ class WarpImporter:
         )
 
         # Step 3 — layout detection.
-        # For MIXED screens confirmed annotations (exact bboxes + user labels) are used
-        # directly because MIXED spans multiple slot orders that cannot be inferred from
-        # SLOT_ORDER alone.  For all other build types (SPACE, GROUND, BOFFS, TRAITS,
-        # SPEC) the layout is always inferred via layout_detector strategies, keeping
-        # annotations strictly as ML training data — never as direct import output.
-        # Exception: trainer (WARP CORE) calls always use confirmed layout — every bbox
-        # was explicitly confirmed by the user and represents the ground truth.
-        _use_confirmed = 'MIXED' in build_type or _is_trainer_call
+        # ARCHITECTURE RULE: annotations.json is TRAINING DATA ONLY. WARP must
+        # perform clean detection via layout_detector, never fall back to user
+        # annotations as output — otherwise we hide detection bugs and can't
+        # measure real recognition quality.
+        # Only WARP CORE (trainer) uses confirmed annotations — there every
+        # bbox was explicitly confirmed by the user and represents ground truth
+        # being fed back into training.
+        # NOTE: The MIXED branch is DISABLED (2026-04-19) by user request to
+        # force clean detection. Old behavior preserved below for reference —
+        # do NOT re-enable without explicit approval.
+        # _use_confirmed = 'MIXED' in build_type or _is_trainer_call
+        _use_confirmed = _is_trainer_call
         confirmed_layout = self._load_confirmed_layout(source) if _use_confirmed else None
         if confirmed_layout:
             _slog.info(f'WarpImporter: confirmed layout ({build_type}) — '
