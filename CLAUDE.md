@@ -358,6 +358,51 @@ Credentials in `.env`: `HF_TOKEN`, `HF_REPO_ID=sets-sto/warp-knowledge`, `ADMIN_
 
 ---
 
+## Changes made in this development session (2026-04-18)
+
+### BOFFS detection — stabilization + ModelUpdater reliability
+
+| File | Change | Commit |
+|------|--------|--------|
+| `warp/trainer/model_updater.py` | `urllib` → `requests` with `(connect=5, read=15)` timeouts; network error → no timestamp save (retry next start); server "no model" → save timestamp (rate-limit). Watchdog warning if check >60s. | `e459957` |
+| `warp/recognition/layout_detector.py` | **Removed rightward-preference** in `_detect_boffs` template slide — was shifting correct peaks by +32px on right column. | `e459957` |
+| `warp/recognition/layout_detector.py` | Per-column band scan + merge (captures Pilot rows with icons only in one column). | `e459957` |
+| `warp/recognition/layout_detector.py` | Band scoring by **peak − gap** (4 icons vs 3 gaps) + leading-gap bonus for deep dark cliff before first icon. | `e459957` |
+| `warp/recognition/layout_detector.py` | Narrower sub-region crop in `_detect_boffs_in_mixed` (`panel_w = w*0.34`) — prevents dilution from adjacent content. | `e459957` |
+| `warp/recognition/layout_detector.py` | **BOFF-in-MIXED tiebreak**: `sort((slot_groups, item_count))` instead of raw count. Traits panel lumped all items into one profession (16-count Boff Science) was beating real BOFFs. | `8bf6072` |
+
+### Regression baseline (2026-04-18, 15 screenshots ≥8 BOFFs, w ≥800px)
+
+- **106/269 (39%) IoU hits ≥ 0.3**
+- 3 GOOD (≥85%): broadside.png, Chronos-broadside.png, image10.png
+- 2 MOSTLY (50-85%): Nautilus.png, Screenshot_20260310
+- 5 PARTIAL (<50%)
+- 5 WRONG_REGION: empire, image.png, Screenshot_2026-01-19, Screenshot_96, Yeetus
+- Ambassador-broadside.png: **+8** (0→8) thanks to tiebreak fix
+
+### Research: what NOT to do next
+
+Investigated and REJECTED (documented to avoid re-exploring):
+
+- **OCR anchoring (Plan D)**: EasyOCR finds 0 BOFF keywords on Ambassador-broadside.png and image.png — STO rank labels too small/stylized. Would fix only 1/4 WRONG_REGION.
+- **HSV badge detection (Plan G)**: `_classify_boff_profession` has **93% false-positive rate** on non-BOFF crops (53/57 Ambassador equipment/traits classify as a profession). Method is a classifier, not a detector.
+- **Canonical layout per aspect bucket (Plan H)**: BOFF panel position in MIXED is not anchored to edges (normalized-y varies 0.178–0.550 across full-screen shots). Bucketing not useful.
+
+### Remaining failure classes (each needs its own approach)
+
+1. **BOFFs in middle of image** (Screenshot_2026-01-19 — x=337-593 on w=1065): outside 34% left/right strips. Fix: add middle strip or dynamic x-range from content.
+2. **BOFFs right of equipment** (Pumwl1, empire, Screenshot_96): STO mirror UI. Detector finds them on RIGHT but IoU<0.3 — likely off-by-pixels in offset handling when using non-square MIXED dims.
+3. **Traits win tiebreak** (image.png: L=16/1g, R=20/3g → RIGHT=traits wins by diversity). Need distinguishing signal: BOFF row has 2-3 rows × 4 icons max; traits has different shape.
+
+### Key spatial insight (for future work)
+
+- **9/13 screenshots**: BOFF left of equipment x-range
+- **3/13**: BOFF right of equipment (mirror layout)
+- **1/13**: 56px overlap (Yeetus edge case)
+- **BOFF and equipment are always in disjoint x-bands** — could use equipment detection (reliable) as exclusion anchor, BUT only helps when our current detector already sees BOFFs on correct side with right dims
+
+---
+
 ## Changes made in this development session (2026-04-10)
 
 ### Item 12 — Full scan for MIXED + BOFFS (Phase A + B + C)
