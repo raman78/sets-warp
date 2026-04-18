@@ -92,6 +92,7 @@ class ModelUpdater:
         on_updated: Callable | None,
         on_progress: Callable[[str, int, int], None] | None = None,
     ) -> None:
+        _t0 = time.time()
         try:
             models_dir = sets_root / 'warp' / 'models'
 
@@ -107,7 +108,14 @@ class ModelUpdater:
 
             log.info('ModelUpdater: checking for remote model update...')
             remote = self._fetch_remote_version()
-            if not remote or not remote.get('available'):
+            if remote is None:
+                # Network failure — do NOT save timestamp so next start retries.
+                log.warning(
+                    'ModelUpdater: remote version check failed (network) — '
+                    'will retry on next startup'
+                )
+                return
+            if not remote.get('available'):
                 log.debug('ModelUpdater: no model published on remote yet')
                 self._save_check_timestamp(sets_root)
                 return
@@ -186,21 +194,36 @@ class ModelUpdater:
 
         except Exception as e:
             log.warning(f'ModelUpdater: update check failed: {e}')
+        finally:
+            _elapsed = time.time() - _t0
+            if _elapsed > 60:
+                log.warning(
+                    f'ModelUpdater: check took {_elapsed:.0f}s '
+                    f'(expected <30s — investigate network path)'
+                )
 
     # ── network ───────────────────────────────────────────────────────────────
 
     def _fetch_remote_version(self) -> dict | None:
-        """GET /model/version from backend. Returns dict or None on failure."""
+        """
+        GET /model/version from backend. Returns dict on success, None on network
+        failure.
+
+        Uses `requests` with separate (connect, read) timeouts — more robust than
+        urllib's single timeout, which does not reliably cover DNS / TLS handshake
+        and can hang indefinitely (observed with IPv6-first resolvers).
+        """
         try:
-            import urllib.request
-            req = urllib.request.Request(
+            import requests
+            resp = requests.get(
                 f'{_BACKEND_URL}/model/version',
                 headers={'User-Agent': 'WARP/0.4.0'},
+                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
             )
-            with urllib.request.urlopen(req, timeout=_CONNECT_TIMEOUT + _READ_TIMEOUT) as resp:
-                return json.loads(resp.read().decode('utf-8'))
+            resp.raise_for_status()
+            return resp.json()
         except Exception as e:
-            log.debug(f'ModelUpdater: /model/version fetch failed: {e}')
+            log.warning(f'ModelUpdater: /model/version fetch failed: {e}')
             return None
 
     def _download_model(

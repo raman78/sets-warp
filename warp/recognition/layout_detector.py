@@ -1053,55 +1053,110 @@ class LayoutDetector:
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # --- Step 1: Find icon row bands ---
-        # Compute per-row stats using a small vertical window for stability
-        win = max(3, icon_h // 8)
-        row_bands: list[tuple[int, int]] = []
-        in_band = False
-        band_start = 0
-        skip_y = round(h * 0.12)  # skip header area
+        # --- Step 2: Column split (defined early — also used for band scan) ---
+        col_split = round(w * 0.55)
+        columns = [(0, col_split), (col_split, w)]
 
-        for y in range(0, h - win):
-            strip = gray[y:y + win, :]
-            mn = float(strip.mean())
-            sd = float(strip.std())
-            # Icon rows: moderate brightness + high variance (NOT name plates)
-            is_icon = 30 < mn < 100 and sd > 30
-            if is_icon:
-                if not in_band:
-                    band_start = y
-                    in_band = True
+        # --- Step 1: Find icon row bands ---
+        # Scan PER COLUMN independently and merge. Rationale: in MIXED screens
+        # the Pilot/last row may have icons only in one column; full-width std
+        # averaging drops below threshold and misses the band. Per-column scan
+        # captures rows where either side has icons.
+        win = max(3, icon_h // 8)
+        skip_y = round(h * 0.12)  # unused — kept for reference
+
+        def _scan_bands_in_strip(x1: int, x2: int) -> list[tuple[int, int]]:
+            bands: list[tuple[int, int]] = []
+            in_b = False
+            b_start = 0
+            for y in range(0, h - win):
+                strip = gray[y:y + win, x1:x2]
+                mn = float(strip.mean())
+                sd = float(strip.std())
+                if 30 < mn < 100 and sd > 30:
+                    if not in_b:
+                        b_start = y
+                        in_b = True
+                else:
+                    if in_b and y - b_start > icon_h * 0.5:
+                        bands.append((b_start, y))
+                    in_b = False
+            if in_b and h - b_start > icon_h * 0.5:
+                bands.append((b_start, h))
+            return bands
+
+        left_bands = _scan_bands_in_strip(0, col_split)
+        right_bands = _scan_bands_in_strip(col_split, w)
+
+        # Merge bands from both columns by Y overlap/proximity
+        all_bands = sorted(left_bands + right_bands, key=lambda b: b[0])
+        row_bands: list[tuple[int, int]] = []
+        for y1, y2 in all_bands:
+            if row_bands and y1 < row_bands[-1][1] + icon_h // 3:
+                # Overlap or close — merge (expand to union)
+                row_bands[-1] = (min(row_bands[-1][0], y1), max(row_bands[-1][1], y2))
             else:
-                if in_band and y - band_start > icon_h * 0.5:
-                    row_bands.append((band_start, y))
-                in_band = False
-        if in_band and h - band_start > icon_h * 0.5:
-            row_bands.append((band_start, h))
+                row_bands.append((y1, y2))
 
         if not row_bands:
             _slog.debug('LayoutDetector: _detect_boffs — no row bands found')
             return {}
 
-        # Merge close bands (gap < icon_h/3 → part of same row)
-        merged: list[tuple[int, int]] = []
-        for y1, y2 in row_bands:
-            if merged and y1 - merged[-1][1] < icon_h // 3:
-                merged[-1] = (merged[-1][0], y2)
-            else:
-                merged.append((y1, y2))
-        row_bands = merged
+        # Score each band by best 4-icon template match across both columns.
+        # Score = peak_score - gap_score, where:
+        #   peak_score = sum(mean*std) at 4 icon positions (x_start + k*spacing)
+        #   gap_score  = sum(mean*std) at 3 gap positions BETWEEN icons
+        # Real BOFF rows have strong peaks with darker gaps between icons → high diff.
+        # Text labels / noise are continuous → peak ≈ gap → low diff.
+        def _band_score(by1: int, by2: int) -> float:
+            mid_y1 = by1 + max(0, (by2 - by1 - icon_h) // 2)
+            mid_y2 = min(mid_y1 + icon_h, by2)
+            best = 0.0
+            gap_w = max(2, (spacing - icon_w) // 1) if spacing > icon_w else max(2, icon_w // 3)
+            for cx1, cx2 in columns:
+                cell = gray[mid_y1:mid_y2, cx1:cx2]
+                cw = cx2 - cx1
+                if cell.size == 0 or cw < spacing * 2:
+                    continue
+                h_std = cell.std(axis=0).astype(float)
+                h_mean = cell.mean(axis=0).astype(float)
+                search_end = max(1, cw - 3 * spacing - icon_w + 1)
+                for xs in range(search_end):
+                    peak = 0.0
+                    for k in range(4):
+                        x = xs + k * spacing
+                        xe = min(x + icon_w, cw)
+                        if x < cw:
+                            peak += float(h_mean[x:xe].mean()) * float(h_std[x:xe].mean())
+                    gap = 0.0
+                    n_gaps = 0
+                    for k in range(3):
+                        gx = xs + k * spacing + icon_w
+                        gxe = min(gx + gap_w, cw)
+                        if gx < cw and gxe > gx:
+                            gap += float(h_mean[gx:gxe].mean()) * float(h_std[gx:gxe].mean())
+                            n_gaps += 1
+                    if n_gaps > 0:
+                        # Scale gap score to 4 icons for fair comparison
+                        sc = peak - (gap / n_gaps) * 4
+                    else:
+                        sc = peak
+                    if sc > best:
+                        best = sc
+            return best
 
-        # BOFFS has max 3 row positions — drop extra bands (name plate noise)
-        row_bands = row_bands[:3]
+        scored = [((b1, b2), _band_score(b1, b2)) for b1, b2 in row_bands]
+        scored.sort(key=lambda t: t[1], reverse=True)
+        # BOFFS has max 3 row positions — keep top 3 by score, restore Y order
+        top = sorted([t[0] for t in scored[:3]], key=lambda b: b[0])
+        row_bands = top
 
         _slog.debug(
-            f'LayoutDetector: _detect_boffs — {len(row_bands)} row bands: '
+            f'LayoutDetector: _detect_boffs — {len(row_bands)} row bands (top-3 by score): '
             + ', '.join(f'y={y1}-{y2}' for y1, y2 in row_bands)
+            + ' | all scored: '
+            + ', '.join(f'y={b[0][0]}-{b[0][1]}:{b[1]:.0f}' for b in scored)
         )
-
-        # --- Step 2: Column split ---
-        col_split = round(w * 0.55)
-        columns = [(0, col_split), (col_split, w)]
 
         # --- Step 3: Template-slide 4 icons per cell ---
         result: dict[str, list] = {}
@@ -1129,6 +1184,13 @@ class LayoutDetector:
                 h_mean = cell.mean(axis=0).astype(float)
 
                 search_end = max(1, cell_w - 3 * spacing - icon_w + 1)
+                # Leading gap bonus: real BOFF rows start right after a deep
+                # dark gap (between the left-edge profession/rank badge and the
+                # first icon). Use MIN of a narrow window just before x_start
+                # to capture the deepest dark point (e.g. 1-2 px cliff between
+                # badge and icon); robust when the badge extends close to the
+                # icon edge.
+                lead_w = max(3, (spacing - icon_w) + 2)
                 all_scores: list[tuple[float, int]] = []
                 for x_start in range(search_end):
                     score = 0.0
@@ -1139,6 +1201,13 @@ class LayoutDetector:
                             m = float(h_mean[x:x_end].mean())
                             s = float(h_std[x:x_end].mean())
                             score += m * s
+                    if x_start - lead_w >= 0:
+                        m_arr = h_mean[x_start - lead_w:x_start]
+                        s_arr = h_std[x_start - lead_w:x_start]
+                        if m_arr.size > 0:
+                            lead_min = float((m_arr * s_arr).min())
+                            if lead_min < 500:
+                                score += (500 - lead_min) * 8
                     all_scores.append((score, x_start))
 
                 if not all_scores:
@@ -1147,14 +1216,6 @@ class LayoutDetector:
 
                 all_scores.sort(reverse=True)
                 best_score, best_x = all_scores[0]
-
-                # If the global peak is in the indicator zone, look for a rightward peak
-                if best_x < icon_w // 2:
-                    for sc, xs in all_scores:
-                        if xs > best_x + icon_w and sc > best_score * 0.60:
-                            best_x = xs
-                            best_score = sc
-                            break
 
                 if best_score < 500:
                     col_best_x.append(None)
@@ -1231,11 +1292,15 @@ class LayoutDetector:
         # BOFF section in MIXED is always in the lower 70% (skip ship image/header)
         y_start = int(h * 0.30)
 
-        # Try left sub-region (x: 0..40%) and right sub-region (x: 50%..100%)
-        left_x = int(w * 0.40)
-        right_x = int(w * 0.50)
+        # Sub-region covers the BOFF panel (not full left/right half).
+        # Narrower crop prevents band scan from averaging BOFF icons with adjacent
+        # non-BOFF content (ship stats, equipment columns) which dilutes std below
+        # the threshold and also generates false bands from the other content.
+        # Empirical: BOFF panels span ~30% of image width; use 0.34 for safety margin.
+        panel_w = int(w * 0.34)
+        right_x = w - panel_w
 
-        left_img = img[y_start:, :left_x]
+        left_img = img[y_start:, :panel_w]
         right_img = img[y_start:, right_x:]
 
         left_result = self._detect_boffs(left_img, icon_dims=dims, offset=(0, y_start))
