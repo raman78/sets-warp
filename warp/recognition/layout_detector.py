@@ -2048,14 +2048,19 @@ class LayoutDetector:
         # Interpolate cy for slots missing from OCR but present in profile.
         # STO equipment rows are sequential in slot_order at consistent row_h spacing,
         # so a gap in OCR can be filled from neighboring found labels.
-        # Insert optional slots (Hangars/Experimental/Sec-Def) after Aft Weapons so
-        # linear interpolation counts the correct number of rows between anchors
-        # (e.g. Yeetus has Experimental between Aft Weapons and Devices).
+        # Insert optional slots (Sec-Def/Hangars/Experimental) at their canonical
+        # STO UI positions so linear interpolation counts the correct number of
+        # rows between anchors (see docs/sto_slots_rules.md):
+        #   - Secondary Deflector: after Deflector, before Engines (Science Vessels)
+        #   - Hangars: after Aft Weapons (Carriers)
+        #   - Experimental Weapon: after Aft Weapons (Escorts/Destroyers/etc.)
         extended_order: list[str] = []
         for s in slot_order:
             extended_order.append(s)
+            if s == 'Deflector' and profile.get('Sec-Def', 0) > 0 and 'Sec-Def' not in extended_order:
+                extended_order.append('Sec-Def')
             if s == 'Aft Weapons':
-                for opt in ('Hangars', 'Experimental', 'Sec-Def'):
+                for opt in ('Hangars', 'Experimental'):
                     if profile.get(opt, 0) > 0 and opt not in extended_order:
                         extended_order.append(opt)
         active_slots = [s for s in extended_order
