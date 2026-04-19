@@ -2048,7 +2048,17 @@ class LayoutDetector:
         # Interpolate cy for slots missing from OCR but present in profile.
         # STO equipment rows are sequential in slot_order at consistent row_h spacing,
         # so a gap in OCR can be filled from neighboring found labels.
-        active_slots = [s for s in slot_order
+        # Insert optional slots (Hangars/Experimental/Sec-Def) after Aft Weapons so
+        # linear interpolation counts the correct number of rows between anchors
+        # (e.g. Yeetus has Experimental between Aft Weapons and Devices).
+        extended_order: list[str] = []
+        for s in slot_order:
+            extended_order.append(s)
+            if s == 'Aft Weapons':
+                for opt in ('Hangars', 'Experimental', 'Sec-Def'):
+                    if profile.get(opt, 0) > 0 and opt not in extended_order:
+                        extended_order.append(opt)
+        active_slots = [s for s in extended_order
                         if profile.get(s, SLOT_DEFAULT_COUNTS.get(s, 1)) > 0]
         labeled_idx = [i for i, s in enumerate(active_slots) if s in eq_labels]
         for i, slot in enumerate(active_slots):
@@ -2216,6 +2226,47 @@ class LayoutDetector:
 
         if not kept:
             return {}
+
+        # Extrapolate a missing Space trait label from its two siblings.
+        # OCR occasionally drops one label (cx outlier or order-violation). When
+        # the other two anchors are reliable, we can place the missing one via
+        # linear spacing. Active Rep is rarely extrapolated (appears on few screens).
+        if group_slots is space_slots:
+            anchors = {
+                'Personal Space Traits': kept.get('Personal Space Traits'),
+                'Starship Traits':       kept.get('Starship Traits'),
+                'Space Reputation':      kept.get('Space Reputation'),
+            }
+            p, s, r = anchors['Personal Space Traits'], anchors['Starship Traits'], anchors['Space Reputation']
+            # Median cx across valid anchors — all trait columns share the same label cx.
+            anchor_cxs = [v[0] for v in anchors.values() if v is not None]
+            anchor_cx = statistics.median(anchor_cxs) if anchor_cxs else None
+
+            if anchor_cx is not None:
+                # Case 1: Starship missing → midpoint of Personal/Rep
+                # (empirically Starship.cy lies 0.44-0.52 between Personal.cy and Rep.cy).
+                if s is None and p and r:
+                    est_cy = (p[1] + r[1]) * 0.48
+                    kept['Starship Traits'] = (anchor_cx, est_cy)
+                    _slog.info(f'LayoutDetector TraitDetect: extrapolate Starship cy={est_cy:.0f} '
+                               f'from Personal={p[1]:.0f}/Rep={r[1]:.0f}')
+                # Case 2: Personal missing → reflect below Starship
+                # (Personal.cy ≈ Starship.cy - (Rep.cy - Starship.cy); symmetry around S)
+                if p is None and s and r:
+                    delta = r[1] - s[1]
+                    est_cy = s[1] - delta
+                    if est_cy > 0:
+                        kept['Personal Space Traits'] = (anchor_cx, est_cy)
+                        _slog.info(f'LayoutDetector TraitDetect: extrapolate Personal cy={est_cy:.0f} '
+                                   f'from Starship={s[1]:.0f}/Rep={r[1]:.0f}')
+                # Case 3: Rep missing → reflect above Starship
+                if r is None and p and s:
+                    delta = s[1] - p[1]
+                    est_cy = s[1] + delta * 1.05  # Rep is slightly wider gap
+                    if est_cy < h:
+                        kept['Space Reputation'] = (anchor_cx, est_cy)
+                        _slog.info(f'LayoutDetector TraitDetect: extrapolate Rep cy={est_cy:.0f} '
+                                   f'from Personal={p[1]:.0f}/Starship={s[1]:.0f}')
 
         # Counts — use game maximums; downstream truncates per profile/tier
         counts = {
