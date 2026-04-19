@@ -2136,6 +2136,124 @@ class LayoutDetector:
             result[slot_name] = bboxes
             _slog.info(f'  [{slot_name}] cy={cy:.0f} n_icons={n_icons} (profile={n_default})')
 
+        # Merge trait detection on top of EQ (traits use separate geometry — 5-column grid)
+        trait_result = self._detect_traits_via_ocr(img, trait_labels, cell_w, icon_h)
+        result.update(trait_result)
+
+        return result
+
+    def _detect_traits_via_ocr(self, img: np.ndarray,
+                                trait_labels: dict,
+                                cell_w: int,
+                                icon_h: int) -> dict:
+        """
+        Trait/reputation detection anchored on OCR trait labels.
+
+        STO trait panels use a 5-column grid BELOW each label:
+          Personal Space Traits  — up to 11 icons (5+5+1)
+          Starship Traits        — up to 7  icons (5+2)
+          Space Reputation       — 5 icons (single row)
+          Active Space Rep       — 5 icons (single row)
+
+        Empirical offsets (median across 14 annotated MIXED screens):
+          cx(1st icon) ≈ cx(label) − 2.35 × cell_w  (~−85 at cell_w=36)
+          cy(1st icon) ≈ cy(label) + 0.80 × icon_h  (~+40 at icon_h=49)
+          col_step     ≈ 1.17 × cell_w              (~42 at cell_w=36)
+          row_step     ≈ 1.10 × icon_h              (~54 at icon_h=49)
+        """
+        import statistics
+
+        if not trait_labels:
+            return {}
+
+        h, w = img.shape[:2]
+
+        # Filter OCR outliers: some screens have phantom trait labels far from
+        # the real trait column (e.g. Nautilus Starship Traits at cx=513 when
+        # real column is at cx=924). Cluster by cx, keep median ±2.5×cell_w.
+        cxs = [cx for (cx, _) in trait_labels.values()]
+        if len(cxs) >= 2:
+            median_cx = statistics.median(cxs)
+            max_dev = max(cell_w * 2.5, 100)
+            clean = {s: (cx, cy) for s, (cx, cy) in trait_labels.items()
+                     if abs(cx - median_cx) <= max_dev}
+            if clean:
+                trait_labels = clean
+
+        # Space and ground trait panels are mutually exclusive per screen.
+        # OCR sometimes produces phantom labels from the other group — pick
+        # whichever group has more labels and drop the other.
+        space_slots = {'Personal Space Traits', 'Starship Traits',
+                       'Space Reputation', 'Active Space Rep'}
+        ground_slots = {'Personal Ground Traits', 'Ground Reputation',
+                        'Active Ground Rep'}
+        n_space = sum(1 for s in trait_labels if s in space_slots)
+        n_ground = sum(1 for s in trait_labels if s in ground_slots)
+        if n_space >= n_ground:
+            group_slots = space_slots
+            group_order = ['Personal Space Traits', 'Starship Traits',
+                           'Space Reputation', 'Active Space Rep']
+        else:
+            group_slots = ground_slots
+            group_order = ['Personal Ground Traits', 'Ground Reputation',
+                           'Active Ground Rep']
+        trait_labels = {s: v for s, v in trait_labels.items() if s in group_slots}
+
+        # Enforce cy order within the selected group. Drop any label whose cy
+        # breaks the ordering (catches OCR misreads that placed a label in
+        # the wrong vertical region).
+        order_idx = {s: i for i, s in enumerate(group_order)}
+        sorted_by_cy = sorted(trait_labels.items(), key=lambda kv: kv[1][1])
+        kept: dict[str, tuple[float, float]] = {}
+        last_idx = -1
+        for s, (cx, cy) in sorted_by_cy:
+            idx = order_idx.get(s, 99)
+            if idx <= last_idx:
+                _slog.info(f'LayoutDetector TraitDetect: drop {s} (out-of-order cy={cy:.0f})')
+                continue
+            kept[s] = (cx, cy)
+            last_idx = idx
+
+        if not kept:
+            return {}
+
+        # Counts — use game maximums; downstream truncates per profile/tier
+        counts = {
+            'Personal Space Traits':  11,
+            'Starship Traits':         7,  # covers T6-X2; less = truncated downstream
+            'Space Reputation':        5,
+            'Active Space Rep':        5,
+            'Personal Ground Traits': 11,
+            'Ground Reputation':       5,
+            'Active Ground Rep':       5,
+        }
+
+        # Geometry: offsets and steps derived from cell_w/icon_h computed upstream.
+        # These scale with image size since cell_w is row_h-based.
+        x_off = -int(cell_w * 2.35)
+        y_off = int(icon_h * 0.80)
+        col_step = max(int(cell_w * 1.17), cell_w + 2)
+        row_step = max(int(icon_h * 1.10), icon_h + 2)
+        bbox_w = max(1, cell_w - 4)
+        N_COLS = 5
+
+        result: dict[str, list] = {}
+        for slot, (lcx, lcy) in kept.items():
+            n = counts.get(slot, 5)
+            top_cx = int(lcx + x_off)
+            top_cy = int(lcy + y_off)
+            bboxes = []
+            for i in range(n):
+                col = i % N_COLS
+                row = i // N_COLS
+                bx = top_cx - bbox_w // 2 + col * col_step
+                by = top_cy - icon_h // 2 + row * row_step
+                if 0 <= bx <= w - bbox_w and 0 <= by <= h - icon_h:
+                    bboxes.append((bx, by, bbox_w, icon_h))
+            if bboxes:
+                result[slot] = bboxes
+                _slog.info(f'  [{slot}] n={len(bboxes)} anchor=({lcx:.0f},{lcy:.0f}) '
+                           f'top=({top_cx},{top_cy})')
         return result
 
     def _detect_via_ocr(self, img, slot_order, profile):
