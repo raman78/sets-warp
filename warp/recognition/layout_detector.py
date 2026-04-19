@@ -2119,12 +2119,14 @@ class LayoutDetector:
             n_default = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
             if n_default == 0:
                 continue
-            if n_default <= 1:
-                n_icons = n_default
-            else:
-                pixel_count, _ = self._count_icons_in_row(img, y_top, y_bot,
-                                                           global_right, cell_w, slot_name)
-                n_icons = min(max(pixel_count, n_default), n_default + 1)
+            # Cap strictly at profile count. _count_icons_in_row can overshoot
+            # because it scans past equipment into adjacent BOFF/character columns
+            # (no x_min_search bound). warp_importer truncates layout[slot][:max_count]
+            # which drops the RIGHTMOST (correct) slot in STO's right-aligned UI.
+            # T6-X tier bonuses are already applied to profile upstream.
+            n_icons = n_default
+            if n_default > 1:
+                self._count_icons_in_row(img, y_top, y_bot, global_right, cell_w, slot_name)  # log only
 
             bboxes = []
             for j in range(n_icons):
