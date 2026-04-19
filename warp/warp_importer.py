@@ -358,6 +358,15 @@ def _boff_profile_from_shipdb(boffs: list) -> dict[str, int]:
 
 # ── ShipDB — primary source of truth for slot counts ──────────────────────────
 
+def _parse_tier_num(tier_str: str) -> int:
+    """Extract integer tier from OCR string like 'T6-X2' → 6. Returns 0 if absent."""
+    if not tier_str:
+        return 0
+    import re
+    m = re.search(r'[Tt](\d+)', str(tier_str))
+    return int(m.group(1)) if m else 0
+
+
 class ShipDB:
     """
     Wraps ship_list.json from SETS cargo.
@@ -376,6 +385,10 @@ class ShipDB:
         self._ships: list[dict] = []
         self._index:   dict[str, dict] = {}  # lowercase name → ship entry
         self._by_type: dict[str, dict] = {}  # lowercase type → ship entry
+        # Display-name index: OCR sees in-game text built from
+        # displayprefix + displayclass + displaytype + name tokens.
+        # Each entry: (words_frozenset, tier_int, ship_dict).
+        self._display_index: list[tuple[frozenset, int, dict]] = []
         self._load(cargo_dir)
 
     def _load(self, cargo_dir: Path):
@@ -395,21 +408,41 @@ class ShipDB:
                 stype = (' '.join(raw_type) if isinstance(raw_type, list) else str(raw_type)).strip()
                 if stype:
                     self._by_type[stype.lower()] = ship
+                # Build display-word set from displayprefix/class/type + name
+                disp_parts: list[str] = []
+                for key in ('displayprefix', 'displayclass', 'displaytype'):
+                    v = ship.get(key)
+                    if v:
+                        disp_parts.append(str(v))
+                if name:
+                    disp_parts.append(name)
+                disp_words = frozenset(' '.join(disp_parts).lower().split())
+                try:
+                    tier = int(ship.get('tier') or 0)
+                except (TypeError, ValueError):
+                    tier = 0
+                if disp_words:
+                    self._display_index.append((disp_words, tier, ship))
             log.info(f'ShipDB: loaded {len(self._ships)} ships, '
-                     f'{len(self._by_type)} unique types')
+                     f'{len(self._by_type)} unique types, '
+                     f'{len(self._display_index)} display entries')
         except Exception as e:
             log.warning(f'ShipDB load error: {e}')
 
-    def get_profile(self, ship_name: str, ship_type: str) -> dict[str, int]:
+    def get_profile(self, ship_name: str, ship_type: str,
+                    ship_tier: str = '') -> dict[str, int]:
         """
         Returns exact slot counts for a ship.
         ship_type is the primary key — it determines layout/slots.
         ship_name is cosmetic only (player-given name, irrelevant to slots).
+        ship_tier (e.g. 'T6-X2') — used to disambiguate display-name candidates.
 
         Priority:
           1. Exact type match
-          2. Fuzzy type match (handles OCR errors, multi-line joins)
-          3. Keyword fallback from type string
+          2a. Word-subset type match
+          2b. Display-name match (OCR words ⊆ display words) + tier filter
+          2c. Fuzzy type match
+          3. Keyword fallback
         """
         st = ship_type.lower().strip()
 
@@ -439,7 +472,31 @@ class ShipDB:
                           f'{ship_type!r} → {best[0]!r}')
                 return self._entry_to_profile(best[1])
 
-            # 2b. Standard fuzzy match as fallback
+            # 2b. Display-name match — the `type` field in ship_list.json is
+            # generic ("Cruiser", "Destroyer"; 44 unique values), but the
+            # in-game text OCR sees combines displayprefix+displayclass+displaytype
+            # (e.g. "Fleet Yamaguchi Support Cruiser"). Match OCR words against
+            # the display-word index; tier disambiguates siblings (T5 Retrofit vs T6).
+            tier_num = _parse_tier_num(ship_tier)
+            disp_hits = [(dw, t, s) for (dw, t, s) in self._display_index
+                         if ocr_words and ocr_words.issubset(dw)]
+            if disp_hits and tier_num:
+                tier_filtered = [h for h in disp_hits if h[1] == tier_num]
+                if tier_filtered:
+                    disp_hits = tier_filtered
+            if len(disp_hits) == 1:
+                _, _, ship = disp_hits[0]
+                log.debug(f'ShipDB display match: {ship_type!r}+{ship_tier!r} '
+                          f'→ {ship.get("name")!r}')
+                return self._entry_to_profile(ship)
+            elif len(disp_hits) > 1:
+                # Prefer the entry with fewest extra words (closest to OCR text)
+                best = min(disp_hits, key=lambda h: len(h[0] - ocr_words))
+                log.debug(f'ShipDB display match (best of {len(disp_hits)}): '
+                          f'{ship_type!r}+{ship_tier!r} → {best[2].get("name")!r}')
+                return self._entry_to_profile(best[2])
+
+            # 2c. Standard fuzzy match as fallback
             type_matches = get_close_matches(st, type_candidates, n=1, cutoff=0.68)
             if type_matches:
                 entry = self._by_type[type_matches[0]]
@@ -698,13 +755,13 @@ class WarpImporter:
         _is_ground = build_type in ('GROUND', 'GROUND_MIXED')
         _no_ship_profile = _is_ground or build_type in ('SPEC', 'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
                                                          'SPACE_TRAITS', 'GROUND_TRAITS')
+        ship_tier = text_info.get('ship_tier', '')
         if _no_ship_profile:
             profile = {}
             _slog.info(f'WarpImporter: {build_type} build — skipping ShipDB lookup')
         else:
-            profile = self._get_shipdb().get_profile(ship_name, ship_type)
-            _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}: {dict((k,v) for k,v in profile.items() if v)}')
-        ship_tier = text_info.get('ship_tier', '')
+            profile = self._get_shipdb().get_profile(ship_name, ship_type, ship_tier)
+            _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}/{ship_tier!r}: {dict((k,v) for k,v in profile.items() if v)}')
         if _is_trainer_call:
             # Trainer (WARP CORE): annotation counts are authoritative for equipment —
             # the user has confirmed every bbox, so the profile must match exactly.
