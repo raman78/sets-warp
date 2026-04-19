@@ -298,24 +298,35 @@ class LayoutDetector:
         else:
             slot_order = (SPACE_SLOT_ORDER_CARRIER if profile.get('Hangars', 0) > 0 else SPACE_SLOT_ORDER_STANDARD)
 
-        # Full scan path for MIXED — try after learned layouts (which are always most accurate)
-        if build_type in ('SPACE_MIXED', 'GROUND_MIXED') and icon_matcher is not None and app_cache is not None:
+        # MIXED detection chain: learned → OCR-anchored → full_scan → fallback
+        if build_type in ('SPACE_MIXED', 'GROUND_MIXED'):
             learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
             if learned and len(learned) >= 5:
                 _slog.info(f'LayoutDetector: Strategy 1 (learned/MIXED) → {len(learned)} slot groups')
                 return learned
-            full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
-            if full and len(full) >= 3:
-                # Full scan handles equipment/traits via ML but can't classify BOFF icons.
-                # Try structural BOFF detection and merge results.
-                has_boff = any(k.startswith('Boff ') for k in full)
-                if not has_boff:
-                    boff_result = self._detect_boffs_in_mixed(img)
-                    if boff_result:
-                        full.update(boff_result)
-                        _slog.info(f'LayoutDetector: MIXED merged → {len(full)} slot groups total')
-                return full
-            # Fall through to standard strategies if full scan returns too few slots
+
+            # OCR-anchored equipment detection (primary path for MIXED)
+            ocr_anch = self._detect_via_ocr_anchored(img, build_type, slot_order, profile)
+            if ocr_anch and len(ocr_anch) >= 3:
+                boff_result = self._detect_boffs_in_mixed(img)
+                if boff_result:
+                    ocr_anch.update(boff_result)
+                _slog.info(f'LayoutDetector: Strategy 1.5 (OCR-anchored) → '
+                           f'{len(ocr_anch)} slot groups, '
+                           f'{sum(len(v) for v in ocr_anch.values())} bboxes')
+                return ocr_anch
+
+            if icon_matcher is not None and app_cache is not None:
+                full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
+                if full and len(full) >= 3:
+                    has_boff = any(k.startswith('Boff ') for k in full)
+                    if not has_boff:
+                        boff_result = self._detect_boffs_in_mixed(img)
+                        if boff_result:
+                            full.update(boff_result)
+                            _slog.info(f'LayoutDetector: MIXED merged → {len(full)} slot groups total')
+                    return full
+            # Fall through to standard strategies if both OCR-anchored and full scan fail
 
         # Strategy 1: Learned Layouts — tried FIRST because they contain
         # user-confirmed slot counts, more reliable than ShipDB generic fallback
@@ -1723,19 +1734,64 @@ class LayoutDetector:
     # ── Full scan (MIXED screens) ────────────────────────────────────────────────
 
     def _ocr_section_labels(self, img) -> dict[str, tuple[float, float]]:
-        """Run full-image OCR, return {slot_name: (center_x, center_y)} for each found label."""
+        """Run full-image OCR, return {slot_name: (center_x, center_y)} for each found label.
+
+        STO stacks multi-word labels vertically in narrow sidebars (e.g. "Fore" and
+        "Weapons" on separate lines), so EasyOCR returns them as two fragments. A
+        single word like "Weapons" fuzzy-matches to 'Aft Weapons' / 'Fore Weapons'
+        and picks the first alphabetically → phantom 'Aft Weapons' detections.
+        Merge vertically-stacked fragments (same cx, small cy gap) before matching.
+        """
         try:
             results = self._get_ocr().readtext(img)
         except Exception:
             return {}
-        labels: dict[str, tuple[float, float]] = {}
+
+        # Extract raw candidates with positions
+        raw: list[tuple[float, float, str]] = []
         for (bbox_pts, text, conf) in results:
             if conf < OCR_CONF_THRESHOLD:
                 continue
-            slot = self._match_label(text.strip().lower())
+            cx = float(np.mean([pt[0] for pt in bbox_pts]))
+            cy = float(np.mean([pt[1] for pt in bbox_pts]))
+            raw.append((cx, cy, text.strip()))
+
+        # Merge stacked fragments: same column (cx within 25px), close below (cy gap 5..30).
+        # Sort top-to-bottom so parent labels (e.g. "Fore") are processed before their
+        # stacked children (e.g. "Weapons") and can absorb them.
+        raw.sort(key=lambda r: (r[1], r[0]))
+        used = [False] * len(raw)
+        merged: list[tuple[float, float, str]] = []
+        for i, (cx_i, cy_i, t_i) in enumerate(raw):
+            if used[i]:
+                continue
+            group = [(cx_i, cy_i, t_i)]
+            used[i] = True
+            changed = True
+            while changed:
+                changed = False
+                for j in range(len(raw)):
+                    if used[j]:
+                        continue
+                    cx_j, cy_j, t_j = raw[j]
+                    # Join if cx near any group member and cy directly below it
+                    for (cx_g, cy_g, _) in group:
+                        if abs(cx_j - cx_g) <= 25 and 0 < cy_j - cy_g <= 30:
+                            group.append((cx_j, cy_j, t_j))
+                            used[j] = True
+                            changed = True
+                            break
+            group.sort(key=lambda g: g[1])
+            joined = ' '.join(g[2] for g in group)
+            avg_cx = sum(g[0] for g in group) / len(group)
+            avg_cy = sum(g[1] for g in group) / len(group)
+            merged.append((avg_cx, avg_cy, joined))
+
+        # Match joined texts to slot aliases
+        labels: dict[str, tuple[float, float]] = {}
+        for cx, cy, text in merged:
+            slot = self._match_label(text.lower())
             if slot:
-                cx = float(np.mean([pt[0] for pt in bbox_pts]))
-                cy = float(np.mean([pt[1] for pt in bbox_pts]))
                 labels[slot] = (cx, cy)
         return labels
 
@@ -1845,6 +1901,239 @@ class LayoutDetector:
             result.setdefault(best_slot, []).extend(bboxes)
 
         _slog.info(f'LayoutDetector FullScan: {len(result)} slots → {list(result.keys())}')
+        return result
+
+    # ── OCR-anchored MIXED detection ─────────────────────────────────────────────
+
+    def _find_row_right_edge(self, img: np.ndarray, y_top: int, y_bot: int,
+                              x_min: int, x_max: int, cell_w: int) -> int | None:
+        """
+        Scan y-band right-to-left, return rightmost x where a contiguous bright
+        column exists (=right edge of icon column).
+        """
+        h, w = img.shape[:2]
+        y_top = max(0, y_top)
+        y_bot = min(h, y_bot)
+        x_max = min(w - 1, x_max)
+        x_min = max(0, x_min)
+        if y_bot - y_top < 4 or x_max - x_min < cell_w:
+            return None
+        # Sample brightness per column, then find rightmost bright run of ≥ cell_w/3
+        probe_step = max(1, (y_bot - y_top) // 6)
+        col_brightness = []
+        for x in range(x_min, x_max):
+            if x >= w:
+                break
+            strip = img[y_top:y_bot:probe_step, x]
+            col_brightness.append(float(np.mean(strip)))
+        bright_thr = 45.0
+        min_run = max(6, cell_w // 3)
+        # Find rightmost column that is the end of a bright run
+        run_len, last_end = 0, None
+        for i, b in enumerate(col_brightness):
+            if b >= bright_thr:
+                run_len += 1
+                if run_len >= min_run:
+                    last_end = x_min + i + 1  # exclusive end
+            else:
+                run_len = 0
+        return last_end
+
+    def _detect_via_ocr_anchored(self, img: np.ndarray, build_type: str,
+                                  slot_order: list, profile: dict) -> dict:
+        """
+        OCR-anchored layout detection for MIXED screens.
+
+        Uses OCR-found label positions as row anchors (y = label cy), then does
+        per-row pixel analysis to find the local right edge of the icon column
+        and counts icons. This avoids the failure mode of _find_panel_right_edge
+        (global scan) finding the wrong panel (e.g. traits or BOFFs) on MIXED.
+
+        Returns {slot_name: [bbox,...]} or {} if insufficient anchors.
+        """
+        import statistics
+
+        h, w = img.shape[:2]
+        labels = self._ocr_section_labels(img)
+        if not labels:
+            _slog.info('LayoutDetector OCRAnchored: no OCR labels')
+            return {}
+
+        eq_slots = set(slot_order)
+        trait_slots = set(_TRAIT_SLOT_MARKER.keys())
+
+        # Separate EQ labels from trait labels (traits used only to bound x_max)
+        eq_labels = {s: (cx, cy) for s, (cx, cy) in labels.items() if s in eq_slots}
+        trait_labels = {s: (cx, cy) for s, (cx, cy) in labels.items() if s in trait_slots}
+
+        if len(eq_labels) < 3:
+            _slog.info(f'LayoutDetector OCRAnchored: only {len(eq_labels)} EQ labels, skip')
+            return {}
+
+        # Outlier filter: keep only labels whose cx is near the cluster median
+        cxs = [cx for (cx, _) in eq_labels.values()]
+        median_cx = statistics.median(cxs)
+        eq_labels = {s: (cx, cy) for s, (cx, cy) in eq_labels.items()
+                     if abs(cx - median_cx) <= 100}
+        if len(eq_labels) < 3:
+            _slog.info('LayoutDetector OCRAnchored: <3 labels after cx clustering')
+            return {}
+
+        # Drop labels that violate slot_order vs cy (OCR misreads like
+        # "Aft Weapons" at cy=56 when Fore Weapons is at cy=39 on the same screen).
+        # Two checks: monotonic slot_order index AND minimum cy gap.
+        order_idx = {s: i for i, s in enumerate(slot_order)}
+        sorted_by_cy = sorted(eq_labels.items(), key=lambda kv: kv[1][1])
+        # Provisional row_h for gap check (median of all gaps above 20)
+        raw_cys = [cy for (_, (_, cy)) in sorted_by_cy]
+        raw_gaps = [raw_cys[i+1] - raw_cys[i] for i in range(len(raw_cys) - 1)
+                    if raw_cys[i+1] - raw_cys[i] > 20]
+        prov_row_h = statistics.median(raw_gaps) if raw_gaps else h * 0.06
+        min_gap = prov_row_h * 0.6
+        kept: dict[str, tuple[float, float]] = {}
+        last_idx = -1
+        last_cy = -1e9
+        for s, (cx, cy) in sorted_by_cy:
+            idx = order_idx.get(s, 99)
+            if idx <= last_idx:
+                _slog.info(f'LayoutDetector OCRAnchored: drop {s} (out-of-order cy={cy:.0f})')
+                continue
+            if cy - last_cy < min_gap:
+                _slog.info(f'LayoutDetector OCRAnchored: drop {s} (cy_gap={cy-last_cy:.0f} < {min_gap:.0f})')
+                continue
+            kept[s] = (cx, cy)
+            last_idx = idx
+            last_cy = cy
+        eq_labels = kept
+        if len(eq_labels) < 3:
+            _slog.info('LayoutDetector OCRAnchored: <3 labels after order check')
+            return {}
+
+        # Estimate row_h from median cy gap between consecutive labels
+        cys = sorted(cy for (_, cy) in eq_labels.values())
+        gaps = [cys[i+1] - cys[i] for i in range(len(cys) - 1) if cys[i+1] - cys[i] > 20]
+        row_h = int(statistics.median(gaps)) if gaps else int(h * 0.06)
+        icon_h = max(26, int(row_h * 0.92))
+        cell_w = max(30, int(row_h * 0.72))
+
+        # x search bounds:
+        # - x_min = median label cx + offset (skip label text)
+        # - x_max = min trait label cx - buffer (trait label is ~centered above its column,
+        #          so column starts ~100px to the LEFT of its label → larger buffer)
+        x_min_search = int(median_cx + 40)
+        # Trait column half-width scales with image width (~8% of w);
+        # fixed 100px buffer fails on 1920+ screens where traits span wider.
+        trait_buffer = max(100, int(w * 0.08))
+        if trait_labels:
+            # Cluster trait labels by cx too (filter OCR misreads like
+            # "Starship Traits" at cx=513 when real traits are at cx=924)
+            t_cxs = [cx for (cx, _) in trait_labels.values()]
+            t_median = statistics.median(t_cxs)
+            t_clean = [cx for cx in t_cxs if abs(cx - t_median) <= 100]
+            if t_clean:
+                x_max_search = int(min(t_clean) - trait_buffer)
+            else:
+                x_max_search = w - 1
+        else:
+            x_max_search = w - 1
+
+        if x_max_search - x_min_search < cell_w * 2:
+            _slog.info('LayoutDetector OCRAnchored: search window too narrow')
+            return {}
+
+        _slog.info(f'LayoutDetector OCRAnchored: {len(eq_labels)} EQ labels, '
+                   f'row_h={row_h}, cell_w={cell_w}, icon_h={icon_h}, '
+                   f'x_search=[{x_min_search},{x_max_search}]')
+
+        # Interpolate cy for slots missing from OCR but present in profile.
+        # STO equipment rows are sequential in slot_order at consistent row_h spacing,
+        # so a gap in OCR can be filled from neighboring found labels.
+        active_slots = [s for s in slot_order
+                        if profile.get(s, SLOT_DEFAULT_COUNTS.get(s, 1)) > 0]
+        labeled_idx = [i for i, s in enumerate(active_slots) if s in eq_labels]
+        for i, slot in enumerate(active_slots):
+            if slot in eq_labels:
+                continue
+            prev = max((j for j in labeled_idx if j < i), default=-1)
+            nxt  = min((j for j in labeled_idx if j > i), default=-1)
+            if prev >= 0 and nxt >= 0:
+                cy_p = eq_labels[active_slots[prev]][1]
+                cy_n = eq_labels[active_slots[nxt]][1]
+                cy_int = cy_p + (i - prev) * (cy_n - cy_p) / (nxt - prev)
+            elif prev >= 0:
+                cy_int = eq_labels[active_slots[prev]][1] + (i - prev) * row_h
+            elif nxt >= 0:
+                cy_int = eq_labels[active_slots[nxt]][1] - (nxt - i) * row_h
+            else:
+                continue
+            if 0 < cy_int < h:
+                eq_labels[slot] = (median_cx, cy_int)
+                _slog.info(f'LayoutDetector OCRAnchored: interpolated {slot} cy={cy_int:.0f}')
+
+        # Pass 1: per-row right_edge candidates
+        row_info: list[tuple] = []  # (slot_name, cx, cy, y_top, y_bot, right_edge)
+        for slot_name, (cx, cy) in eq_labels.items():
+            n_default = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
+            if n_default == 0:
+                continue
+            y_top = int(cy - icon_h // 2)
+            y_bot = int(cy + icon_h // 2)
+            right_edge = self._find_row_right_edge(img, y_top, y_bot,
+                                                    x_min_search, x_max_search, cell_w)
+            row_info.append((slot_name, cx, cy, y_top, y_bot, right_edge))
+
+        # Determine global equipment-column right edge via clustering:
+        # group right_edges within ±20px. On some screens the BOFF/ability panel to the
+        # right of equipment has MORE rows hitting its edge than the equipment column
+        # (e.g. image.png: equipment=3 rows, BOFF panel=6 rows). So pick the LEFTMOST
+        # cluster with sufficient support (≥ 25% of rows OR ≥ 2 members).
+        edges = sorted([r[5] for r in row_info if r[5] is not None])
+        global_right: int | None = None
+        if edges:
+            clusters: list[list[int]] = []
+            for e in edges:
+                if clusters and e - clusters[-1][-1] <= 20:
+                    clusters[-1].append(e)
+                else:
+                    clusters.append([e])
+            n_rows = len(row_info)
+            min_support = max(2, int(n_rows * 0.25))
+            # Left-to-right: pick first cluster with enough support
+            qualifying = [c for c in clusters if len(c) >= min_support]
+            if qualifying:
+                best = qualifying[0]  # leftmost qualifying (clusters built L→R)
+            else:
+                # No cluster meets support → fall back to largest, ties to leftmost
+                best = max(clusters, key=lambda c: (len(c), -c[0]))
+            global_right = max(best)  # rightmost within winning cluster
+            _slog.info(f'LayoutDetector OCRAnchored: right_edge clusters={[len(c) for c in clusters]} '
+                       f'(support≥{min_support}) → global_right={global_right}')
+
+        if global_right is None:
+            _slog.info('LayoutDetector OCRAnchored: no right_edge candidates')
+            return {}
+
+        # Pass 2: generate bboxes using the global right edge for every row
+        result: dict[str, list] = {}
+        for slot_name, cx, cy, y_top, y_bot, _row_re in row_info:
+            n_default = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
+            if n_default == 0:
+                continue
+            if n_default <= 1:
+                n_icons = n_default
+            else:
+                pixel_count, _ = self._count_icons_in_row(img, y_top, y_bot,
+                                                           global_right, cell_w, slot_name)
+                n_icons = min(max(pixel_count, n_default), n_default + 1)
+
+            bboxes = []
+            for j in range(n_icons):
+                bx = max(0, global_right - (j + 1) * cell_w + 2)
+                bboxes.append((bx, y_top, cell_w - 4, icon_h))
+            bboxes.reverse()
+            result[slot_name] = bboxes
+            _slog.info(f'  [{slot_name}] cy={cy:.0f} n_icons={n_icons} (profile={n_default})')
+
         return result
 
     def _detect_via_ocr(self, img, slot_order, profile):
