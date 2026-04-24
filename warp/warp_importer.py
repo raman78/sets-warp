@@ -96,7 +96,6 @@ BOFFS_SLOT_ORDER: list[dict] = [
     {'name': 'Boff Tactical',      'key': 'boff_tac', 'mandatory': True,  'max': 20, 'weapon': False, 'exp': False},
     {'name': 'Boff Engineering',   'key': 'boff_eng', 'mandatory': True,  'max': 20, 'weapon': False, 'exp': False},
     {'name': 'Boff Science',       'key': 'boff_sci', 'mandatory': True,  'max': 20, 'weapon': False, 'exp': False},
-    {'name': 'Boff Operations',    'key': 'boff_ops', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
     {'name': 'Boff Intelligence',  'key': 'boff_int', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
     {'name': 'Boff Command',       'key': 'boff_cmd', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
     {'name': 'Boff Pilot',         'key': 'boff_plt', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
@@ -278,13 +277,13 @@ _BOFF_RANK_SLOTS: dict[str, int] = {
 _BOFF_PROF_TO_SLOT: dict[str, str] = {
     'Tactical':           'Boff Tactical',
     'Engineering':        'Boff Engineering',
+  #  'Operations':         'Boff Engineering',
     'Science':            'Boff Science',
     'Command':            'Boff Command',
     'Intelligence':       'Boff Intelligence',
     'Miracle Worker':     'Boff Miracle Worker',
     'Temporal Operative': 'Boff Temporal',
     'Pilot':              'Boff Pilot',
-    'Operations':         'Boff Operations',
 }
 
 # Game-defined maximums for slots not covered by ShipDB equipment data.
@@ -308,7 +307,6 @@ _GAME_SLOT_MAXES: dict[str, int] = {
     'Boff Pilot':              6,
     'Boff Miracle Worker':     6,
     'Boff Temporal':           6,
-    'Boff Operations':         6,
 }
 
 
@@ -543,7 +541,7 @@ _KEYWORD_PROFILES: list[tuple[str, dict]] = [
     # Most specific first — confirmed against actual STO ships.
     # exp=0 and hang=0 by default: these slots are RARE, only specific ships.
     # ShipDB (ship_list.json) is the primary source; this is only the fallback.
-    ('carrier',        dict(fore=3, aft=3, exp=0, hang=2, sec=0, uni=0, eng=4, sci=3, tac=3, dev=5)),
+    ('carrier',        dict(fore=3, aft=3, exp=0, hang=2, sec=0, uni=0, eng=4, sci=3, tac=3, dev=4)),
     ('dreadnought',    dict(fore=5, aft=3, exp=0, hang=0, sec=0, uni=0, eng=4, sci=3, tac=3, dev=4)),
     ('miracle worker', dict(fore=5, aft=3, exp=0, hang=0, sec=0, uni=0, eng=3, sci=3, tac=4, dev=4)),
     ('temporal',       dict(fore=5, aft=3, exp=0, hang=0, sec=0, uni=0, eng=3, sci=3, tac=3, dev=4)),
@@ -554,7 +552,7 @@ _KEYWORD_PROFILES: list[tuple[str, dict]] = [
     ('escort',         dict(fore=4, aft=3, exp=0, hang=0, sec=0, uni=0, eng=3, sci=3, tac=5, dev=4)),
     ('intel',          dict(fore=4, aft=3, exp=0, hang=0, sec=1, uni=0, eng=3, sci=4, tac=3, dev=4)),
     ('science',        dict(fore=3, aft=3, exp=0, hang=0, sec=1, uni=0, eng=3, sci=5, tac=3, dev=4)),
-    ('cruiser',        dict(fore=4, aft=4, exp=0, hang=0, sec=0, uni=0, eng=5, sci=3, tac=3, dev=5)),
+    ('cruiser',        dict(fore=4, aft=4, exp=0, hang=0, sec=0, uni=0, eng=5, sci=3, tac=3, dev=4)),
 ]
 
 _GENERIC_PROFILE = dict(fore=4, aft=3, exp=0, hang=0, sec=0,
@@ -877,7 +875,17 @@ class WarpImporter:
             slot_defs_to_process = [sd for sd in _ALL_SLOT_DEFS.values()
                                     if sd['name'] in confirmed_layout]
         else:
-            slot_defs_to_process = SLOT_ORDER.get(build_type, [])
+            slot_defs_to_process = list(SLOT_ORDER.get(build_type, []))
+
+        # Add dynamically detected BOFF seats to the processing list
+        if not confirmed_layout:
+            for key in layout.keys():
+                if key.startswith('Boff Seat'):
+                    slot_defs_to_process.append({
+                        'name': key, 'key': '', 'mandatory': False, 'max': 4, 'weapon': False, 'exp': False
+                    })
+                    # Add them to profile so they are not skipped by max_count limit
+                    profile[key] = 4
 
         # Build per-slot candidate sets restricted by SLOT_VALID_TYPES.
         # This prevents template matching from picking items of the wrong type
@@ -954,6 +962,29 @@ class WarpImporter:
                 if crop is None or crop.size == 0:
                     _slog.info(f'  [{slot_name}][{idx}] bbox={bbox} — empty crop, skipped')
                     continue
+                    
+                candidates = slot_candidates.get(slot_name)  # None = no type constraint
+                
+                # Dynamic candidate filtering for BOFF seats based on color heuristic
+                if slot_name.startswith('Boff Seat'):
+                    base_prof_key = self._layout_detector._classify_boff_profession(crop)
+                    if base_prof_key:
+                        prof_map = {
+                            'tactical': 'Tactical', 'engineering': 'Engineering', 'science': 'Science',
+                            'intelligence': 'Intelligence', 'command': 'Command', 'pilot': 'Pilot',
+                            'miracle worker': 'Miracle Worker', 'temporal': 'Temporal Operative' # In STO it's Temporal Operative
+                        }
+                        base_prof = prof_map.get(base_prof_key)
+                        if base_prof:
+                            allowed_profs = {base_prof, 'Intelligence', 'Command', 'Pilot', 'Miracle Worker', 'Temporal Operative', 'Temporal'}
+                            try:
+                                boff_cache = self._app.cache.boff_abilities.get('all', {})
+                                if boff_cache:
+                                    candidates = {c_name for c_name, info in boff_cache.items() if info.get('profession') in allowed_profs}
+                                    _slog.debug(f"  [{slot_name}][{idx}] Restricted candidates to {base_prof} + Specializations ({len(candidates)} items)")
+                            except Exception:
+                                pass
+
                 name, conf, thumb, used_session = matcher.match(crop, candidate_names=candidates)
                 
                 # ── P5: Icon-to-Layout Feedback Loop ──────────────────────────
@@ -996,8 +1027,25 @@ class WarpImporter:
                 if slot_def['exp'] and not self._is_experimental(name):
                     _slog.info(f'  [{slot_name}][{idx}] SKIP — not experimental weapon: {name!r}')
                     continue
+                final_slot_name = slot_name
+                if slot_name.startswith('Boff Seat') and name and name not in ('__empty__', '__inactive__'):
+                    try:
+                        boff_cache = self._app.cache.boff_abilities.get('all', {})
+                        item_info = boff_cache.get(name)
+                        if item_info:
+                            prof = item_info.get('profession')
+                            if prof:
+                                prof_to_slot = {
+                                    'Tactical': 'Boff Tactical', 'Engineering': 'Boff Engineering', 'Science': 'Boff Science',
+                                    'Intelligence': 'Boff Intelligence', 'Command': 'Boff Command', 'Pilot': 'Boff Pilot',
+                                    'Miracle Worker': 'Boff Miracle Worker', 'Temporal Operative': 'Boff Temporal', 'Temporal': 'Boff Temporal'
+                                }
+                                final_slot_name = prof_to_slot.get(prof, final_slot_name)
+                    except Exception:
+                        pass
+
                 # Track recognition stats
-                _stat_per_slot.setdefault(slot_name, {'ok': 0, 'skip': 0})['ok'] += 1
+                _stat_per_slot.setdefault(final_slot_name, {'ok': 0, 'skip': 0})['ok'] += 1
                 if used_session:
                     _stat_core_n    += 1
                     _stat_core_conf += conf
@@ -1005,7 +1053,7 @@ class WarpImporter:
                     _stat_auto_n    += 1
                     _stat_auto_conf += conf
                 result.items.append(RecognisedItem(
-                    slot        = slot_name,
+                    slot        = final_slot_name,
                     slot_index  = idx,
                     name        = name,
                     confidence  = conf,
@@ -1248,6 +1296,50 @@ class WarpImporter:
                 slot_name = sd['name']
                 if slot_name.startswith('Boff ') and slot_name not in result:
                     result[slot_name] = boff_names
+
+        # Trait slots: restrict to the matching trait category.
+        # Without this, candidate_names=None → full index search lets a ground
+        # trait land in a space trait slot, equipment icons match trait slots,
+        # or the same name repeats across every slot of a panel.
+        try:
+            traits_cache = self._app.cache.traits
+            starship_traits_cache = getattr(
+                self._app.cache, 'starship_traits', {}) or {}
+        except Exception:
+            traits_cache = {}
+            starship_traits_cache = {}
+
+        def _trait_names(env: str, cat: str) -> set[str]:
+            try:
+                return set(traits_cache.get(env, {}).get(cat, {}).keys())
+            except Exception:
+                return set()
+
+        trait_slot_pools: dict[str, set[str]] = {
+            'Personal Space Traits':  _trait_names('space',  'personal'),
+            'Personal Ground Traits': _trait_names('ground', 'personal'),
+            'Space Reputation':       _trait_names('space',  'rep'),
+            'Ground Reputation':      _trait_names('ground', 'rep'),
+            'Active Space Rep':       _trait_names('space',  'active_rep'),
+            'Active Ground Rep':      _trait_names('ground', 'active_rep'),
+            'Starship Traits':        set(starship_traits_cache.keys()),
+        }
+        for sd in slot_defs:
+            slot_name = sd['name']
+            if slot_name in result:
+                continue
+            pool = trait_slot_pools.get(slot_name)
+            if pool:
+                result[slot_name] = pool
+
+        # Add virtual items so ML and session examples can match empty/inactive slots
+        try:
+            from warp.trainer.training_data import VIRTUAL_ITEM_NAMES
+        except ImportError:
+            VIRTUAL_ITEM_NAMES = {'__empty__', '__inactive__'}
+            
+        for names_set in result.values():
+            names_set.update(VIRTUAL_ITEM_NAMES)
 
         return result
 

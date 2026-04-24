@@ -159,7 +159,7 @@ _TRAIT_SLOT_MARKER: dict[str, str] = {
 }
 
 _BOFF_SLOT_NAMES = frozenset({
-    'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+    'Boff Tactical', 'Boff Engineering', 'Boff Science',
     'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
 })
 
@@ -1020,7 +1020,7 @@ class LayoutDetector:
         'tactical':      'Boff Tactical',
         'engineering':   'Boff Engineering',
         'science':       'Boff Science',
-        'operations':    'Boff Operations',
+        'operations':    'Boff Engineering',
         'intelligence':  'Boff Intelligence',
         'command':       'Boff Command',
         'pilot':         'Boff Pilot',
@@ -1269,12 +1269,12 @@ class LayoutDetector:
                 if not profs:
                     continue
 
-                majority = Counter(profs).most_common(1)[0][0]
-                slot = self._PROF_MAP.get(majority)
-                if not slot:
-                    continue
-
-                result.setdefault(slot, []).extend(bboxes)
+                # Instead of mapping to a fixed profession by majority vote,
+                # we return the geometrical seat identifier.
+                # c_idx == 0 is Left column, c_idx == 1 is Right column.
+                side = 'L' if c_idx == 0 else 'R'
+                seat_id = f"Boff Seat {side}_{icon_y}"
+                result[seat_id] = bboxes
 
         _slog.debug(
             f'LayoutDetector: _detect_boffs — {len(result)} sections, '

@@ -65,15 +65,15 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
     ],
     'BOFFS': [
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
     'SPACE_BOFFS': [
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
     'GROUND_BOFFS': [
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
     'SPECIALIZATIONS': [],
@@ -84,7 +84,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Engineering Consoles', 'Science Consoles', 'Tactical Consoles', 'Hangars',
         'Ship Name', 'Ship Type', 'Ship Tier',
         'Personal Space Traits', 'Starship Traits', 'Space Reputation', 'Active Space Rep',
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
         'Primary Specialization', 'Secondary Specialization',
     ],
@@ -92,7 +92,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
     'GROUND_MIXED': [
         'Body Armor', 'EV Suit', 'Personal Shield', 'Weapons', 'Kit', 'Kit Modules', 'Ground Devices',
         'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
         'Primary Specialization', 'Secondary Specialization',
     ],
@@ -650,45 +650,6 @@ def _get_ml_icon() -> 'QIcon':
 
 
 class WarpCoreWindow(QMainWindow):
-    BOFF_ABILITY_PROPERTIES: dict[str, tuple[str, str]] = {
-        "Beams: Fire at Will": ("Tactical", "Space"), "Beams: Overload": ("Tactical", "Space"),
-        "Tactical Team": ("Tactical", "Space"), "Torpedoes: High Yield": ("Tactical", "Space"),
-        "Torpedoes: Spread": ("Tactical", "Space"), "Target Weapons Subsystems": ("Tactical", "Space"),
-        "Target Engines Subsystems": ("Tactical", "Space"), "Target Shields Subsystems": ("Tactical", "Space"),
-        "Target Auxiliary Subsystems": ("Tactical", "Space"), "Attack Pattern Beta": ("Tactical", "Space"),
-        "Attack Pattern Delta": ("Tactical", "Space"), "Cannons: Rapid Fire": ("Tactical", "Space"),
-        "Cannons: Scatter Volley": ("Tactical", "Space"), "Dispersal Pattern Alpha": ("Tactical", "Space"),
-        "Dispersal Pattern Beta": ("Tactical", "Space"), "Focused Assault": ("Tactical", "Space"),
-        "Attack Pattern Omega": ("Tactical", "Space"), "Photon Grenade": ("Tactical", "Ground"),
-        "Sweeping Strikes": ("Tactical", "Ground"), "Battle Strategies": ("Tactical", "Ground"),
-        "Draw Fire": ("Tactical", "Ground"), "Graviton Spike": ("Tactical", "Ground"),
-        "Corrosive Grenade": ("Tactical", "Ground"), "Cease Fire": ("Tactical", "Ground"),
-        "Lunge": ("Tactical", "Ground"), "Suppressing Fire": ("Tactical", "Ground"),
-        "Target Optics": ("Tactical", "Ground"), "Smoke Grenade": ("Tactical", "Ground"),
-        "Micro Cryonic Warhead": ("Tactical", "Ground"), "Gre'thor's Chains": ("Tactical", "Ground"),
-        "Emergency Power to Auxiliary": ("Engineering", "Space"), "Emergency Power to Weapons": ("Engineering", "Space"),
-        "Emergency Power to Engines": ("Engineering", "Space"), "Emergency Power to Shields": ("Engineering", "Space"),
-        "Engineering Team": ("Engineering", "Space"), "Reverse Shield Polarity": ("Engineering", "Space"),
-        "Boarding Party": ("Engineering", "Space"), "Auxiliary Power to the Emergency Battery": ("Engineering", "Space"),
-        "Auxiliary Power to the Inertial Dampers": ("Engineering", "Space"), "Auxiliary Power to the Structural Integrity Field": ("Engineering", "Space"),
-        "Eject Warp Plasma": ("Engineering", "Space"), "Aceton Beam": ("Engineering", "Space"),
-        "Chroniton Mine Barrier": ("Engineering", "Ground"), "Quick Fix": ("Engineering", "Ground"),
-        "Shield Recharge": ("Engineering", "Ground"), "Weapons Malfunction": ("Engineering", "Ground"),
-        "Hurricane Turret": ("Engineering", "Ground"), "Molten Terrain": ("Engineering", "Ground"),
-        "Photon Grenade Launcher Fabrication": ("Engineering", "Ground"), "Explosive Drone Fabrication": ("Engineering", "Ground"),
-        "Cover Shield": ("Engineering", "Ground"), "Equipment Diagnostics": ("Engineering", "Ground"),
-        "Medical Generator Fabrication": ("Engineering", "Ground"), "Quantum Mortar Fabrication": ("Engineering", "Ground"),
-        "Hazard Emitters": ("Science", "Space"), "Science Team": ("Science", "Space"),
-        "Tachyon Beam": ("Science", "Space"), "Gravity Well": ("Science", "Space"),
-        "Photonic Officer": ("Science", "Space"), "Tyken's Rift": ("Science", "Space"),
-        "Feedback Pulse": ("Science", "Space"), "Scramble Sensors": ("Science", "Space"),
-        "Photonic Shockwave": ("Science", "Space"), "Viral Matrix": ("Science", "Space"),
-        "Medical Tricorder": ("Science", "Ground"), "Stasis Field": ("Science", "Ground"),
-        "Tricorder Scan": ("Science", "Ground"), "Vascular Regenerator": ("Science", "Ground"),
-        "Exothermic Redistribution": ("Science", "Ground"), "Seismic Agitation Field": ("Science", "Ground"),
-        "Sonic Disruption": ("Science", "Ground"), "Nanite Health Monitor": ("Science", "Ground"),
-    }
-
     def __init__(self, sets_app=None, parent=None):
         super().__init__(parent)
         self._sets = sets_app
@@ -1581,7 +1542,10 @@ class WarpCoreWindow(QMainWindow):
     def _add_review_row(self, name: str, slot: str, conf: float, confirmed: bool = False, cross_check_failed: bool = False):
         is_virtual = name in VIRTUAL_ITEM_NAMES
         if confirmed:
-            label = f'{slot}  ->  {name or "—"}  [confirmed]'
+            if conf > 0.0:
+                label = f'{slot}  ->  {name or "—"}  [confirmed {conf:.0%}]'
+            else:
+                label = f'{slot}  ->  {name or "—"}  [confirmed]'
         elif is_virtual:
             display = 'empty slot' if name == '__empty__' else 'inactive slot'
             label = f'{slot}  ->  [{display}]'
@@ -2469,8 +2433,8 @@ class WarpCoreWindow(QMainWindow):
                     self._data_mgr.save()
                     break
         
-        # Re-run recognition for this specific crop if not already confirmed
-        if ri.get('state') != 'confirmed' and self._current_idx >= 0:
+        # Re-run recognition for this specific crop to update confidence
+        if self._current_idx >= 0:
             try:
                 import cv2
                 from warp.warp_importer import WarpImporter
@@ -2496,11 +2460,20 @@ class WarpCoreWindow(QMainWindow):
                         # Optional: limit candidates by slot type
                         # For now, just match against full index for better flexibility in trainer
                         name, conf, thumb, _used_sess = matcher.match(crop)
-                        ri['name'] = name
-                        ri['conf'] = conf
-                        # Refresh visual row
-                        self._review_list.takeItem(row)
-                        self._add_review_row(name, ri['slot'], conf, confirmed=False)
+                        
+                        if ri.get('state') != 'confirmed':
+                            ri['name'] = name
+                            ri['conf'] = conf
+                            # Refresh visual row
+                            self._review_list.takeItem(row)
+                            self._add_review_row(name, ri['slot'], conf, confirmed=False)
+                        else:
+                            ri['conf'] = conf
+                            ri['orig_name'] = name
+                            # Refresh visual row but keep confirmed status and user-selected name
+                            self._review_list.takeItem(row)
+                            self._add_review_row(ri['name'], ri['slot'], conf, confirmed=True)
+                            
                         self._review_list.insertItem(row, self._review_list.takeItem(self._review_list.count()-1))
                         self._review_list.setCurrentRow(row)
             except Exception as e:
@@ -2653,7 +2626,11 @@ class WarpCoreWindow(QMainWindow):
                 self._ann_widget.refresh_annotations(path)
             litem = self._review_list.item(row)
             if litem:
-                litem.setText(f'{slot}  ->  {name or "—"}  [confirmed]')
+                conf = ri.get('conf', 0.0)
+                if conf > 0.0:
+                    litem.setText(f'{slot}  ->  {name or "—"}  [confirmed {conf:.0%}]')
+                else:
+                    litem.setText(f'{slot}  ->  {name or "—"}  [confirmed]')
                 litem.setForeground(QColor('#7effc8'))
             if name and ri.get('crop_bgr') is not None and slot not in NON_ICON_SLOTS:
                 from warp.recognition.icon_matcher import SETSIconMatcher
@@ -2790,11 +2767,7 @@ class WarpCoreWindow(QMainWindow):
                         for rank_dict in rank_list:
                             if isinstance(rank_dict, dict) and item_name in rank_dict:
                                 return _allowed(f'Boff {career}')
-                # Fallback: static BOFF_ABILITY_PROPERTIES
-                props = self.BOFF_ABILITY_PROPERTIES.get(item_name)
-                if props:
-                    career, _ = props
-                    return _allowed(f'Boff {career}')
+
         except Exception:
             pass
 
@@ -2839,21 +2812,21 @@ class WarpCoreWindow(QMainWindow):
 
         if slot.startswith('Boff'):
             target_career = slot.replace('Boff ', '').strip()
+            
+            # Map UI display names to STO cache canonical names
+            mapped_career = target_career
+
             # Primary source: cache.boff_abilities[environment][career] — keyed by rank dicts
             # Structure: {environment: {career: [{ability: desc}, ...rank levels]}}
             try:
                 domain_key = 'ground' if target_domain == 'Ground' else 'space'
-                career_ranks = self._sets.cache.boff_abilities.get(domain_key, {}).get(target_career, [])
+                career_ranks = self._sets.cache.boff_abilities.get(domain_key, {}).get(mapped_career, [])
                 for rank_dict in career_ranks:
                     if isinstance(rank_dict, dict):
                         candidates.extend(rank_dict.keys())
             except Exception:
                 pass
-            # Fallback: static BOFF_ABILITY_PROPERTIES (covers Tactical/Engineering/Science)
-            if not candidates:
-                for ability, (career, domain) in self.BOFF_ABILITY_PROPERTIES.items():
-                    if career == target_career and domain == target_domain:
-                        candidates.append(ability)
+
             # Last resort: all abilities
             if not candidates:
                 try:
@@ -3065,9 +3038,25 @@ class WarpCoreWindow(QMainWindow):
 
     def _on_completer_activated(self, text: str):
         self._name_edit.setText(text)
-        if text in self.BOFF_ABILITY_PROPERTIES:
-            career, _ = self.BOFF_ABILITY_PROPERTIES[text]
-            self._slot_combo.setCurrentText(f'Boff {career}')
+        
+        try:
+            if self._sets and hasattr(self._sets.cache, 'boff_abilities'):
+                boff_cache = self._sets.cache.boff_abilities
+                found_career = None
+                for env in ['space', 'ground']:
+                    for career, rank_list in boff_cache.get(env, {}).items():
+                        if not isinstance(rank_list, list): continue
+                        for rank_dict in rank_list:
+                            if isinstance(rank_dict, dict) and text in rank_dict:
+                                found_career = career
+                                break
+                        if found_career: break
+                    if found_career: break
+                
+                if found_career:
+                    self._slot_combo.setCurrentText(f'Boff {found_career}')
+        except Exception:
+            pass
         # Selection from dropdown = immediate confirm, no need to click Accept
         self._on_accept()
         self._review_list.setFocus()

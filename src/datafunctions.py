@@ -260,6 +260,29 @@ def populate_cache(self, threaded_worker: ThreadObject):
     except Exception as _e:
         log.warning(f'populate_cache: ModelUpdater failed: {_e}')
 
+    try:
+        from src.background_tasks import BackgroundTaskManager
+        if not hasattr(self, '_bg_tasks') or self._bg_tasks is None:
+            self._bg_tasks = BackgroundTaskManager()
+            self._bg_tasks.start()
+        
+        def _retry_sync():
+            try:
+                # Silently run SyncManager in background
+                report = sync.run()
+                if report.get('cargo_updated'):
+                    log.info('Background retry: cargo updated, reloading...')
+                    self.cache.reset_cache(keep_skills=True)
+                    load_cargo_data(self, None)
+            except Exception as e:
+                log.warning(f'Background retry failed: {e}')
+                
+        # Run every 10 minutes (600,000 ms), starting after 10 minutes
+        self._bg_tasks.register(_retry_sync, interval_ms=10 * 60 * 1000)
+        log.info('populate_cache: registered background cargo retry task (10 min interval)')
+    except Exception as e:
+        log.warning(f'populate_cache: could not register background retry: {e}')
+
     log.info('populate_cache: DONE')
 
 
@@ -1240,6 +1263,17 @@ def get_boff_data(self, force_offline_data: bool = False):
         if os.path.exists(backup_path) and os.path.isfile(backup_path):
             try:
                 cargo_data = load_json(backup_path)
+                store_json(cargo_data, filepath)
+                self.cache.boff_abilities = cargo_data
+                if len(self.cache.boff_abilities.get('all', {})) > 0:
+                    self.cache.images_set |= self.cache.boff_abilities['all'].keys()
+                    return
+            except JSONDecodeError:
+                pass
+        baseline_path = os.path.join(self.app_dir, 'data', 'cargo', filename)
+        if os.path.exists(baseline_path) and os.path.isfile(baseline_path):
+            try:
+                cargo_data = load_json(baseline_path)
                 store_json(cargo_data, filepath)
                 self.cache.boff_abilities = cargo_data
                 if len(self.cache.boff_abilities.get('all', {})) > 0:

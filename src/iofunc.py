@@ -97,6 +97,14 @@ def get_cargo_data(self, filename: str, url: str, ignore_cache_age=False) -> dic
                     return cargo_data
                 except json.JSONDecodeError:
                     pass
+            baseline_path = os.path.join(self.app_dir, 'data', 'cargo', filename)
+            if os.path.exists(baseline_path) and os.path.isfile(baseline_path):
+                try:
+                    cargo_data = load_json(baseline_path)
+                    store_json(cargo_data, filepath)
+                    return cargo_data
+                except json.JSONDecodeError:
+                    pass
             sys.stderr.write(f'[Error] Cargo table could not be retrieved ({filename})\n')
             sys.exit(1)
         else:

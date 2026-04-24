@@ -340,3 +340,4 @@ returned `None`, triggering the discard branch with "not valid for stype=..." me
 **Fix:** In the `elif name not in VIRTUAL_ITEM_NAMES:` discard branch — virtual names
 bypass slot inference and keep the positional slot suggestion.  They are always valid
 training labels regardless of screen type.  File: `warp/trainer/trainer_window.py`.
+

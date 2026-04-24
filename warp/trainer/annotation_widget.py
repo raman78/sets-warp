@@ -258,8 +258,24 @@ class AnnotationWidget(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton: return
-        if self._locked: return
         pos = event.pos()
+        
+        if self._locked:
+            clicked = self._hit_test(pos)
+            if clicked >= 0:
+                self._selected_idx = clicked; self._pending_bbox = None; ann = self._annotations[clicked]
+                self.item_selected.emit({'slot': ann.slot, 'name': ann.name, 'bbox': ann.bbox})
+            else:
+                row = self._hit_test_review(pos)
+                if row >= 0:
+                    ri = self._review_items[row]
+                    self.item_selected.emit({'slot': ri.get('slot', ''), 'name': ri.get('name', ''), 'bbox': ri.get('bbox')})
+                else:
+                    self._selected_idx = -1
+                    self.item_deselected.emit()
+            self.update()
+            return
+
         # Alt+LMB drag — start drawing a new bbox without toggling Add BBox button
         alt_held   = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
         shift_held = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
@@ -370,11 +386,12 @@ class AnnotationWidget(QWidget):
 
         # 1. Modifiers have highest priority for cursor shape (e.g. forced draw/zoom mode)
         if mods & Qt.KeyboardModifier.AltModifier:
-            self.setCursor(self._make_draw_cursor())
-            self._cancel_hover_timer()
-            from PySide6.QtWidgets import QToolTip
-            QToolTip.hideText()
-            return
+            if not self._locked:
+                self.setCursor(self._make_draw_cursor())
+                self._cancel_hover_timer()
+                from PySide6.QtWidgets import QToolTip
+                QToolTip.hideText()
+                return
 
         if mods & Qt.KeyboardModifier.ControlModifier:
             self.setCursor(self._make_zoom_cursor())
@@ -383,21 +400,22 @@ class AnnotationWidget(QWidget):
 
         # 2. Check for handle/bbox hover ONLY IF Shift is held (Edit Mode)
         if mods & Qt.KeyboardModifier.ShiftModifier:
-            handle, target_row = self._handle_hit_test_all_reviews(pos)
-            if handle:
-                self._set_mod_cursor(self._cursor_for_handle(handle))
-                self._cancel_hover_timer()
-                from PySide6.QtWidgets import QToolTip
-                QToolTip.hideText()
-                return
+            if not self._locked:
+                handle, target_row = self._handle_hit_test_all_reviews(pos)
+                if handle:
+                    self._set_mod_cursor(self._cursor_for_handle(handle))
+                    self._cancel_hover_timer()
+                    from PySide6.QtWidgets import QToolTip
+                    QToolTip.hideText()
+                    return
 
-            hit_row = self._hit_test_review(pos)
-            if hit_row >= 0:
-                self._set_mod_cursor(self._make_edit_cursor())
-                self._cancel_hover_timer()
-                from PySide6.QtWidgets import QToolTip
-                QToolTip.hideText()
-                return
+                hit_row = self._hit_test_review(pos)
+                if hit_row >= 0:
+                    self._set_mod_cursor(self._make_edit_cursor())
+                    self._cancel_hover_timer()
+                    from PySide6.QtWidgets import QToolTip
+                    QToolTip.hideText()
+                    return
 
         # 3. Regular hover tooltip logic (no special cursor)
         hovered = self._hit_test_review(pos)
@@ -412,7 +430,7 @@ class AnnotationWidget(QWidget):
 
         # Restore appropriate cursor if not over anything special
         if hovered < 0:
-            if mods & Qt.KeyboardModifier.ShiftModifier:
+            if (mods & Qt.KeyboardModifier.ShiftModifier) and not self._locked:
                 self._set_mod_cursor(self._make_edit_cursor())
             else:
                 self.unsetCursor()
@@ -725,7 +743,8 @@ class AnnotationWidget(QWidget):
             key = event.key()
             if key == Qt.Key.Key_Alt and not event.isAutoRepeat():
                 if etype == QEvent.Type.KeyPress:
-                    self._set_mod_cursor(self._make_draw_cursor())
+                    if not self._locked:
+                        self._set_mod_cursor(self._make_draw_cursor())
                 else:
                     if not self._drawing:
                         self._clear_mod_cursor()
@@ -738,8 +757,9 @@ class AnnotationWidget(QWidget):
                 if etype == QEvent.Type.KeyPress:
                     from PySide6.QtWidgets import QToolTip
                     QToolTip.hideText()
-                    handle, _row = self._handle_hit_test_all_reviews(lpos)
-                    self._set_mod_cursor(self._cursor_for_handle(handle) if handle else self._make_edit_cursor())
+                    if not self._locked:
+                        handle, _row = self._handle_hit_test_all_reviews(lpos)
+                        self._set_mod_cursor(self._cursor_for_handle(handle) if handle else self._make_edit_cursor())
                 else:
                     if not self._drawing:
                         self._clear_mod_cursor()
