@@ -1327,10 +1327,15 @@ class LayoutDetector:
         # panel) is periodic but all classifies as one profession (e.g. 16 items
         # → "Boff Science" via color default). Real BOFF panels have 3-5
         # distinct professions across seats.
+        # BOFF panel physical maximum is 5 rows × 4 cols = 20 bboxes.
+        # Candidates with more than 20 bboxes are periodic non-BOFF content
+        # (traits / reputation / equipment column) and must be rejected so the
+        # tiebreak cannot pick them over a real BOFF panel on the other side.
+        MAX_BOFF_BBOXES = 20
         candidates = []
-        if left_count >= 4:
+        if 4 <= left_count <= MAX_BOFF_BBOXES:
             candidates.append(('left', left_groups, left_count, left_result))
-        if right_count >= 4:
+        if 4 <= right_count <= MAX_BOFF_BBOXES:
             candidates.append(('right', right_groups, right_count, right_result))
 
         if candidates:
@@ -1477,8 +1482,10 @@ class LayoutDetector:
         # ── Engineering vs Temporal (both amber, Temporal also has strong mid-blue)
         if amber / total >= 0.12 or amber >= 40:
             # Temporal: amber is prominent AND significant mid-blue (H105-120) also present
-            # Engineering has mid_blue ≈ 0; Temporal has mid_blue = 30-50% of amber
-            if mid_blue >= 40 and mid_blue >= amber * 0.28:
+            # Engineering has mid_blue ≈ 0; Temporal has mid_blue = 30-50% of amber.
+            # mid_blue >= 60 alone is also sufficient — covers temporal crops with very
+            # strong amber where the ratio rule would otherwise reject them.
+            if (mid_blue >= 40 and mid_blue >= amber * 0.28) or mid_blue >= 60:
                 return 'temporal'
             return 'engineering'
 

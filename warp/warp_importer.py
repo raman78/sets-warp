@@ -1402,18 +1402,24 @@ class WarpImporter:
             from warp.recognition.icon_matcher import SETSIconMatcher
             self._matcher = SETSIconMatcher(self._app,
                                             sync_client=self._get_sync_client())
-            # Prime session examples with confirmed crops from training data so
-            # real in-game crops have higher priority than wiki-icon templates.
-            here = Path(__file__).resolve().parent
-            for _ in range(6):
-                td = here / 'warp' / 'training_data'
-                if td.exists():
-                    break
-                here = here.parent
+            # Seed session examples with confirmed crops ONLY for WARP CORE (trainer) path.
+            # WARP must not read annotations.json — that would hide detection bugs behind
+            # user-confirmed ground truth. Mirrors the _use_confirmed gate at line ~707.
+            if self._from_trainer:
+                here = Path(__file__).resolve().parent
+                for _ in range(6):
+                    td = here / 'warp' / 'training_data'
+                    if td.exists():
+                        break
+                    here = here.parent
+                else:
+                    td = None
+                if td is not None:
+                    SETSIconMatcher.seed_from_training_data(td)
             else:
-                td = None
-            if td is not None:
-                SETSIconMatcher.seed_from_training_data(td)
+                # WARP path: clear any session examples a prior trainer run left in the
+                # class-level state, so WARP sees pristine detection quality.
+                SETSIconMatcher.reset_ml_session()
         return self._matcher
 
     def _get_sync_client(self):
