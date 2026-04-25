@@ -378,6 +378,68 @@ Credentials in `.env`: `HF_TOKEN`, `HF_REPO_ID=sets-sto/warp-knowledge`, `ADMIN_
 
 ---
 
+## Changes made in this development session (2026-04-25)
+
+### BOFF detection — honest baseline + 2 small wins + A1 fix
+
+| File | Change | Commit |
+|------|--------|--------|
+| `warp/warp_importer.py` | **A1 fix**: gate `seed_from_training_data` in `_get_matcher` on `_from_trainer`; non-trainer path also calls `reset_ml_session()`. Closes second CORE-RULE violation flagged in 2026-04-20 memory. | `e979114` |
+| `warp/recognition/layout_detector.py` | **Knob B** (`_classify_boff_profession`): `mid_blue >= 60` alone routes to temporal. HSV classifier 84.7% → 85.8%. | `e979114` |
+| `warp/recognition/layout_detector.py` | **H1** (`_detect_boffs_in_mixed`): reject candidates with `> 20` bboxes (BOFF panel physical max). NOT yet e2e-verified — measure on next run, revert if regression. | `e979114` |
+| `tests/diag_boff_*.py` | 4 new read-only diagnostics (HSV, sweep, e2e, coverage). Output → `tests/_diag_out/` (gitignored). | `de3c780` |
+| `tests/test_*.py` | Reorganization: moved `warp/test_*.py` → `tests/`. NOTE: `test_boff_logic.py` has its own broken HSV classifier (pre-existing, flagged for removal). | `de3c780` |
+
+### Honest baseline (34 screens, 442 GT BOFF abilities, IoU≥0.30)
+
+- **HSV classifier accuracy**: 85.8%
+- **Detector seat coverage**: 74.0%
+- **Matcher ceiling (with GT bbox)**: 57.2%
+- **End-to-end slot accuracy**: 33.5%
+
+The old 2026-04-18 number (39%) was wrong — the test harness had a broken
+MockApp that disabled template matching, so the matcher ran ML-only. After
+fixing MockApp (`config_subfolders.images` wired), real production reaches
+57.2% on perfect bboxes.
+
+### Layout geometry on full screenshots (n=15, iw≥700)
+
+```
+panel_w_norm   17–30%, median 22%
+panel_h_norm   22–32%, median 27%
+icon_w_norm    1.7–3.1%, median 2.1%
+structure      2 cols × (3+2) seats × 4 abilities = max 20 bboxes
+```
+
+Position varies arbitrarily, but **size and structure are stable per
+resolution** — this is what makes the next-step EQ-anchored scan tractable.
+
+### Coverage breakdown (115 uncovered GT)
+
+| Class | GT | % of GT |
+|---|---|---|
+| near_detector | 58 | 13.1% |
+| mirror_layout | 28 | 6.3% |
+| middle_image | 16 | 3.6% |
+| panel_crop | 13 | 2.9% |
+
+`near_detector` and `mirror_layout` are the same root cause: 34% left/right
+strip heuristic is too rigid when panel is shifted, mirrored, or in middle.
+
+### Next iteration plan: EQ-anchored sliding-window scan
+
+1. Use detected EQ as **negative anchor** (BOFFs can't overlap with EQ region)
+2. Use EQ icon size to **scale** expected BOFF window (~22% × 27% of image)
+3. Sweep BOFF-sized window over non-EQ region
+4. Score by `(n_bboxes_in_4-icon-rows) × (grid_fit_to_2×(3+2)×4)` − penalty(>20 bboxes)
+5. Window with highest score = BOFF panel
+
+**Prototype path**: `tests/diag_boff_scan.py` (next session) using **GT EQ
+bboxes** as anchor — isolates "is the concept right?" from "is EQ detector
+good enough?". Production must use detected EQ (CORE RULE).
+
+---
+
 ## Changes made in this development session (2026-04-18)
 
 ### BOFFS detection — stabilization + ModelUpdater reliability
