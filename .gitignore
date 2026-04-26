@@ -1,5 +1,7 @@
 .config/
 images/
+!docs/images/
+!docs/images/**
 ..debug/
 __pycache__/
 *.py[cod]
