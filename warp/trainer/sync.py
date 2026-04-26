@@ -556,18 +556,15 @@ class SyncManager:
             return
 
         confirmed = [c for c in mgr.get_confirmed_crops() if Path(c['path']).exists()]
-        uploaded  = self._load_uploaded_hashes(mgr)
-        pending   = max(0, len(confirmed) - len(uploaded))
-
-        if pending == 0:
-            _slog.debug('SyncManager: timer tick — nothing pending')
+        if not confirmed:
+            _slog.debug('SyncManager: timer tick — no confirmed crops')
             return
 
         if self._worker and self._worker.isRunning():
-            _slog.debug(f'SyncManager: {pending} crops pending, upload already running — skipping tick')
+            _slog.debug('SyncManager: upload already running — skipping tick')
             return
 
-        _slog.info(f'SyncManager: {pending} crops pending — starting upload…')
+        _slog.info(f'SyncManager: {len(confirmed)} confirmed crops — checking for new uploads…')
         self._worker = SyncWorker(data_manager=mgr, hf_token=token, mode='upload')
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
@@ -582,17 +579,10 @@ class SyncManager:
     def _on_finished(self, ok: bool) -> None:
         mgr = self._data_manager()
         remaining = 0
-        if mgr:
-            confirmed = [c for c in mgr.get_confirmed_crops() if Path(c['path']).exists()]
-            uploaded  = self._load_uploaded_hashes(mgr)
-            remaining = max(0, len(confirmed) - len(uploaded))
         if ok:
-            if remaining == 0:
-                _slog.info('SyncManager: upload OK — all synced')
-            else:
-                _slog.debug(f'SyncManager: upload OK — {remaining} queued for next sync')
+            _slog.info('SyncManager: upload OK')
         else:
-            _slog.warning(f'SyncManager: upload FAILED — {remaining} crops still pending')
+            _slog.warning('SyncManager: upload FAILED')
 
     def _data_manager(self):
         """Return TrainingDataManager — prefer WARP CORE's live instance if window is open."""

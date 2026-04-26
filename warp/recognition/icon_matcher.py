@@ -337,12 +337,24 @@ class SETSIconMatcher:
     def _classify_ml(self, crop64: np.ndarray) -> tuple[str, float]:
         """Run local PyTorch classifier on a 64x64 BGR crop.
         Falls back to ONNX session for HuggingFace-downloaded model.
+
+        Preprocessing must match admin_train.py CropDataset.__getitem__:
+          1. BGR → RGB  (training uses cv2.COLOR_BGR2RGB)
+          2. /255.0
+          3. ImageNet mean/std normalization  (training uses T.Normalize)
+        Missing either step produces a completely wrong input distribution
+        (model was trained on normalized RGB, but would receive raw BGR).
         """
         import cv2
         model = self._get_ml_session()
         if model is None:
             return '', 0.0
-        inp = cv2.resize(crop64, (224, 224)).astype(np.float32) / 255.0
+        rgb = cv2.cvtColor(cv2.resize(crop64, (224, 224)), cv2.COLOR_BGR2RGB)
+        inp = rgb.astype(np.float32) / 255.0
+        # ImageNet normalization (same as T.Normalize in admin_train.py)
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        inp = (inp - mean) / std
         inp = np.expand_dims(np.transpose(inp, (2, 0, 1)), axis=0)
         try:
             if hasattr(model, 'run'):  # onnxruntime session (HuggingFace model)
