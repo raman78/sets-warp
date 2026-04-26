@@ -36,11 +36,13 @@ SEAT_TYPES = [
 ]
 
 # Spec stripes (narrow ~5-8 px stripe on the RIGHT edge of the marker).
+# HSV centers verified from 15 user-labelled GT seats (2026-04-26).
 SPEC_STRIPES = [
-    ('Intelligence',     130, 180, 200, 'P'),  # purple
-    ('Temporal',         108, 200, 220, 'B'),  # blue
-    ('Miracle Worker',   55,  200, 200, 'G'),  # green / lime
-    ('Pilot or Command', 12,  220, 230, 'O'),  # orange
+    ('Command',        16,  158, 168, 'O'),  # orange
+    ('Intelligence',   126, 159, 180, 'P'),  # purple
+    ('Temporal',       30,  176, 244, 'Y'),  # bright gold
+    ('Pilot',          92,  110, 252, 'C'),  # light cyan
+    ('Miracle Worker', 38,  255, 222, 'L'),  # lime / yellow-green
 ]
 
 
