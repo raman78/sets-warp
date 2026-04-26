@@ -425,6 +425,146 @@ def sweep_for_boff(boff_dets, img_shape, eq_bbox, icon_est, verbose=False):
     return best[0], best[1], best[2] if best[0] else {}, n_eval
 
 
+# T6 canonical BOFF layout: left col 3 seats, right col 2 seats.
+# Total positions: (3 + 2) × 4 = 20.  Lower tiers have fewer rows —
+# extend _GRID_ROWS_* when supporting T5 / T6-retrofit etc.
+_GRID_ROWS_L = 3
+_GRID_ROWS_R = 2
+_GRID_TOTAL  = (_GRID_ROWS_L + _GRID_ROWS_R) * 4   # 20
+
+
+def grid_from_anchor(matcher, img, boff_dets, window, icon_est, boff_names,
+                     n_rows_left=_GRID_ROWS_L, n_rows_right=_GRID_ROWS_R,
+                     verbose=False):
+    """Fit a 2-col × (n_rows_left + n_rows_right) × 4-slot BOFF grid.
+
+    Canonical T6: left col 3 seats, right col 2 seats → 20 grid positions.
+    The inner loop uses (left_x0, n_rows_left) and (right_x0, n_rows_right)
+    so the right column never gets the phantom 3rd row.
+
+    Geometry (measured on Ambassador-broadside.png, 1584×900):
+      pitch_x = icon_w + 2   ≈ 34 px  — slot separation within a row
+      pitch_y = int(icon_h × 2.2)      — row-to-row gap
+                measured 93 px; icon_h=42 → 42×2.2=92.4 ≈ 92
+                (factor 2.5 gave 105 px — too large; 2.2 matches GT)
+                TODO: verify min/max/median across all 34 annotated screens.
+      col_gap  = int(pitch_x × 2.5) ≈ 85 px — L right-edge to R left-edge
+                measured 85 px on Ambassador (matches formula)
+                TODO: measure across all 34 screens.
+
+    Anchor combos: n_rows_left × 2 cols × 4 slots = 24.
+    For a_col='R' with a_row ≥ n_rows_right the anchor is hypothetical
+    (below the R col's real area) — the bounds check skips invalid grids.
+
+    Scoring: sum(conf) − 0.05 × n_unmatched
+    Penalises placements where most positions are empty; prevents 8 weak
+    matches (8×0.6=4.8 − 0.6=4.2) from beating 5 strong matches
+    (5×0.8=4.0 − 0.75=3.25 ... hmm, adjust λ if needed after measurement).
+
+    Returns (positions, dets, combo, score, elapsed_s).
+      positions : all n_total grid cells of best combo (for geo-coverage)
+      dets      : cells with match conf ≥ 0.15
+      combo     : (a_row, a_col, a_slot) or None
+      score     : penalised total conf
+      elapsed_s : wall time in seconds
+    """
+    import time
+    t0 = time.monotonic()
+
+    h, w   = img.shape[:2]
+    icon_w = icon_est
+    icon_h = max(28, int(round(h * 0.047)))
+    pitch_x = icon_w + 2
+    pitch_y = int(icon_h * 2.2)
+    col_gap = int(pitch_x * 2.5)
+    n_total = (n_rows_left + n_rows_right) * 4
+
+    wx, wy, ww, wh = window
+    inside = [d for d in boff_dets
+              if d[0] >= wx and d[1] >= wy
+              and d[0] + d[2] <= wx + ww and d[1] + d[3] <= wy + wh]
+    if not inside:
+        return [], [], None, 0.0, time.monotonic() - t0
+
+    anchor = max(inside, key=lambda d: d[5])
+    ax = anchor[0] + anchor[2] // 2
+    ay = anchor[1] + anchor[3] // 2
+
+    if verbose:
+        print(f'    grid anchor: ({anchor[0]},{anchor[1]}) '
+              f'conf={anchor[5]:.3f}  {anchor[4]!r}')
+
+    best_score     = -1e9
+    best_positions: list = []
+    best_dets:      list = []
+    best_combo             = None
+
+    for a_row in range(n_rows_left):        # 0-2; for R col row=2 is hypothetical
+        for a_col in ('L', 'R'):
+            for a_slot in range(4):
+                if a_col == 'L':
+                    left_x0  = ax - a_slot * pitch_x - icon_w // 2
+                    right_x0 = left_x0 + 3 * pitch_x + col_gap
+                else:
+                    right_x0 = ax - a_slot * pitch_x - icon_w // 2
+                    left_x0  = right_x0 - 3 * pitch_x - col_gap
+
+                y0 = ay - a_row * pitch_y - icon_h // 2
+
+                # Validate: entire grid must fit inside image
+                if left_x0 < 0 or y0 < 0:
+                    continue
+                if right_x0 + 3 * pitch_x + icon_w > w:
+                    continue
+                if y0 + (n_rows_left - 1) * pitch_y + icon_h > h:
+                    continue
+
+                score     = 0.0
+                n_matched = 0
+                positions = []
+                dets      = []
+
+                # Right col has n_rows_right rows, left col has n_rows_left rows
+                for col_x0, n_rows in ((left_x0, n_rows_left), (right_x0, n_rows_right)):
+                    for row in range(n_rows):
+                        for slot in range(4):
+                            gx = col_x0 + slot * pitch_x
+                            gy = y0 + row * pitch_y
+                            positions.append((gx, gy, icon_w, icon_h))
+                            if gx + icon_w > w or gy + icon_h > h:
+                                continue
+                            crop = img[gy:gy + icon_h, gx:gx + icon_w]
+                            if float(crop.std()) < 6.0:
+                                continue
+                            name, conf, _, _ = matcher.match(
+                                crop, candidate_names=boff_names)
+                            if conf >= 0.15 and name:
+                                score    += conf
+                                n_matched += 1
+                                dets.append(
+                                    (gx, gy, icon_w, icon_h, name, conf, '__boff_grid'))
+
+                # Penalise unmatched positions (λ=0.05)
+                score -= 0.05 * (n_total - n_matched)
+
+                if score > best_score:
+                    best_score     = score
+                    best_positions = positions
+                    best_dets      = dets
+                    best_combo     = (a_row, a_col, a_slot)
+
+    elapsed = time.monotonic() - t0
+    if verbose:
+        if best_combo:
+            print(f'    grid best: row={best_combo[0]} col={best_combo[1]} '
+                  f'slot={best_combo[2]}  score={best_score:.2f}  '
+                  f'positions={len(best_positions)}  matched={len(best_dets)}  '
+                  f't={elapsed:.2f}s')
+        else:
+            print(f'    grid: no valid placement  t={elapsed:.2f}s')
+    return best_positions, best_dets, best_combo, best_score, elapsed
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--limit', type=int, default=0)
@@ -466,8 +606,10 @@ def main():
     print(f'Screens with ≥4 BOFF GT: {len(candidates)}   '
           f'findable on disk: {len(paths)}')
 
-    total_gt = 0
-    total_covered = 0
+    total_gt          = 0
+    total_covered     = 0
+    total_grid_geo    = 0
+    total_grid_match  = 0
     rows = []
     no_eq_count = 0
     per_screen_dump = []
@@ -518,8 +660,33 @@ def main():
             if best_iou >= IOU_THRESHOLD:
                 covered += 1
 
-        total_gt += len(real_boff)
-        total_covered += covered
+        # Grid extrapolation — second stage
+        grid_positions, grid_dets, grid_combo, grid_score, grid_t = (
+            grid_from_anchor(matcher, img, boff_dets, window, icon_est,
+                             boff_names, verbose=args.verbose)
+            if window else ([], [], None, 0.0, 0.0)
+        )
+
+        # Geometric coverage: did we place the grid on the correct cells?
+        grid_geo_covered = 0
+        for gt in real_boff:
+            best_iou = max((iou(pb, gt['bbox']) for pb in grid_positions), default=0.0)
+            if best_iou >= IOU_THRESHOLD:
+                grid_geo_covered += 1
+
+        # Match coverage: grid cells that also got a match()
+        grid_match_covered = 0
+        for gt in real_boff:
+            best_iou = max(
+                (iou((d[0], d[1], d[2], d[3]), gt['bbox']) for d in grid_dets),
+                default=0.0)
+            if best_iou >= IOU_THRESHOLD:
+                grid_match_covered += 1
+
+        total_gt          += len(real_boff)
+        total_covered     += covered
+        total_grid_geo    += grid_geo_covered
+        total_grid_match  += grid_match_covered
 
         n_pred = len(pred_inside)
         rows.append({
@@ -534,6 +701,12 @@ def main():
             'n_dets_boff': len(boff_dets),
             'covered': covered,
             'cov_pct': round(covered / max(len(real_boff), 1) * 100, 1),
+            'grid_geo': grid_geo_covered,
+            'grid_geo_pct': round(grid_geo_covered / max(len(real_boff), 1) * 100, 1),
+            'grid_match': grid_match_covered,
+            'grid_match_pct': round(grid_match_covered / max(len(real_boff), 1) * 100, 1),
+            'grid_combo': list(grid_combo) if grid_combo else None,
+            'grid_t_s': round(grid_t, 2),
         })
         per_screen_dump.append({
             'file': fname,
@@ -545,33 +718,47 @@ def main():
                  'name': d[4], 'conf': round(d[5], 3), 'type': d[6]}
                 for d in boff_dets
             ],
+            'grid_positions': [[p[0], p[1], p[2], p[3]] for p in grid_positions],
+            'grid_dets': [
+                {'bbox': [d[0], d[1], d[2], d[3]],
+                 'name': d[4], 'conf': round(d[5], 3), 'type': d[6]}
+                for d in grid_dets
+            ],
             'all_dets_n': len(dets),
         })
 
         win_str = (f'win=({window[0]:4},{window[1]:4},{window[2]:3},{window[3]:3})'
                    if window else 'win=NONE                          ')
-        print(f'[{idx:3d}] {fname[:42]:<42s}  '
+        print(f'[{idx:3d}] {fname[:38]:<38s}  '
               f'GT={len(real_boff):2d}  '
-              f'EQ={len(eq):2d}  '
               f'{win_str}  '
-              f'dets={len(boff_dets):2d}/{len(dets):3d}  '
-              f'in_win={n_pred:2d}  '
-              f'cov={covered:2d}/{len(real_boff):2d} ({covered/max(len(real_boff),1)*100:5.1f}%)')
+              f'win={covered:2d}/{len(real_boff):2d} '
+              f'geo={grid_geo_covered:2d}/{len(real_boff):2d} '
+              f'match={grid_match_covered:2d}/{len(real_boff):2d} '
+              f't={grid_t:.1f}s')
 
     print('\n' + '=' * 80)
     print(f'Screens tested:           {len(rows)}')
     print(f'Screens without GT EQ:    {no_eq_count}')
     print(f'GT BOFF total:            {total_gt}')
-    print(f'Covered (IoU≥0.30):       {total_covered} = '
-          f'{total_covered/max(total_gt,1)*100:.1f}%')
+    print(f'Window coverage:          {total_covered} = '
+          f'{total_covered/max(total_gt,1)*100:.1f}%  (dets inside window)')
+    print(f'Grid geo coverage:        {total_grid_geo} = '
+          f'{total_grid_geo/max(total_gt,1)*100:.1f}%  (grid placed on correct cells)')
+    print(f'Grid match coverage:      {total_grid_match} = '
+          f'{total_grid_match/max(total_gt,1)*100:.1f}%  (match() hit at grid cell)')
     print(f'Baseline (current code):  327 = 74.0%')
 
-    rows.sort(key=lambda r: r['cov_pct'])
-    print('\nPer-screen coverage (this run):')
+    rows.sort(key=lambda r: r['grid_geo_pct'])
+    print('\nPer-screen grid geo coverage (this run):')
     for r in rows:
-        bar = '█' * int(r['cov_pct'] / 5)
-        print(f'  {r["file"][:42]:<42s}  '
-              f'{r["covered"]:2d}/{r["gt_n"]:2d} ({r["cov_pct"]:5.1f}%) {bar}')
+        bar = '█' * int(r['grid_geo_pct'] / 5)
+        combo = r.get('grid_combo')
+        combo_str = f'row={combo[0]} col={combo[1]} slot={combo[2]}' if combo else '---'
+        print(f'  {r["file"][:38]:<38s}  '
+              f'win={r["covered"]:2d}/{r["gt_n"]:2d} '
+              f'geo={r["grid_geo"]:2d}/{r["gt_n"]:2d} ({r["grid_geo_pct"]:5.1f}%) '
+              f'match={r["grid_match"]:2d}/{r["gt_n"]:2d}  {combo_str}  {bar}')
 
     (OUT / 'scan.json').write_text(json.dumps({
         'totals': {
