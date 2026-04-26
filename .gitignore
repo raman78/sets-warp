@@ -20,7 +20,7 @@ SETS-WARP/
 # IDE
 .idea/
 
-# Claude Code local config (may contain tokens)
+# Claude Code local config
 .claude/
 
 # Backup files
