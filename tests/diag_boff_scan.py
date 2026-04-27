@@ -435,36 +435,37 @@ _GRID_TOTAL  = (_GRID_ROWS_L + _GRID_ROWS_R) * 4   # 20
 
 def grid_from_anchor(matcher, img, boff_dets, window, icon_est, boff_names,
                      n_rows_left=_GRID_ROWS_L, n_rows_right=_GRID_ROWS_R,
-                     verbose=False):
+                     top_k=1, verbose=False):
     """Fit a 2-col × (n_rows_left + n_rows_right) × 4-slot BOFF grid.
 
     Canonical T6: left col 3 seats, right col 2 seats → 20 grid positions.
-    The inner loop uses (left_x0, n_rows_left) and (right_x0, n_rows_right)
-    so the right column never gets the phantom 3rd row.
+    Tries the top-K highest-conf detections inside `window` as anchors and
+    keeps the placement with the highest penalised score across all anchors.
+    This guards against false-positive single anchors winning by themselves.
 
-    Geometry (measured on Ambassador-broadside.png, 1584×900):
-      pitch_x = icon_w + 2   ≈ 34 px  — slot separation within a row
-      pitch_y = int(icon_h × 2.2)      — row-to-row gap
-                measured 93 px; icon_h=42 → 42×2.2=92.4 ≈ 92
-                (factor 2.5 gave 105 px — too large; 2.2 matches GT)
-                TODO: verify min/max/median across all 34 annotated screens.
-      col_gap  = int(pitch_x × 2.5) ≈ 85 px — L right-edge to R left-edge
-                measured 85 px on Ambassador (matches formula)
-                TODO: measure across all 34 screens.
+    Geometry (measured across 35 GT BOFF panels — see diag_boff_geometry.py):
+      pitch_x / icon_w  = 1.10 ± 0.04  (stable; pitch_x = icon_w + 2 ≈ 1.07)
+      pitch_y / icon_h  = 2.38 ± 0.08  (stable median; range 2.20-2.58)
+      col_gap / pitch_x = 1.85 (bimodal: ~1.7 cluster of 17 + ~2.7 cluster of 14)
+    Therefore col_gap is searched over both candidates per anchor and the
+    better-scoring one wins.
 
-    Anchor combos: n_rows_left × 2 cols × 4 slots = 24.
-    For a_col='R' with a_row ≥ n_rows_right the anchor is hypothetical
-    (below the R col's real area) — the bounds check skips invalid grids.
+    Anchor combos per anchor: n_rows_left × 2 cols × 4 slots = 24.
+    For a_col='R' with a_row ≥ n_rows_right the hypothesis places the anchor
+    in a phantom row — bounds-check still passes; the placement is allowed
+    but rarely wins (anchor is outside the actual grid).
 
     Scoring: sum(conf) − 0.05 × n_unmatched
-    Penalises placements where most positions are empty; prevents 8 weak
-    matches (8×0.6=4.8 − 0.6=4.2) from beating 5 strong matches
-    (5×0.8=4.0 − 0.75=3.25 ... hmm, adjust λ if needed after measurement).
+    Penalises placements where most positions are empty.
+
+    To keep cost bounded, match() results are cached per (gx, gy) within a
+    single call — placements often share grid cells.
 
     Returns (positions, dets, combo, score, elapsed_s).
       positions : all n_total grid cells of best combo (for geo-coverage)
       dets      : cells with match conf ≥ 0.15
-      combo     : (a_row, a_col, a_slot) or None
+      combo     : (anchor_idx, a_row, a_col, a_slot) or None
+                  anchor_idx is 0-based index into top-K
       score     : penalised total conf
       elapsed_s : wall time in seconds
     """
@@ -475,8 +476,9 @@ def grid_from_anchor(matcher, img, boff_dets, window, icon_est, boff_names,
     icon_w = icon_est
     icon_h = max(28, int(round(h * 0.047)))
     pitch_x = icon_w + 2
-    pitch_y = int(icon_h * 2.2)
-    col_gap = int(pitch_x * 2.5)
+    pitch_y = int(icon_h * 2.4)
+    # Two candidate col_gaps — bimodal in GT data, pick winner per placement
+    col_gap_candidates = (int(pitch_x * 1.7), int(pitch_x * 2.7))
     n_total = (n_rows_left + n_rows_right) * 4
 
     wx, wy, ww, wh = window
@@ -486,80 +488,101 @@ def grid_from_anchor(matcher, img, boff_dets, window, icon_est, boff_names,
     if not inside:
         return [], [], None, 0.0, time.monotonic() - t0
 
-    anchor = max(inside, key=lambda d: d[5])
-    ax = anchor[0] + anchor[2] // 2
-    ay = anchor[1] + anchor[3] // 2
+    inside_sorted = sorted(inside, key=lambda d: d[5], reverse=True)
+    anchors = inside_sorted[:max(1, top_k)]
 
     if verbose:
-        print(f'    grid anchor: ({anchor[0]},{anchor[1]}) '
-              f'conf={anchor[5]:.3f}  {anchor[4]!r}')
+        print(f'    grid anchors top-{len(anchors)}:')
+        for i, a in enumerate(anchors):
+            print(f'      [{i}] ({a[0]},{a[1]}) conf={a[5]:.3f} {a[4]!r}')
+
+    # Cache match() results within this call: same (gx, gy, icon_w, icon_h) crop
+    # is matched at most once even when multiple placements share that cell.
+    match_cache: dict = {}
+
+    def _match_at(gx, gy):
+        key = (gx, gy)
+        if key in match_cache:
+            return match_cache[key]
+        if gx + icon_w > w or gy + icon_h > h:
+            match_cache[key] = (None, 0.0)
+            return match_cache[key]
+        crop = img[gy:gy + icon_h, gx:gx + icon_w]
+        if float(crop.std()) < 6.0:
+            match_cache[key] = (None, 0.0)
+            return match_cache[key]
+        name, conf, _, _ = matcher.match(crop, candidate_names=boff_names)
+        match_cache[key] = (name if conf >= 0.15 else None,
+                            conf if conf >= 0.15 and name else 0.0)
+        return match_cache[key]
 
     best_score     = -1e9
     best_positions: list = []
     best_dets:      list = []
     best_combo             = None
 
-    for a_row in range(n_rows_left):        # 0-2; for R col row=2 is hypothetical
-        for a_col in ('L', 'R'):
-            for a_slot in range(4):
-                if a_col == 'L':
-                    left_x0  = ax - a_slot * pitch_x - icon_w // 2
-                    right_x0 = left_x0 + 3 * pitch_x + col_gap
-                else:
-                    right_x0 = ax - a_slot * pitch_x - icon_w // 2
-                    left_x0  = right_x0 - 3 * pitch_x - col_gap
+    for a_idx, anchor in enumerate(anchors):
+        ax = anchor[0] + anchor[2] // 2
+        ay = anchor[1] + anchor[3] // 2
 
-                y0 = ay - a_row * pitch_y - icon_h // 2
+        for cg_idx, col_gap in enumerate(col_gap_candidates):
+            for a_row in range(n_rows_left):
+                for a_col in ('L', 'R'):
+                    for a_slot in range(4):
+                        if a_col == 'L':
+                            left_x0  = ax - a_slot * pitch_x - icon_w // 2
+                            right_x0 = left_x0 + 3 * pitch_x + col_gap
+                        else:
+                            right_x0 = ax - a_slot * pitch_x - icon_w // 2
+                            left_x0  = right_x0 - 3 * pitch_x - col_gap
 
-                # Validate: entire grid must fit inside image
-                if left_x0 < 0 or y0 < 0:
-                    continue
-                if right_x0 + 3 * pitch_x + icon_w > w:
-                    continue
-                if y0 + (n_rows_left - 1) * pitch_y + icon_h > h:
-                    continue
+                        y0 = ay - a_row * pitch_y - icon_h // 2
 
-                score     = 0.0
-                n_matched = 0
-                positions = []
-                dets      = []
+                        if left_x0 < 0 or y0 < 0:
+                            continue
+                        if right_x0 + 3 * pitch_x + icon_w > w:
+                            continue
+                        if y0 + (n_rows_left - 1) * pitch_y + icon_h > h:
+                            continue
 
-                # Right col has n_rows_right rows, left col has n_rows_left rows
-                for col_x0, n_rows in ((left_x0, n_rows_left), (right_x0, n_rows_right)):
-                    for row in range(n_rows):
-                        for slot in range(4):
-                            gx = col_x0 + slot * pitch_x
-                            gy = y0 + row * pitch_y
-                            positions.append((gx, gy, icon_w, icon_h))
-                            if gx + icon_w > w or gy + icon_h > h:
-                                continue
-                            crop = img[gy:gy + icon_h, gx:gx + icon_w]
-                            if float(crop.std()) < 6.0:
-                                continue
-                            name, conf, _, _ = matcher.match(
-                                crop, candidate_names=boff_names)
-                            if conf >= 0.15 and name:
-                                score    += conf
-                                n_matched += 1
-                                dets.append(
-                                    (gx, gy, icon_w, icon_h, name, conf, '__boff_grid'))
+                        score     = 0.0
+                        n_matched = 0
+                        positions = []
+                        dets      = []
 
-                # Penalise unmatched positions (λ=0.05)
-                score -= 0.05 * (n_total - n_matched)
+                        for col_x0, n_rows in ((left_x0, n_rows_left),
+                                               (right_x0, n_rows_right)):
+                            for row in range(n_rows):
+                                for slot in range(4):
+                                    gx = col_x0 + slot * pitch_x
+                                    gy = y0 + row * pitch_y
+                                    positions.append((gx, gy, icon_w, icon_h))
+                                    name, conf = _match_at(gx, gy)
+                                    if name:
+                                        score     += conf
+                                        n_matched += 1
+                                        dets.append(
+                                            (gx, gy, icon_w, icon_h,
+                                             name, conf, '__boff_grid'))
 
-                if score > best_score:
-                    best_score     = score
-                    best_positions = positions
-                    best_dets      = dets
-                    best_combo     = (a_row, a_col, a_slot)
+                        score -= 0.05 * (n_total - n_matched)
+
+                        if score > best_score:
+                            best_score     = score
+                            best_positions = positions
+                            best_dets      = dets
+                            best_combo     = (a_idx, cg_idx, a_row, a_col, a_slot)
 
     elapsed = time.monotonic() - t0
     if verbose:
         if best_combo:
-            print(f'    grid best: row={best_combo[0]} col={best_combo[1]} '
-                  f'slot={best_combo[2]}  score={best_score:.2f}  '
+            ai, cgi, ar, ac, asl = best_combo
+            cg_pick = col_gap_candidates[cgi]
+            print(f'    grid best: anchor={ai} cg={cg_pick}({cgi}) '
+                  f'row={ar} col={ac} slot={asl}  '
+                  f'score={best_score:.2f}  '
                   f'positions={len(best_positions)}  matched={len(best_dets)}  '
-                  f't={elapsed:.2f}s')
+                  f'cache={len(match_cache)} crops  t={elapsed:.2f}s')
         else:
             print(f'    grid: no valid placement  t={elapsed:.2f}s')
     return best_positions, best_dets, best_combo, best_score, elapsed
@@ -569,6 +592,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--screen-filter', type=str, default='')
+    ap.add_argument('--top-k', type=int, default=1,
+                    help='Top-K detections to try as grid anchors (default 1)')
     ap.add_argument('--verbose', action='store_true')
     args = ap.parse_args()
 
@@ -663,7 +688,8 @@ def main():
         # Grid extrapolation — second stage
         grid_positions, grid_dets, grid_combo, grid_score, grid_t = (
             grid_from_anchor(matcher, img, boff_dets, window, icon_est,
-                             boff_names, verbose=args.verbose)
+                             boff_names, top_k=args.top_k,
+                             verbose=args.verbose)
             if window else ([], [], None, 0.0, 0.0)
         )
 
@@ -754,7 +780,8 @@ def main():
     for r in rows:
         bar = '█' * int(r['grid_geo_pct'] / 5)
         combo = r.get('grid_combo')
-        combo_str = f'row={combo[0]} col={combo[1]} slot={combo[2]}' if combo else '---'
+        combo_str = (f'a={combo[0]} cg={combo[1]} row={combo[2]} col={combo[3]} slot={combo[4]}'
+                     if combo else '---')
         print(f'  {r["file"][:38]:<38s}  '
               f'win={r["covered"]:2d}/{r["gt_n"]:2d} '
               f'geo={r["grid_geo"]:2d}/{r["gt_n"]:2d} ({r["grid_geo_pct"]:5.1f}%) '
@@ -765,6 +792,11 @@ def main():
             'screens_tested': len(rows),
             'gt_total': total_gt,
             'covered': total_covered,
+            'covered_pct': round(total_covered / max(total_gt, 1) * 100, 1),
+            'grid_geo': total_grid_geo,
+            'grid_geo_pct': round(total_grid_geo / max(total_gt, 1) * 100, 1),
+            'grid_match': total_grid_match,
+            'grid_match_pct': round(total_grid_match / max(total_gt, 1) * 100, 1),
             'no_eq_anchor': no_eq_count,
         },
         'per_screen': rows,

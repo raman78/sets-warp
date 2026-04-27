@@ -115,14 +115,67 @@ def colour_mask(hsv, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi):
             & (V >= v_lo) & (V <= v_hi)).astype(np.uint8) * 255
 
 
+def _merge_close_bboxes(boxes, gap_x, overlap_y_frac=0.6):
+    """Merge bboxes whose x-gap is ≤ gap_x and whose y-overlap is at
+    least overlap_y_frac of the shorter bbox height. Used to glue
+    fragmented same-colour CCs (e.g. a marker bar broken by a darker
+    inner pixel column) into a single bar.
+
+    Each input/output box: (x, y, w, h, area).
+    """
+    if not boxes:
+        return boxes
+    boxes = sorted(boxes, key=lambda b: b[0])
+    merged = [list(boxes[0])]
+    for b in boxes[1:]:
+        m = merged[-1]
+        # x-gap from m's right edge to b's left edge
+        gx = b[0] - (m[0] + m[2])
+        # y-overlap fraction (against shorter)
+        oy = max(0, min(m[1] + m[3], b[1] + b[3]) - max(m[1], b[1]))
+        short = max(1, min(m[3], b[3]))
+        if gx <= gap_x and (oy / short) >= overlap_y_frac:
+            x0 = min(m[0], b[0])
+            y0 = min(m[1], b[1])
+            x1 = max(m[0] + m[2], b[0] + b[2])
+            y1 = max(m[1] + m[3], b[1] + b[3])
+            m[0] = x0
+            m[1] = y0
+            m[2] = x1 - x0
+            m[3] = y1 - y0
+            m[4] = m[4] + b[4]  # area sums (approximate)
+        else:
+            merged.append(list(b))
+    return [tuple(m) for m in merged]
+
+
 def detect_markers(img, icon_w, icon_h):
-    """Detect seat-type markers. Returns list of (x, y, w, h, code)."""
+    """Detect seat-type markers. Returns list of (x, y, w, h, code).
+
+    Per band:
+      1. HSV mask + morph-CLOSE (horizontal kernel ~icon_w*0.3 to glue
+         fragmented bars into one CC).
+      2. CC analysis → raw bboxes.
+      3. _merge_close_bboxes() → merge same-colour CCs that are close
+         in x and overlap in y, healing remaining gaps.
+      4. Size + aspect + fill-density filter.
+      5. Cross-band IoU dedupe (>0.4).
+    """
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    min_w = max(6, int(icon_w * 0.25))
-    max_w = max(int(icon_w * 1.4), 40)
-    min_h = max(8, int(icon_h * 0.4))
-    max_h = max(int(icon_h * 1.6), 50)
+    # Size: a real marker is roughly icon_w × icon_h. Both dims have
+    # tighter bounds than v2 — narrow noise stripes and oversized
+    # background patches get rejected.
+    min_w = max(8,  int(icon_w * 0.45))
+    max_w = max(int(icon_w * 1.25), 36)
+    min_h = max(12, int(icon_h * 0.55))
+    max_h = max(int(icon_h * 1.35), 44)
+    # Fill density: solid colour blobs only — noise has lower density.
+    fill_min = 0.50
+
+    # Horizontal close kernel to glue stripe fragments inside one mask.
+    kx = max(3, int(round(icon_w * 0.30)))
+    ky = max(2, icon_h // 6)
 
     out = []
     seen_rects = []
@@ -130,19 +183,24 @@ def detect_markers(img, icon_w, icon_h):
         m = colour_mask(hsv, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi)
         m = cv2.morphologyEx(
             m, cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (2, max(2, icon_h // 8))),
+            cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky)),
         )
         n, _, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
-        for i in range(1, n):
-            x, y, w, h, area = stats[i]
+        raw = [tuple(int(v) for v in stats[i, [0, 1, 2, 3, 4]])
+               for i in range(1, n)]
+        # Merge fragmented same-colour bars before filtering on size.
+        gap_x = max(2, int(round(icon_w * 0.35)))
+        merged = _merge_close_bboxes(raw, gap_x=gap_x, overlap_y_frac=0.55)
+
+        for x, y, w, h, area in merged:
             if w < min_w or w > max_w:
                 continue
             if h < min_h or h > max_h:
                 continue
             ar = w / max(h, 1)
-            if ar < 0.15 or ar > 3.5:
+            if ar < 0.20 or ar > 3.0:
                 continue
-            if area < (w * h) * 0.25:
+            if area < (w * h) * fill_min:
                 continue
             dup = False
             for (px, py, pw, ph) in seen_rects:
