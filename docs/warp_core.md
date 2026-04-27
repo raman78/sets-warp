@@ -220,6 +220,26 @@ Candidate next steps (not yet implemented):
 - post-anchor verification by counting ability icons inside the panel
   envelope.
 
+### Specialization classification (post-hoc)
+
+After the seat-type detector returns markers, `classify_stripe()`
+samples the right edge of each marker bbox and scores it against the
+five spec-stripe bands (Command, Intelligence, Temporal, Pilot,
+Miracle Worker). The dominant band, if its match fraction exceeds
+0.15, is recorded as the seat's specialization.
+
+Verified on 15 user-labelled GT seats (`tests/diag_boff_spec_stripe_gt.py`):
+**9/15 correctly identified.** The 6 misses are not classifier errors —
+in 5 cases the seat-type detector picked a non-marker CC for that
+seat (so there was no real marker for the classifier to read), and 1
+case scored just below the 0.15 acceptance threshold.
+
+The classifier deliberately runs *after* detection so it doesn't
+contribute extra noise to the RANSAC panel search. An earlier
+experiment used the five stripe colours as additional detection seeds:
+total markers per screen rose from 33 to 40 and panel anchor dropped
+from 91.4 % to 88.6 % — the reverted approach.
+
 ### Marker geometry
 
 Per-seat sampling region used by the diagnostics:

@@ -1,25 +1,23 @@
 """
-BOFF profession-marker detector — read-only prototype v2.
+BOFF profession-marker detector — read-only prototype v3.
 
-Each BOFF seat has a small profession-coloured badge on the LEFT of its
-name bar (which sits BELOW the 4 ability icons). The badge colour matches
-the seat's profession:
-  - Tactical:    red    H~0,    S>150, V>80
-  - Engineering: yellow H~22,   S>50,  V>150  (S can be low for pale gold)
-  - Science:     blue   H~108,  S>150, V>100
+Each BOFF seat has a profession-coloured badge on the LEFT of its name
+bar (which sits BELOW the 4 ability icons). The badge has two zones:
+  - main zone (75-95% of bar width): seat type — TAC / ENG / SCI / UNI
+  - spec stripe (right 5-25% of bar): specialization — Command,
+    Intelligence, Temporal, Pilot, Miracle Worker (only on spec seats)
 
-These markers are far more uniform than ability icons:
-  - solid colour (high S OR high V),
-  - fixed size (~icon_w × icon_h),
-  - present at every seat regardless of which abilities are slotted.
+HSV bands are sampled across 25+ GT seats; stripe bands verified
+2026-04-26 against 15 user-labelled seats (see
+`tests/diag_boff_spec_stripe_gt.py`).
 
 Approach:
-  1. Build narrow-band colour mask for each of the 3 colours separately.
-  2. Find CCs sized roughly icon_w × icon_h.
-  3. Cluster CCs into columns by x.
-  4. Score column-pair candidates expecting 2 cols × (2..3) markers,
-     col-gap ≈ 4 * pitch_x, pitch_y ≈ 2.4 * icon_h.
-  5. Best pair = BOFF panel anchor.
+  1. Build narrow-band colour mask per band (4 main + 5 stripe).
+  2. Find CCs sized roughly icon_w × icon_h (main) or narrower (stripe).
+  3. IoU-dedupe overlapping CCs across bands.
+  4. RANSAC-style pair search: for each (m_i, m_j) at similar y and
+     dx in [3..9]·icon_w, sweep 5 pitch_y candidates, count inliers.
+  5. Score: prefers 3+2=5, profession diversity, L≥R layout.
 
 Validation: per screen with ≥5 GT BOFFs, compare detected anchor centre
 to GT panel centre; also count markers landing on a GT seat.
@@ -42,15 +40,27 @@ OUT_VIZ  = OUT_DIR / 'boff_markers_viz'
 
 VIRTUAL = frozenset({'__empty__', '__inactive__'})
 
-# Colour bands (OpenCV HSV: H 0-180).
-# Sampled across 25 GT seats in 5 screens.
-COLOUR_BANDS = [
+# Seat-type bands (main zone of the marker, 75-95% of bar width).
+# Used as DETECTION seeds. Sampled across 25+ GT seats.
+MAIN_BANDS = [
     # name, H_lo, H_hi, S_lo, S_hi, V_lo, V_hi, code
-    ('TAC', 0,   6,   160, 255, 90,  255, 'T'),     # red
-    ('TAC', 174, 180, 160, 255, 90,  255, 'T'),     # red wrap-around
-    ('ENG', 18,  30,  120, 200, 160, 210, 'E'),     # saturated gold
-    ('SCI', 102, 114, 160, 255, 110, 255, 'S'),     # blue
-    ('UNI', 18,  30,  40,  110, 195, 255, 'U'),     # pale cream yellow (low S, high V)
+    ('TAC',   0,   6,   160, 255,  90, 255, 'T'),  # red
+    ('TAC', 174, 180,   160, 255,  90, 255, 'T'),  # red wrap
+    ('ENG',  18,  30,   120, 200, 160, 210, 'E'),  # saturated gold
+    ('SCI', 102, 114,   160, 255, 110, 255, 'S'),  # blue
+    ('UNI',  18,  30,    40, 110, 195, 255, 'U'),  # pale cream
+]
+
+# Spec-stripe bands (narrow right edge, 5-25% of bar width). NOT used
+# for detection — applied post-hoc to label each detected seat with its
+# specialization. Verified against 15 user-labelled seats (2026-04-26).
+STRIPE_BANDS = [
+    # name, H_lo, H_hi, S_lo, S_hi, V_lo, V_hi, spec_code
+    ('CMD',  12,  19,   120, 200, 130, 200, 'O'),  # Command — orange
+    ('INT', 120, 135,   130, 200, 150, 220, 'P'),  # Intelligence — purple
+    ('TMP',  25,  35,   140, 220, 215, 255, 'Y'),  # Temporal — bright gold
+    ('PIL',  86, 100,    80, 140, 215, 255, 'C'),  # Pilot — light cyan
+    ('MW',   32,  44,   220, 255, 195, 255, 'L'),  # Miracle Worker — lime
 ]
 
 
@@ -106,20 +116,18 @@ def colour_mask(hsv, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi):
 
 
 def detect_markers(img, icon_w, icon_h):
-    """Return list of (x, y, w, h, code)."""
+    """Detect seat-type markers. Returns list of (x, y, w, h, code)."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    # Marker CC shape — solid blob roughly icon-sized
     min_w = max(6, int(icon_w * 0.25))
     max_w = max(int(icon_w * 1.4), 40)
     min_h = max(8, int(icon_h * 0.4))
     max_h = max(int(icon_h * 1.6), 50)
 
     out = []
-    seen_rects = []  # to dedupe overlaps across colour bands
-    for name, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi, code in COLOUR_BANDS:
+    seen_rects = []
+    for name, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi, code in MAIN_BANDS:
         m = colour_mask(hsv, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi)
-        # consolidate
         m = cv2.morphologyEx(
             m, cv2.MORPH_CLOSE,
             cv2.getStructuringElement(cv2.MORPH_RECT, (2, max(2, icon_h // 8))),
@@ -131,14 +139,11 @@ def detect_markers(img, icon_w, icon_h):
                 continue
             if h < min_h or h > max_h:
                 continue
-            # squareish-ish blob — reject very thin lines
             ar = w / max(h, 1)
             if ar < 0.15 or ar > 3.5:
                 continue
-            # density check: filled fraction > 0.30
             if area < (w * h) * 0.25:
                 continue
-            # dedupe overlap
             dup = False
             for (px, py, pw, ph) in seen_rects:
                 if x < px + pw and px < x + w and y < py + ph and py < y + h:
@@ -152,6 +157,60 @@ def detect_markers(img, icon_w, icon_h):
                 continue
             seen_rects.append((x, y, w, h))
             out.append((int(x), int(y), int(w), int(h), code))
+    return out
+
+
+def classify_stripe(hsv, marker, icon_w):
+    """Identify the specialization stripe on the right edge of a marker.
+
+    Samples the rightmost ~25% of the marker bar and counts pixels per
+    stripe band. Returns (spec_code, score) or (None, 0) if no band
+    dominates. Score = fraction of right-edge pixels matching the band.
+    """
+    x, y, w, h, _ = marker
+    # The main-zone CC bbox is 75-95% of the bar; the spec stripe is
+    # the remaining 5-25% on the right. We sample starting just before
+    # the CC's right edge (in case the CC over-extended) and continuing
+    # past it by a fraction of the CC width — this scales to whatever
+    # bar size we have, rather than relying on an estimated icon_w.
+    sx0 = x + w - max(2, int(w * 0.10))
+    sx1 = x + w + max(6, int(w * 0.40))
+    sy0 = y + max(0, int(h * 0.10))
+    sy1 = y + h - max(0, int(h * 0.10))
+    H, W = hsv.shape[:2]
+    sx0 = max(0, sx0); sx1 = min(W, sx1)
+    sy0 = max(0, sy0); sy1 = min(H, sy1)
+    if sx1 <= sx0 or sy1 <= sy0:
+        return (None, 0.0)
+    crop = hsv[sy0:sy1, sx0:sx1]
+    total = crop.shape[0] * crop.shape[1]
+    if total <= 0:
+        return (None, 0.0)
+
+    best_code = None
+    best_count = 0
+    for _, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi, code in STRIPE_BANDS:
+        m = ((crop[:, :, 0] >= h_lo) & (crop[:, :, 0] <= h_hi)
+             & (crop[:, :, 1] >= s_lo) & (crop[:, :, 1] <= s_hi)
+             & (crop[:, :, 2] >= v_lo) & (crop[:, :, 2] <= v_hi))
+        c = int(m.sum())
+        if c > best_count:
+            best_count = c
+            best_code = code
+    score = best_count / total
+    # Require ≥15% of the strip to match — below that it's likely noise.
+    if score < 0.15:
+        return (None, score)
+    return (best_code, score)
+
+
+def annotate_specs(img, markers, icon_w):
+    """Return [(x, y, w, h, seat_code, spec_code_or_None, score)]."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    out = []
+    for x, y, w, h, code in markers:
+        spec, score = classify_stripe(hsv, (x, y, w, h, code), icon_w)
+        out.append((x, y, w, h, code, spec, round(score, 3)))
     return out
 
 
@@ -377,6 +436,8 @@ def evaluate_screen(fname, img, boffs):
     icon_w, icon_h = estimate_icon_dims(img)
     markers = detect_markers(img, icon_w, icon_h)
     panel = best_panel(markers, icon_w, icon_h)
+    annotated = annotate_specs(img, markers, icon_w)
+    n_specced = sum(1 for *_, sp, _s in annotated if sp is not None)
 
     gt_seats = gt_seat_centres(boffs, icon_h)
     gx0, gy0, gx1, gy1 = gt_panel_extent(boffs)
@@ -432,23 +493,31 @@ def evaluate_screen(fname, img, boffs):
         'icon_w':     icon_w,
         'icon_h':     icon_h,
         'n_markers':  len(markers),
+        'n_specced':  n_specced,
         'gt_seats':   len(gt_seats),
         'seat_hits':  seat_hit,
         'hit_pct':    round(seat_hit / max(len(gt_seats), 1) * 100, 1),
         'panel':      panel_info,
         'panel_ok':   panel_in_gt,
         'markers':    [list(m) for m in markers],
+        'annotated':  [list(m) for m in annotated],
     }
 
 
 def viz(fname, img, markers, panel, boffs):
     out = img.copy()
     code_color = {
-        'T': (0, 0, 255),       # red
-        'E': (0, 200, 255),     # gold
-        'S': (255, 100, 0),     # blue
-        'U': (200, 255, 255),   # cream (Universal)
-        'X': (255, 0, 200),     # magenta (legacy)
+        # Seat-type main zone
+        'T': (0,   0,   255),  # red       — Tactical
+        'E': (0,   200, 255),  # gold      — Engineering
+        'S': (255, 100, 0),    # blue      — Science
+        'U': (200, 255, 255),  # cream     — Universal
+        # Spec stripe
+        'O': (0,   140, 220),  # orange    — Command
+        'P': (200, 0,   200),  # purple    — Intelligence
+        'Y': (0,   220, 220),  # bright Y  — Temporal
+        'C': (255, 220, 100),  # cyan      — Pilot
+        'L': (50,  220, 0),    # lime      — Miracle Worker
     }
     for x, y, w, h, code in markers:
         c = code_color.get(code, (255, 255, 255))
@@ -519,8 +588,16 @@ def main():
         print(f'  {r["file"][:38]:<38s}  '
               f'seats={r["seat_hits"]}/{r["gt_seats"]} '
               f'({r["hit_pct"]:5.1f}%)  '
-              f'mks={r["n_markers"]:3d}  '
+              f'mks={r["n_markers"]:3d} '
+              f'spec={r["n_specced"]:2d}  '
               f'panel={panel_ok}  {bar}')
+
+    # Spec-code histogram across all detected markers
+    spec_hist = {}
+    for r in rows:
+        for *_, sp, _s in r['annotated']:
+            if sp:
+                spec_hist[sp] = spec_hist.get(sp, 0) + 1
 
     print('\n' + '=' * 80)
     print(f'Total seats hit: {total_hits}/{total_seats} '
@@ -529,6 +606,9 @@ def main():
           f'({panel_ok_count / max(len(rows), 1) * 100:.1f}%)')
     print(f'Mean markers detected: {st.mean(r["n_markers"] for r in rows):.1f}')
     print(f'Median markers detected: {st.median(r["n_markers"] for r in rows):.1f}')
+    print(f'Markers with spec stripe identified: '
+          f'{sum(r["n_specced"] for r in rows)}  '
+          f'({", ".join(f"{c}:{n}" for c, n in sorted(spec_hist.items()))})')
     print(f'Visualisations: {OUT_VIZ}')
 
     OUT_JSON.write_text(json.dumps({'screens': rows}, indent=2),

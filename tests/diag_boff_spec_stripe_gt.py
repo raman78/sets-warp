@@ -175,6 +175,64 @@ def main():
               f'S med={int(st.median(ss)):>3d}  '
               f'V med={int(st.median(vs)):>3d}')
 
+    # Verify the detector's post-hoc spec classifier against GT labels.
+    print()
+    print('=== detector verification (classify_stripe vs GT) ===')
+    from diag_boff_markers import (
+        detect_markers, annotate_specs, estimate_icon_dims,
+    )
+    spec_to_code = {
+        'command': 'O', 'intel': 'P', 'temporal': 'Y',
+        'pilot': 'C', 'mw': 'L',
+    }
+    correct = 0
+    total = 0
+    for fname, col, row, spec in GT:
+        if fname not in ann:
+            continue
+        boffs = [a['bbox'] for a in ann[fname]
+                 if a.get('state') == 'confirmed'
+                 and a.get('slot', '').startswith('Boff ')
+                 and a.get('name') not in VIRTUAL
+                 and a.get('bbox')]
+        if not boffs:
+            continue
+        path = find_image(fname)
+        if path is None:
+            continue
+        img = cv2.imread(str(path))
+        if img is None:
+            continue
+        seats  = group_seats(boffs)
+        match = next((s for s in seats if s[0] == col and s[1] == row), None)
+        if match is None:
+            continue
+        _, _, x_left, yc = match
+        icon_w, icon_h = estimate_icon_dims(img)
+        markers = detect_markers(img, icon_w, icon_h)
+        annot   = annotate_specs(img, markers, icon_w)
+
+        # Find the marker closest to this seat (left of x_left, near yc).
+        candidates = [m for m in annot
+                      if abs((m[1] + m[3] / 2) - (yc + icon_h * 1.0)) < icon_h * 1.0
+                      and (x_left - icon_w * 1.8) < (m[0] + m[2] / 2) < x_left]
+        if not candidates:
+            print(f'  {fname:<42s} {col} r{row} {spec:<8s}  '
+                  f'-> NO MARKER detected')
+            total += 1
+            continue
+        candidates.sort(key=lambda m: abs((m[0] + m[2] / 2) - x_left))
+        x, y, w, h, seat_code, spec_code, score = candidates[0]
+        expected = spec_to_code[spec]
+        ok = '✓' if spec_code == expected else '✗'
+        print(f'  {fname:<42s} {col} r{row} {spec:<8s}  '
+              f'seat={seat_code} spec={spec_code or "-"} '
+              f'(score={score:.2f}) expected={expected}  {ok}')
+        total += 1
+        if spec_code == expected:
+            correct += 1
+    print(f'\n  -> classifier accuracy on GT: {correct}/{total}')
+
 
 if __name__ == '__main__':
     main()
