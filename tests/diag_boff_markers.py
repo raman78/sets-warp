@@ -176,7 +176,7 @@ def detect_markers(img, icon_w, icon_h):
     # (w/h ≈ 0.4..1.6). Wide squat rectangles = UI false-positives.
     ar_min, ar_max = 0.30, 1.8
     # Fill density: solid colour blobs only — noise has lower density.
-    fill_min = 0.58
+    fill_min = 0.70
 
     # Horizontal close kernel to glue stripe fragments inside one mask.
     # Keep small — `_merge_close_bboxes` handles real gaps; an aggressive
@@ -193,7 +193,7 @@ def detect_markers(img, icon_w, icon_h):
     # Edge density via Canny on the bbox INTERIOR (3-px inset to skip
     # the bar's own border). Real bars: ~0% interior edges.
     # Ability icons / textured UI: 15-35%.
-    edge_max = 0.14
+    edge_max = 0.07
     edge_inset = 2
     edges = cv2.Canny(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), 80, 160)
 
@@ -213,17 +213,27 @@ def detect_markers(img, icon_w, icon_h):
         for h_lo, h_hi, s_lo, s_hi, v_lo, v_hi in info['ranges']:
             part = colour_mask(hsv, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi)
             m = part if m is None else cv2.bitwise_or(m, part)
+        # Run CC on BOTH the raw mask and a CLOSE-d copy and process
+        # each independently. CLOSE glues genuinely-fragmented bars;
+        # the raw mask preserves clean markers that CLOSE would merge
+        # with adjacent same-hue UI strips (e.g. dark-red name bars
+        # sitting 3-5 px to the right of the marker on Pumwl1).
+        # Combining bboxes BEFORE size filtering would let the bloated
+        # post-CLOSE blob swallow the clean pre-CLOSE one — instead we
+        # keep them separate; the IoU dedupe at the end drops doubles.
         m_closed = cv2.morphologyEx(
             m, cv2.MORPH_CLOSE,
             cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky)),
         )
-        n, _, stats, _ = cv2.connectedComponentsWithStats(
-            m_closed, connectivity=8)
-        raw = [tuple(int(v) for v in stats[i, [0, 1, 2, 3, 4]])
-               for i in range(1, n)]
-        # Merge fragmented same-colour bars before filtering on size.
         gap_x = max(2, int(round(icon_w * 0.35)))
-        merged = _merge_close_bboxes(raw, gap_x=gap_x, overlap_y_frac=0.55)
+        merged = []
+        for src in (m, m_closed):
+            n, _, stats, _ = cv2.connectedComponentsWithStats(
+                src, connectivity=8)
+            raw = [tuple(int(v) for v in stats[i, [0, 1, 2, 3, 4]])
+                   for i in range(1, n)]
+            merged.extend(_merge_close_bboxes(
+                raw, gap_x=gap_x, overlap_y_frac=0.55))
 
         for x, y, w, h, area in merged:
             if w < min_w or w > max_w:
@@ -279,6 +289,16 @@ def detect_markers(img, icon_w, icon_h):
                 continue
             seen_rects.append((x, y, w, h))
             out.append((int(x), int(y), int(w), int(h), code))
+
+    # Size-outlier filter: drop markers whose w or h is < 65% of the
+    # median across all detections. Real BOFF markers within a screen
+    # are nearly identical in size; tiny detections are red-coloured
+    # UI artifacts (e.g. empire's 13×18 blob at top-right).
+    if len(out) >= 4:
+        med_w = sorted(m[2] for m in out)[len(out) // 2]
+        med_h = sorted(m[3] for m in out)[len(out) // 2]
+        out = [m for m in out
+               if m[2] >= 0.65 * med_w and m[3] >= 0.65 * med_h]
     return out
 
 
@@ -666,7 +686,7 @@ def viz(fname, img, markers, panel, boffs):
         #   bottom = marker.y (top edge of the bottom-row marker)
         med_w = sorted(m[2] for m in all_m)[len(all_m) // 2]
         med_h = sorted(m[3] for m in all_m)[len(all_m) // 2]
-        ab_w = int(round(med_w / 0.85))
+        ab_w = int(round(med_w / 0.88))
         ab_h = int(round(med_h / 0.80))
         x0 = min(m[0] + m[2] for m in all_m)
         y0 = min(m[1] for m in all_m) - int(round(ab_h * 1.6))
