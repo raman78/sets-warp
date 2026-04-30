@@ -486,6 +486,121 @@ def viz_spec_inspector(fname, img, panel):
     cv2.imwrite(str(OUT_INSPECTOR / out_name), canvas)
 
 
+def full_bar_extent(hsv, marker):
+    """Find the rightmost x where the colour bar (main zone OR spec
+    stripe) still has a strong column-fill, starting from the marker
+    bbox. Returns (full_w_including_stripe, has_spec, stripe_width).
+
+    Only runs the extension scan if `classify_stripe` already detected
+    a spec on this marker — otherwise ability icons just to the right
+    of the marker frequently match some HSV band and inflate full_w.
+    """
+    x, y, w, h, code = marker
+    spec, _score = classify_stripe(hsv, marker, w)
+    if spec is None:
+        return (w, False, 0)
+    H_im, W_im = hsv.shape[:2]
+    # Stripe is ≤30% of full bar in practice — keep look-ahead tight.
+    look_ahead = max(4, int(round(w * 0.35)))
+    sx0 = max(0, x)
+    sx1 = min(W_im, x + w + look_ahead)
+    sy0 = max(0, y + max(0, int(h * 0.15)))
+    sy1 = min(H_im, y + h - max(0, int(h * 0.15)))
+    if sy1 <= sy0 or sx1 <= sx0:
+        return (w, False, 0)
+    crop = hsv[sy0:sy1, sx0:sx1]
+    H = crop[:, :, 0]
+    S = crop[:, :, 1]
+    V = crop[:, :, 2]
+    main_m = np.zeros(crop.shape[:2], dtype=bool)
+    for _name, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi, _c in MAIN_BANDS:
+        main_m |= ((H >= h_lo) & (H <= h_hi)
+                   & (S >= s_lo) & (S <= s_hi)
+                   & (V >= v_lo) & (V <= v_hi))
+    stripe_m = np.zeros(crop.shape[:2], dtype=bool)
+    for _name, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi, _c in STRIPE_BANDS:
+        stripe_m |= ((H >= h_lo) & (H <= h_hi)
+                     & (S >= s_lo) & (S <= s_hi)
+                     & (V >= v_lo) & (V <= v_hi))
+    full_m = main_m | stripe_m
+    # Column fill fraction in the marker y-range
+    col_frac = full_m.mean(axis=0)
+    # Walk right from end of main zone. The +spec stripe sits past a
+    # short dark gap (~2-4 dim cols) — so we don't break on first gap.
+    # Take the rightmost column with ≥35% fill within look_ahead.
+    main_end_in_crop = (x + w) - sx0
+    last_col = main_end_in_crop - 1
+    for ci in range(main_end_in_crop, col_frac.shape[0]):
+        if col_frac[ci] >= 0.35:
+            last_col = ci
+    full_w = max(w, last_col + 1)
+    has_spec = full_w > w + 1
+    stripe_w = full_w - w if has_spec else 0
+    return (full_w, has_spec, stripe_w)
+
+
+def project_seat_slots(panel, n_abilities=4, hsv=None):
+    """Project 4 ability-icon bboxes per detected seat marker.
+
+    Per-column slot X-start is anchored to the right edge of the
+    longest FULL bar (main + spec stripe) in that column — so seats
+    with a +spec stripe (which shortens the detected MAIN-zone bbox)
+    are aligned to the same x as plain seats in the same column. This
+    matches the green envelope's left edge.
+
+    Marker geometry:
+      - ability sits ABOVE the marker, at marker_y - ab_h - gap_y
+      - ab_h = marker_h / 0.63
+      - ab_w = marker_w (icon ≈ marker width in STO)
+      - stride_x = marker_w / 0.88
+
+    Returns list of (seat_idx, slot_idx, x, y, w, h, seat_code).
+    seat_idx is panel marker index in (col_a + col_b) order.
+    """
+    if panel is None:
+        return []
+    a, b, _ = panel
+    all_m = a + b
+    if not all_m:
+        return []
+    med_w = sorted(m[2] for m in all_m)[len(all_m) // 2]
+    med_h = sorted(m[3] for m in all_m)[len(all_m) // 2]
+    stride_x = max(1, int(round(med_w / 0.95)))
+    ab_w = max(1, med_w)
+    ab_h = max(1, int(round(med_h / 0.63)))
+    gap_x = int(round(med_w * 0.08))
+    gap_y = int(round(med_h * 0.20))
+
+    def col_anchor(col):
+        if hsv is None:
+            return max(m[0] + m[2] for m in col)
+        return max(m[0] + full_bar_extent(hsv, m)[0] for m in col)
+    a_anchor = col_anchor(a) if a else 0
+    b_anchor = col_anchor(b) if b else 0
+
+    out = []
+    for seat_idx, m in enumerate(all_m):
+        mx, my, mw, mh, code = m
+        slot_y = my - ab_h - gap_y
+        slot_x0 = (a_anchor if seat_idx < len(a) else b_anchor) + gap_x
+        for k in range(n_abilities):
+            x = slot_x0 + k * stride_x
+            out.append((seat_idx, k, x, slot_y, ab_w, ab_h, code))
+    return out
+
+
+def _bbox_iou(a, b):
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    ix0 = max(ax, bx); iy0 = max(ay, by)
+    ix1 = min(ax + aw, bx + bw); iy1 = min(ay + ah, by + bh)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    inter = (ix1 - ix0) * (iy1 - iy0)
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
+
 def annotate_specs(img, markers, icon_w):
     """Return [(x, y, w, h, seat_code, spec_code_or_None, score)]."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -713,7 +828,8 @@ def gt_seat_centres(boffs, icon_h):
     return out
 
 
-def evaluate_screen(fname, img, boffs):
+def evaluate_screen(fname, img, boffs, gt_full=None):
+    """gt_full: optional [(bbox, name)] including __empty__/__inactive__."""
     h, w = img.shape[:2]
     icon_w, icon_h = estimate_icon_dims(img)
     markers = detect_markers(img, icon_w, icon_h)
@@ -778,6 +894,51 @@ def evaluate_screen(fname, img, boffs):
             'in_gt':    panel_in_gt,
         }
 
+    # --- Per-slot projection + IoU vs GT (incl. virtual slots) ---
+    hsv_eval = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    proj_slots = project_seat_slots(panel, hsv=hsv_eval)
+    slot_eval = {
+        'projected':   len(proj_slots),
+        'gt_total':    len(gt_full) if gt_full is not None else 0,
+        'iou30':       0,
+        'iou50':       0,
+        'iou70':       0,
+        'mean_iou':    0.0,
+        'matched_real':     0,
+        'matched_empty':    0,
+        'matched_inactive': 0,
+        'gt_unmatched':     0,
+    }
+    if gt_full and proj_slots:
+        used_gt = set()
+        ious = []
+        for (_si, _sk, x, y, sw, sh, _c) in proj_slots:
+            best_i = -1; best_iou = 0.0
+            for gi, (gb, _gn) in enumerate(gt_full):
+                if gi in used_gt:
+                    continue
+                iou = _bbox_iou((x, y, sw, sh), gb)
+                if iou > best_iou:
+                    best_iou = iou; best_i = gi
+            ious.append(best_iou)
+            if best_iou >= 0.30 and best_i >= 0:
+                used_gt.add(best_i)
+                slot_eval['iou30'] += 1
+                if best_iou >= 0.50:
+                    slot_eval['iou50'] += 1
+                if best_iou >= 0.70:
+                    slot_eval['iou70'] += 1
+                gn = gt_full[best_i][1]
+                if gn == '__empty__':
+                    slot_eval['matched_empty'] += 1
+                elif gn == '__inactive__':
+                    slot_eval['matched_inactive'] += 1
+                else:
+                    slot_eval['matched_real'] += 1
+        slot_eval['mean_iou'] = round(
+            sum(ious) / max(len(ious), 1), 3)
+        slot_eval['gt_unmatched'] = len(gt_full) - len(used_gt)
+
     return {
         'file':       fname,
         'iw':         w,
@@ -793,10 +954,12 @@ def evaluate_screen(fname, img, boffs):
         'panel_ok':   panel_in_gt,
         'markers':    [list(m) for m in markers],
         'annotated':  [list(m) for m in annotated],
+        'slots':      [list(s) for s in proj_slots],
+        'slot_eval':  slot_eval,
     }
 
 
-def viz(fname, img, markers, panel, boffs):
+def viz(fname, img, markers, panel, boffs, gt_full=None):
     out = img.copy()
     code_color = {
         # Seat-type main zone
@@ -811,29 +974,50 @@ def viz(fname, img, markers, panel, boffs):
         'C': (255, 220, 100),  # cyan      — Pilot
         'L': (50,  220, 0),    # lime      — Miracle Worker
     }
+    hsv_full = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     for x, y, w, h, code in markers:
         c = code_color.get(code, (255, 255, 255))
-        cv2.rectangle(out, (x, y), (x + w, y + h), c, 2)
+        full_w, has_spec, _sw = full_bar_extent(hsv_full, (x, y, w, h, code))
+        if has_spec:
+            # Single combined frame: main + stripe (magenta border)
+            cv2.rectangle(out, (x, y), (x + full_w, y + h),
+                          (255, 0, 255), 2)
+            # Faint inner frame to indicate where main zone ends
+            cv2.rectangle(out, (x, y), (x + w, y + h), c, 1)
+        else:
+            cv2.rectangle(out, (x, y), (x + w, y + h), c, 2)
     if panel is not None:
         a, b, _ = panel
         all_m = a + b
-        # Marker sits at the LOWER-LEFT of its seat; the 4 ability icons
-        # are ABOVE and to the RIGHT of the marker. So the slot envelope
-        # (the part comparable to the white GT box) is:
-        #   left   = right edge of the leftmost marker
-        #   top    = marker.y - 1.4*ab_h (icon row above marker)
-        #   right  = right edge of rightmost marker + 4*icon_w
-        #   bottom = marker.y (top edge of the bottom-row marker)
+        # Envelope anchored on FULL bar (main + spec stripe) end.
+        # Per column: x = max(marker.x + full_bar_w) — plain markers
+        # have full_w == w; +spec markers have full_w > w. Taking max
+        # canonicalises both kinds to the same bar-end x.
         med_w = sorted(m[2] for m in all_m)[len(all_m) // 2]
         med_h = sorted(m[3] for m in all_m)[len(all_m) // 2]
         ab_w = int(round(med_w / 0.88))
         ab_h = int(round(med_h / 0.80))
-        x0 = min(m[0] + m[2] for m in all_m)
+        x0 = max(m[0] + full_bar_extent(hsv_full, m)[0] for m in a)
         y0 = min(m[1] for m in all_m) - int(round(ab_h * 1.6))
-        x1 = max(m[0] + m[2] for m in all_m) + 4 * ab_w
+        x1 = max(m[0] + full_bar_extent(hsv_full, m)[0] for m in b) + 4 * ab_w
         y1 = max(m[1] for m in all_m)
-        cv2.rectangle(out, (x0, y0), (x1, y1), (0, 255, 0), 2)
-    if boffs:
+        cv2.rectangle(out, (x0, y0), (x1, y1), (0, 255, 0), 1)
+    # Projected ability slots (cyan, thin).
+    PROJ_COL = (255, 200, 0)
+    proj = project_seat_slots(panel, hsv=hsv_full)
+    for _si, _sk, sx, sy, sw, sh, _c in proj:
+        cv2.rectangle(out, (sx, sy), (sx + sw, sy + sh), PROJ_COL, 1)
+    # GT individual slots — only real items (white). Virtual slots
+    # (__empty__/__inactive__) are skipped: stats in slot_eval already
+    # report how many were covered by projections.
+    if gt_full:
+        for (gb, gn) in gt_full:
+            if gn in VIRTUAL:
+                continue
+            gx, gy, gw, gh = gb
+            cv2.rectangle(out, (gx, gy), (gx + gw, gy + gh),
+                          (255, 255, 255), 1)
+    elif boffs:
         gx0, gy0, gx1, gy1 = gt_panel_extent(boffs)
         cv2.rectangle(out, (gx0, gy0), (gx1, gy1), (255, 255, 255), 1)
     OUT_VIZ.mkdir(parents=True, exist_ok=True)
@@ -854,6 +1038,12 @@ def main():
                  if a.get('state') == 'confirmed'
                  and a.get('slot', '').startswith('Boff ')
                  and a.get('bbox')]
+        # Full GT incl. virtual-slot tags for IoU-by-state breakdown.
+        gt_full = [(a['bbox'], a.get('name', ''))
+                   for a in entries
+                   if a.get('state') == 'confirmed'
+                   and a.get('slot', '').startswith('Boff ')
+                   and a.get('bbox')]
         # Count "real" (non-virtual) for the seat threshold.
         n_real = sum(1 for a in entries
                      if a.get('state') == 'confirmed'
@@ -861,7 +1051,7 @@ def main():
                      and a.get('name') not in VIRTUAL
                      and a.get('bbox'))
         if n_real >= 5:
-            candidates.append((fname, boffs))
+            candidates.append((fname, boffs, gt_full))
 
     paths = find_screen_files([c[0] for c in candidates])
     print(f'Screens with ≥5 BOFF GT: {len(candidates)}, '
@@ -871,13 +1061,13 @@ def main():
     total_seats = 0
     total_hits = 0
     panel_ok_count = 0
-    for fname, boffs in candidates:
+    for fname, boffs, gt_full in candidates:
         if fname not in paths:
             continue
         img = cv2.imread(str(paths[fname]))
         if img is None:
             continue
-        m = evaluate_screen(fname, img, boffs)
+        m = evaluate_screen(fname, img, boffs, gt_full=gt_full)
         rows.append(m)
         total_seats += m['gt_seats']
         total_hits  += m['seat_hits']
@@ -893,20 +1083,24 @@ def main():
             iw0 = max(iw0, int(round(ws_[len(ws_) // 2] / 0.85)))
             ih0 = max(ih0, int(round(hs_[len(hs_) // 2] / 0.80)))
         panel = best_panel(markers_full, iw0, ih0)
-        viz(fname, img, markers_full, panel, boffs)
+        viz(fname, img, markers_full, panel, boffs, gt_full=gt_full)
         viz_spec_inspector(fname, img, panel)
 
     rows.sort(key=lambda r: (r['panel_ok'], r['hit_pct']))
     print('\nPer-screen results (sorted by panel_ok, hit %):')
     for r in rows:
-        bar = '█' * int(r['hit_pct'] / 10)
         panel_ok = '✓' if r['panel_ok'] else ('?' if r['panel'] else '✗')
+        se = r['slot_eval']
+        slot_pct = (se['iou30'] / max(se['gt_total'], 1) * 100)
         print(f'  {r["file"][:38]:<38s}  '
               f'seats={r["seat_hits"]}/{r["gt_seats"]} '
               f'({r["hit_pct"]:5.1f}%)  '
               f'mks={r["n_markers"]:3d} '
               f'spec={r["n_specced"]:2d}  '
-              f'panel={panel_ok}  {bar}')
+              f'panel={panel_ok}  '
+              f'slots IoU≥.3={se["iou30"]}/{se["gt_total"]} '
+              f'({slot_pct:5.1f}%)  '
+              f'mIoU={se["mean_iou"]:.2f}')
 
     # Spec-code histogram across all detected markers
     spec_hist = {}
@@ -914,6 +1108,16 @@ def main():
         for *_, sp, _s in r['annotated']:
             if sp:
                 spec_hist[sp] = spec_hist.get(sp, 0) + 1
+
+    # Slot-projection aggregates
+    slot_iou30  = sum(r['slot_eval']['iou30']  for r in rows)
+    slot_iou50  = sum(r['slot_eval']['iou50']  for r in rows)
+    slot_iou70  = sum(r['slot_eval']['iou70']  for r in rows)
+    slot_total  = sum(r['slot_eval']['gt_total']  for r in rows)
+    slot_proj   = sum(r['slot_eval']['projected'] for r in rows)
+    m_real      = sum(r['slot_eval']['matched_real']     for r in rows)
+    m_empty     = sum(r['slot_eval']['matched_empty']    for r in rows)
+    m_inactive  = sum(r['slot_eval']['matched_inactive'] for r in rows)
 
     print('\n' + '=' * 80)
     print(f'Total seats hit: {total_hits}/{total_seats} '
@@ -925,6 +1129,18 @@ def main():
     print(f'Markers with spec stripe identified: '
           f'{sum(r["n_specced"] for r in rows)}  '
           f'({", ".join(f"{c}:{n}" for c, n in sorted(spec_hist.items()))})')
+    print()
+    print('Ability slot projection (IoU vs GT bbox, per-state):')
+    print(f'  Projected slots:   {slot_proj}')
+    print(f'  GT slots:          {slot_total}')
+    print(f'  IoU ≥ 0.30:        {slot_iou30} '
+          f'({slot_iou30 / max(slot_total, 1) * 100:.1f}% of GT)')
+    print(f'  IoU ≥ 0.50:        {slot_iou50} '
+          f'({slot_iou50 / max(slot_total, 1) * 100:.1f}%)')
+    print(f'  IoU ≥ 0.70:        {slot_iou70} '
+          f'({slot_iou70 / max(slot_total, 1) * 100:.1f}%)')
+    print(f'  Matched (state):   real={m_real}  empty={m_empty}  '
+          f'inactive={m_inactive}')
     print(f'Visualisations:    {OUT_VIZ}')
     print(f'Spec inspector:    {OUT_INSPECTOR}')
 
