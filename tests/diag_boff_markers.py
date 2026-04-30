@@ -34,9 +34,10 @@ ROOT = Path('/home/raman/PycharmProjects/sets-warp')
 sys.path.insert(0, str(ROOT))
 
 ANN_PATH = ROOT / 'warp' / 'training_data' / 'annotations.json'
-OUT_DIR  = ROOT / 'tests' / '_diag_out'
-OUT_JSON = OUT_DIR / 'boff_markers.json'
-OUT_VIZ  = OUT_DIR / 'boff_markers_viz'
+OUT_DIR        = ROOT / 'tests' / '_diag_out'
+OUT_JSON       = OUT_DIR / 'boff_markers.json'
+OUT_VIZ        = OUT_DIR / 'boff_markers_viz'
+OUT_INSPECTOR  = OUT_DIR / 'boff_spec_inspector'
 
 VIRTUAL = frozenset({'__empty__', '__inactive__'})
 
@@ -56,9 +57,9 @@ MAIN_BANDS = [
 # specialization. Verified against 15 user-labelled seats (2026-04-26).
 STRIPE_BANDS = [
     # name, H_lo, H_hi, S_lo, S_hi, V_lo, V_hi, spec_code
-    ('CMD',  12,  19,   120, 200, 130, 200, 'O'),  # Command — orange
+    ('CMD',  12,  19,    80, 200, 130, 200, 'O'),  # Command — orange
     ('INT', 120, 135,   130, 200, 150, 220, 'P'),  # Intelligence — purple
-    ('TMP',  25,  35,   140, 220, 215, 255, 'Y'),  # Temporal — bright gold
+    ('TMP',  25,  35,   140, 255, 215, 255, 'Y'),  # Temporal — bright gold
     ('PIL',  86, 100,    80, 140, 215, 255, 'C'),  # Pilot — light cyan
     ('MW',   32,  44,   220, 255, 195, 255, 'L'),  # Miracle Worker — lime
 ]
@@ -344,6 +345,145 @@ def classify_stripe(hsv, marker, icon_w):
     if score < 0.15:
         return (None, score)
     return (best_code, score)
+
+
+def stripe_band_scores(hsv, marker):
+    """Per-band fractions for the spec-stripe sample region of one marker.
+
+    Returns: (sample_rect, [(code, fraction), ...]) where sample_rect
+    is (sx0, sy0, sx1, sy1) in image coords.
+    """
+    x, y, w, h, _ = marker
+    sx0 = x + w - max(2, int(w * 0.10))
+    sx1 = x + w + max(6, int(w * 0.40))
+    sy0 = y + max(0, int(h * 0.10))
+    sy1 = y + h - max(0, int(h * 0.10))
+    H, W = hsv.shape[:2]
+    sx0 = max(0, sx0); sx1 = min(W, sx1)
+    sy0 = max(0, sy0); sy1 = min(H, sy1)
+    rect = (sx0, sy0, sx1, sy1)
+    if sx1 <= sx0 or sy1 <= sy0:
+        return rect, []
+    crop = hsv[sy0:sy1, sx0:sx1]
+    total = crop.shape[0] * crop.shape[1]
+    if total <= 0:
+        return rect, []
+    out = []
+    for _, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi, code in STRIPE_BANDS:
+        m = ((crop[:, :, 0] >= h_lo) & (crop[:, :, 0] <= h_hi)
+             & (crop[:, :, 1] >= s_lo) & (crop[:, :, 1] <= s_hi)
+             & (crop[:, :, 2] >= v_lo) & (crop[:, :, 2] <= v_hi))
+        out.append((code, int(m.sum()) / total))
+    return rect, out
+
+
+CODE_LABEL = {
+    'T': 'Tac', 'E': 'Eng', 'S': 'Sci', 'U': 'Uni',
+    'O': 'Cmd', 'P': 'Int', 'Y': 'Temp', 'C': 'Pilot', 'L': 'MW',
+}
+
+
+def viz_spec_inspector(fname, img, panel):
+    """Save a per-screen inspector that shows each panel marker zoomed
+    4× with the spec-stripe sample region highlighted, plus per-band
+    fractions and median HSV of the sampled pixels.
+    """
+    if panel is None:
+        return
+    a, b, _ = panel
+    all_m = a + b
+    if not all_m:
+        return
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    H, W = img.shape[:2]
+    ZOOM = 4
+    PAD = 4
+
+    tiles = []
+    for x, y, w, h, code in all_m:
+        rect, bands = stripe_band_scores(hsv, (x, y, w, h, code))
+        sx0, sy0, sx1, sy1 = rect
+        cx0 = max(0, x - PAD)
+        cy0 = max(0, y - PAD)
+        cx1 = min(W, sx1 + PAD)
+        cy1 = min(H, y + h + PAD)
+        crop = img[cy0:cy1, cx0:cx1]
+        if crop.size == 0:
+            continue
+        zoom = cv2.resize(crop, None, fx=ZOOM, fy=ZOOM,
+                          interpolation=cv2.INTER_NEAREST)
+        # Sample region
+        zx0 = (sx0 - cx0) * ZOOM
+        zy0 = (sy0 - cy0) * ZOOM
+        zx1 = (sx1 - cx0) * ZOOM
+        zy1 = (sy1 - cy0) * ZOOM
+        cv2.rectangle(zoom, (zx0, zy0), (zx1 - 1, zy1 - 1), (0, 255, 0), 1)
+        # Marker bbox outline
+        mx0 = (x - cx0) * ZOOM
+        my0 = (y - cy0) * ZOOM
+        mx1 = mx0 + w * ZOOM
+        my1 = my0 + h * ZOOM
+        cv2.rectangle(zoom, (mx0, my0), (mx1 - 1, my1 - 1), (255, 0, 255), 1)
+
+        bands_sorted = sorted(bands, key=lambda r: -r[1])
+        best_code, best_score = bands_sorted[0] if bands_sorted else ('—', 0.0)
+        accepted_lbl = (CODE_LABEL.get(best_code, best_code)
+                        if best_score >= 0.15 else '—')
+        seat_lbl = CODE_LABEL.get(code, code)
+
+        sample = hsv[sy0:sy1, sx0:sx1].reshape(-1, 3) if sx1 > sx0 else None
+        if sample is not None and len(sample):
+            med_h = int(np.median(sample[:, 0]))
+            med_s = int(np.median(sample[:, 1]))
+            med_v = int(np.median(sample[:, 2]))
+            hsv_str = f'med HSV {med_h:>3d},{med_s:>3d},{med_v:>3d}'
+        else:
+            hsv_str = 'med HSV —'
+
+        text_lines = [
+            f'{seat_lbl} -> {accepted_lbl}  ({best_score:.2f})',
+            hsv_str,
+            ' '.join(f'{CODE_LABEL.get(c, c)}:{s:.2f}'
+                     for c, s in bands_sorted[:3]),
+        ]
+
+        line_h = 16
+        text_h = line_h * len(text_lines) + 6
+        tile_w = max(zoom.shape[1], 200)
+        tile_h = zoom.shape[0] + text_h
+        tile = np.full((tile_h, tile_w, 3), 25, dtype=np.uint8)
+        x_off = (tile_w - zoom.shape[1]) // 2
+        tile[:zoom.shape[0], x_off:x_off + zoom.shape[1]] = zoom
+        for i, ln in enumerate(text_lines):
+            cv2.putText(tile, ln, (4, zoom.shape[0] + 14 + i * line_h),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1,
+                        cv2.LINE_AA)
+        tiles.append(tile)
+
+    if not tiles:
+        return
+    max_h = max(t.shape[0] for t in tiles)
+    sep = np.full((max_h, 8, 3), 60, dtype=np.uint8)
+    padded = []
+    for i, t in enumerate(tiles):
+        if t.shape[0] < max_h:
+            pad = np.full((max_h - t.shape[0], t.shape[1], 3), 25,
+                          dtype=np.uint8)
+            t = np.vstack([t, pad])
+        padded.append(t)
+        if i < len(tiles) - 1:
+            padded.append(sep)
+    canvas = np.hstack(padded)
+    header = np.full((28, canvas.shape[1], 3), 50, dtype=np.uint8)
+    cv2.putText(header, fname, (6, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                (255, 255, 255), 1, cv2.LINE_AA)
+    canvas = np.vstack([header, canvas])
+
+    OUT_INSPECTOR.mkdir(parents=True, exist_ok=True)
+    out_name = fname.replace('/', '_')
+    if not out_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+        out_name += '.png'
+    cv2.imwrite(str(OUT_INSPECTOR / out_name), canvas)
 
 
 def annotate_specs(img, markers, icon_w):
@@ -754,6 +894,7 @@ def main():
             ih0 = max(ih0, int(round(hs_[len(hs_) // 2] / 0.80)))
         panel = best_panel(markers_full, iw0, ih0)
         viz(fname, img, markers_full, panel, boffs)
+        viz_spec_inspector(fname, img, panel)
 
     rows.sort(key=lambda r: (r['panel_ok'], r['hit_pct']))
     print('\nPer-screen results (sorted by panel_ok, hit %):')
@@ -784,7 +925,8 @@ def main():
     print(f'Markers with spec stripe identified: '
           f'{sum(r["n_specced"] for r in rows)}  '
           f'({", ".join(f"{c}:{n}" for c, n in sorted(spec_hist.items()))})')
-    print(f'Visualisations: {OUT_VIZ}')
+    print(f'Visualisations:    {OUT_VIZ}')
+    print(f'Spec inspector:    {OUT_INSPECTOR}')
 
     OUT_JSON.write_text(json.dumps({'screens': rows}, indent=2),
                         encoding='utf-8')
