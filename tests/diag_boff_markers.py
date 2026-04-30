@@ -48,7 +48,7 @@ MAIN_BANDS = [
     ('TAC', 174, 180,   125, 255,  85, 255, 'T'),  # red wrap
     ('ENG',  18,  30,   100, 220, 160, 255, 'E'),  # saturated gold
     ('SCI', 102, 114,   160, 255, 140, 255, 'S'),  # blue
-    ('UNI',  18,  30,    40,  95, 195, 255, 'U'),  # pale cream
+    ('UNI',  18,  30,    25,  95, 195, 255, 'U'),  # pale cream
 ]
 
 # Spec-stripe bands (narrow right edge, 5-25% of bar width). NOT used
@@ -170,7 +170,7 @@ def detect_markers(img, icon_w, icon_h):
     abs_max_w, abs_max_h = 90, 90
     min_w = max(abs_min_w, int(icon_w * 0.45))
     max_w = min(abs_max_w, max(int(icon_w * 1.25), 36))
-    min_h = max(abs_min_h, int(icon_h * 0.55))
+    min_h = max(abs_min_h, int(icon_h * 0.45))
     max_h = min(abs_max_h, max(int(icon_h * 1.35), 44))
     # Aspect ratio: real bars are roughly square or portrait
     # (w/h ≈ 0.4..1.6). Wide squat rectangles = UI false-positives.
@@ -669,7 +669,7 @@ def viz(fname, img, markers, panel, boffs):
         ab_w = int(round(med_w / 0.85))
         ab_h = int(round(med_h / 0.80))
         x0 = min(m[0] + m[2] for m in all_m)
-        y0 = min(m[1] for m in all_m) - int(round(ab_h * 1.4)) - 3
+        y0 = min(m[1] for m in all_m) - int(round(ab_h * 1.6))
         x1 = max(m[0] + m[2] for m in all_m) + 4 * ab_w
         y1 = max(m[1] for m in all_m)
         cv2.rectangle(out, (x0, y0), (x1, y1), (0, 255, 0), 2)
