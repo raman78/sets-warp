@@ -44,11 +44,11 @@ VIRTUAL = frozenset({'__empty__', '__inactive__'})
 # Used as DETECTION seeds. Sampled across 25+ GT seats.
 MAIN_BANDS = [
     # name, H_lo, H_hi, S_lo, S_hi, V_lo, V_hi, code
-    ('TAC',   0,   6,   160, 255,  90, 255, 'T'),  # red
-    ('TAC', 174, 180,   160, 255,  90, 255, 'T'),  # red wrap
-    ('ENG',  18,  30,   120, 200, 160, 210, 'E'),  # saturated gold
-    ('SCI', 102, 114,   160, 255, 110, 255, 'S'),  # blue
-    ('UNI',  18,  30,    40, 110, 195, 255, 'U'),  # pale cream
+    ('TAC',   0,   6,   125, 255,  85, 255, 'T'),  # red
+    ('TAC', 174, 180,   125, 255,  85, 255, 'T'),  # red wrap
+    ('ENG',  18,  30,   100, 220, 160, 255, 'E'),  # saturated gold
+    ('SCI', 102, 114,   160, 255, 140, 255, 'S'),  # blue
+    ('UNI',  18,  30,    40,  95, 195, 255, 'U'),  # pale cream
 ]
 
 # Spec-stripe bands (narrow right edge, 5-25% of bar width). NOT used
@@ -163,29 +163,62 @@ def detect_markers(img, icon_w, icon_h):
     """
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    # Size: a real marker is roughly icon_w × icon_h. Both dims have
-    # tighter bounds than v2 — narrow noise stripes and oversized
-    # background patches get rejected.
-    min_w = max(8,  int(icon_w * 0.45))
-    max_w = max(int(icon_w * 1.25), 36)
-    min_h = max(12, int(icon_h * 0.55))
-    max_h = max(int(icon_h * 1.35), 44)
+    # Size: a real marker is roughly icon_w × icon_h. Absolute floors
+    # reject tiny noise blobs irrespective of icon-size estimation;
+    # icon-relative bounds reject oversized background patches.
+    abs_min_w, abs_min_h = 10, 12
+    abs_max_w, abs_max_h = 90, 90
+    min_w = max(abs_min_w, int(icon_w * 0.45))
+    max_w = min(abs_max_w, max(int(icon_w * 1.25), 36))
+    min_h = max(abs_min_h, int(icon_h * 0.55))
+    max_h = min(abs_max_h, max(int(icon_h * 1.35), 44))
+    # Aspect ratio: real bars are roughly square or portrait
+    # (w/h ≈ 0.4..1.6). Wide squat rectangles = UI false-positives.
+    ar_min, ar_max = 0.30, 1.8
     # Fill density: solid colour blobs only — noise has lower density.
-    fill_min = 0.50
+    fill_min = 0.58
 
     # Horizontal close kernel to glue stripe fragments inside one mask.
-    kx = max(3, int(round(icon_w * 0.30)))
-    ky = max(2, icon_h // 6)
+    # Keep small — `_merge_close_bboxes` handles real gaps; an aggressive
+    # CLOSE merges the marker with adjacent same-hue UI artifacts and
+    # bloats the bbox past the size limits.
+    kx = max(3, int(round(icon_w * 0.22)))
+    ky = max(2, icon_h // 12)
+
+    # Per-channel uniformity thresholds inside masked pixels.
+    # Real marker bars have very flat colour: V stddev ~10-20.
+    # Icons/UI texture inside the same hue band: V stddev ~35-60.
+    uni_v_max = 28
+    uni_h_max = 6
+    # Edge density via Canny on the bbox INTERIOR (3-px inset to skip
+    # the bar's own border). Real bars: ~0% interior edges.
+    # Ability icons / textured UI: 15-35%.
+    edge_max = 0.14
+    edge_inset = 2
+    edges = cv2.Canny(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), 80, 160)
+
+    # Merge bands with the same name (e.g. red TAC wraps 0/180 across two
+    # entries) into one combined mask, otherwise each half captures only
+    # part of the marker and fill-density / size filters reject it.
+    by_name = {}
+    for name, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi, code in MAIN_BANDS:
+        by_name.setdefault(name, {'code': code, 'ranges': []})['ranges'].append(
+            (h_lo, h_hi, s_lo, s_hi, v_lo, v_hi))
 
     out = []
     seen_rects = []
-    for name, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi, code in MAIN_BANDS:
-        m = colour_mask(hsv, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi)
-        m = cv2.morphologyEx(
+    for name, info in by_name.items():
+        code = info['code']
+        m = None
+        for h_lo, h_hi, s_lo, s_hi, v_lo, v_hi in info['ranges']:
+            part = colour_mask(hsv, h_lo, h_hi, s_lo, s_hi, v_lo, v_hi)
+            m = part if m is None else cv2.bitwise_or(m, part)
+        m_closed = cv2.morphologyEx(
             m, cv2.MORPH_CLOSE,
             cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky)),
         )
-        n, _, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+        n, _, stats, _ = cv2.connectedComponentsWithStats(
+            m_closed, connectivity=8)
         raw = [tuple(int(v) for v in stats[i, [0, 1, 2, 3, 4]])
                for i in range(1, n)]
         # Merge fragmented same-colour bars before filtering on size.
@@ -198,10 +231,41 @@ def detect_markers(img, icon_w, icon_h):
             if h < min_h or h > max_h:
                 continue
             ar = w / max(h, 1)
-            if ar < 0.20 or ar > 3.0:
+            if ar < ar_min or ar > ar_max:
                 continue
             if area < (w * h) * fill_min:
                 continue
+            # Colour-uniformity: real bars are flat colour; icons /
+            # textured UI inside the same hue band are not. Compute
+            # stddev of V (and H) over masked pixels inside the CC bbox.
+            sel = m[y:y + h, x:x + w] > 0
+            if sel.sum() < 20:
+                continue
+            crop_v = hsv[y:y + h, x:x + w, 2][sel]
+            crop_h = hsv[y:y + h, x:x + w, 0][sel]
+            if float(np.std(crop_v)) > uni_v_max:
+                continue
+            # Hue is angular; for the red bands that wrap 0/180 a naive
+            # std over raw H is huge. Use the smaller of {std(H),
+            # std((H+90)%180)} so red wrap is handled.
+            h_std = min(
+                float(np.std(crop_h)),
+                float(np.std((crop_h.astype(np.int32) + 90) % 180)),
+            )
+            if h_std > uni_h_max:
+                continue
+            # Edge density inside the bbox interior (skip border pixels
+            # of the bar itself).
+            ix0 = x + edge_inset
+            iy0 = y + edge_inset
+            ix1 = x + w - edge_inset
+            iy1 = y + h - edge_inset
+            if ix1 > ix0 and iy1 > iy0:
+                edge_crop = edges[iy0:iy1, ix0:ix1]
+                edge_frac = float(edge_crop.sum() / 255.0) / (
+                    (ix1 - ix0) * (iy1 - iy0))
+                if edge_frac > edge_max:
+                    continue
             dup = False
             for (px, py, pw, ph) in seen_rects:
                 if x < px + pw and px < x + w and y < py + ph and py < y + h:
@@ -493,6 +557,16 @@ def evaluate_screen(fname, img, boffs):
     h, w = img.shape[:2]
     icon_w, icon_h = estimate_icon_dims(img)
     markers = detect_markers(img, icon_w, icon_h)
+    # Re-derive icon dims from actual marker sizes before panel anchor:
+    # marker_w ≈ 0.85·icon_w, marker_h ≈ 0.80·icon_h. Heuristic estimate
+    # is often 30-50% too small when image is small/cropped.
+    if len(markers) >= 3:
+        ws = sorted(m[2] for m in markers)
+        hs = sorted(m[3] for m in markers)
+        med_mw = ws[len(ws) // 2]
+        med_mh = hs[len(hs) // 2]
+        icon_w = max(icon_w, int(round(med_mw / 0.85)))
+        icon_h = max(icon_h, int(round(med_mh / 0.80)))
     panel = best_panel(markers, icon_w, icon_h)
     annotated = annotate_specs(img, markers, icon_w)
     n_specced = sum(1 for *_, sp, _s in annotated if sp is not None)
@@ -583,10 +657,21 @@ def viz(fname, img, markers, panel, boffs):
     if panel is not None:
         a, b, _ = panel
         all_m = a + b
-        x0 = min(m[0] for m in all_m) - 4
-        y0 = min(m[1] for m in all_m) - 4
-        x1 = max(m[0] + m[2] for m in all_m) + 4
-        y1 = max(m[1] + m[3] for m in all_m) + 4
+        # Marker sits at the LOWER-LEFT of its seat; the 4 ability icons
+        # are ABOVE and to the RIGHT of the marker. So the slot envelope
+        # (the part comparable to the white GT box) is:
+        #   left   = right edge of the leftmost marker
+        #   top    = marker.y - 1.4*ab_h (icon row above marker)
+        #   right  = right edge of rightmost marker + 4*icon_w
+        #   bottom = marker.y (top edge of the bottom-row marker)
+        med_w = sorted(m[2] for m in all_m)[len(all_m) // 2]
+        med_h = sorted(m[3] for m in all_m)[len(all_m) // 2]
+        ab_w = int(round(med_w / 0.85))
+        ab_h = int(round(med_h / 0.80))
+        x0 = min(m[0] + m[2] for m in all_m)
+        y0 = min(m[1] for m in all_m) - int(round(ab_h * 1.4)) - 3
+        x1 = max(m[0] + m[2] for m in all_m) + 4 * ab_w
+        y1 = max(m[1] for m in all_m)
         cv2.rectangle(out, (x0, y0), (x1, y1), (0, 255, 0), 2)
     if boffs:
         gx0, gy0, gx1, gy1 = gt_panel_extent(boffs)
@@ -603,12 +688,19 @@ def main():
     for fname, entries in ann.items():
         if not isinstance(entries, list):
             continue
+        # Include empty / inactive slots — they are real BOFF positions
+        # and define the full panel envelope (3+2 seats × 4 abilities).
         boffs = [a['bbox'] for a in entries
                  if a.get('state') == 'confirmed'
                  and a.get('slot', '').startswith('Boff ')
-                 and a.get('name') not in VIRTUAL
                  and a.get('bbox')]
-        if len(boffs) >= 5:
+        # Count "real" (non-virtual) for the seat threshold.
+        n_real = sum(1 for a in entries
+                     if a.get('state') == 'confirmed'
+                     and a.get('slot', '').startswith('Boff ')
+                     and a.get('name') not in VIRTUAL
+                     and a.get('bbox'))
+        if n_real >= 5:
             candidates.append((fname, boffs))
 
     paths = find_screen_files([c[0] for c in candidates])
@@ -632,9 +724,14 @@ def main():
         if m['panel_ok']:
             panel_ok_count += 1
 
-        # Reproduce same dims for viz
+        # Reproduce same dims for viz (mirror evaluate_screen refine).
         iw0, ih0 = estimate_icon_dims(img)
         markers_full = detect_markers(img, iw0, ih0)
+        if len(markers_full) >= 3:
+            ws_ = sorted(mk[2] for mk in markers_full)
+            hs_ = sorted(mk[3] for mk in markers_full)
+            iw0 = max(iw0, int(round(ws_[len(ws_) // 2] / 0.85)))
+            ih0 = max(ih0, int(round(hs_[len(hs_) // 2] / 0.80)))
         panel = best_panel(markers_full, iw0, ih0)
         viz(fname, img, markers_full, panel, boffs)
 
