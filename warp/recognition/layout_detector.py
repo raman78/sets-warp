@@ -25,6 +25,8 @@ try:
 except Exception:
     _slog = log
 
+from warp.recognition import boff_marker as _boff_marker
+
 OCR_CONF_THRESHOLD = 0.40
 LABEL_FUZZY_CUTOFF = 0.68
 # Calibration file is stored in training_data
@@ -284,6 +286,12 @@ class LayoutDetector:
         if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
             return self._detect_traits(img, build_type)
         if build_type in ('BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS'):
+            # Strategy 0: marker-panel detector (HSV badges + RANSAC grid +
+            # bible-driven slot projection). 100% panel anchor on 36 GT
+            # screens; 96.0% slot IoU≥.70.
+            marker = self._detect_boffs_via_markers(img)
+            if marker:
+                return marker
             if icon_matcher is not None and app_cache is not None:
                 full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
                 if full and len(full) >= 2:
@@ -305,10 +313,14 @@ class LayoutDetector:
                 _slog.info(f'LayoutDetector: Strategy 1 (learned/MIXED) → {len(learned)} slot groups')
                 return learned
 
+            # Strategy 0 BOFF anchor for MIXED: marker-panel detector.
+            # Computed once and merged into whichever equipment chain wins.
+            marker_boffs = self._detect_boffs_via_markers(img)
+
             # OCR-anchored equipment detection (primary path for MIXED)
             ocr_anch = self._detect_via_ocr_anchored(img, build_type, slot_order, profile)
             if ocr_anch and len(ocr_anch) >= 3:
-                boff_result = self._detect_boffs_in_mixed(img)
+                boff_result = marker_boffs or self._detect_boffs_in_mixed(img)
                 if boff_result:
                     ocr_anch.update(boff_result)
                 _slog.info(f'LayoutDetector: Strategy 1.5 (OCR-anchored) → '
@@ -321,7 +333,7 @@ class LayoutDetector:
                 if full and len(full) >= 3:
                     has_boff = any(k.startswith('Boff ') for k in full)
                     if not has_boff:
-                        boff_result = self._detect_boffs_in_mixed(img)
+                        boff_result = marker_boffs or self._detect_boffs_in_mixed(img)
                         if boff_result:
                             full.update(boff_result)
                             _slog.info(f'LayoutDetector: MIXED merged → {len(full)} slot groups total')
@@ -1028,6 +1040,56 @@ class LayoutDetector:
         'temporal':      'Boff Temporal',
         'medical':       'Boff Science',
     }
+
+    def _detect_boffs_via_markers(self, img) -> dict[str, list]:
+        """Strategy 0 for BOFFs: locate panel via profession-coloured seat
+        markers and project ability slots from the bible.
+
+        Returns a `{seat_id: [bbox, ...]}` dict using the same `Boff Seat
+        L_<y>` / `Boff Seat R_<y>` keys as `_detect_boffs`, so downstream
+        consumers (warp_importer) need no special-casing. Empty dict on
+        failure — caller falls back to legacy detection chain.
+
+        Detection-only: no annotations.json access (CORE RULE).
+        """
+        try:
+            res = _boff_marker.detect_panel(img)
+        except Exception as e:
+            _slog.warning(f'LayoutDetector: marker panel detector raised — {e!r}')
+            return {}
+        if not res:
+            return {}
+
+        a = res['col_a']; b = res['col_b']
+        slots = res['slots']
+        n_a = len(a)
+        # Group slots by seat_idx → emit a Boff Seat key per seat.
+        per_seat: dict[int, list[tuple[int, int, int, int]]] = {}
+        seat_meta: dict[int, tuple[str, int, str]] = {}  # seat_idx → (side, my, code)
+        for (mx, my, mw, mh, code) in a:
+            si = len(seat_meta)
+            seat_meta[si] = ('L', int(my), code)
+        for (mx, my, mw, mh, code) in b:
+            si = len(seat_meta)
+            seat_meta[si] = ('R', int(my), code)
+
+        for (seat_idx, _slot_idx, x, y, w, h, _code) in slots:
+            per_seat.setdefault(seat_idx, []).append((int(x), int(y), int(w), int(h)))
+
+        out: dict[str, list] = {}
+        for seat_idx, bboxes in per_seat.items():
+            side, my, code = seat_meta.get(seat_idx, ('L', 0, '?'))
+            # Use marker_y as the disambiguator — same key shape as _detect_boffs.
+            seat_id = f'Boff Seat {side}_{my}'
+            out[seat_id] = bboxes
+
+        _slog.info(
+            f'LayoutDetector: Strategy 0 (marker panel) → {len(out)} seats, '
+            f'{sum(len(v) for v in out.values())} slot bboxes '
+            f'(panel score={res["score"]:.2f}, '
+            f'cols L={n_a} R={len(b)})'
+        )
+        return out
 
     def _detect_boffs(self, img, icon_dims=None, offset=(0, 0), max_bands=3):
         """Detect BOFF ability icons using structural knowledge of BOFFS screen.
