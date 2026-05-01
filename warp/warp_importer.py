@@ -967,7 +967,7 @@ class WarpImporter:
                 
                 # Dynamic candidate filtering for BOFF seats based on color heuristic
                 if slot_name.startswith('Boff Seat'):
-                    base_prof_key = self._layout_detector._classify_boff_profession(crop)
+                    base_prof_key = self._get_layout()._classify_boff_profession(crop)
                     if base_prof_key:
                         prof_map = {
                             'tactical': 'Tactical', 'engineering': 'Engineering', 'science': 'Science',

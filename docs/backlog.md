@@ -341,3 +341,14 @@ returned `None`, triggering the discard branch with "not valid for stype=..." me
 bypass slot inference and keep the positional slot suggestion.  They are always valid
 training labels regardless of screen type.  File: `warp/trainer/trainer_window.py`.
 
+---
+
+## 14. Dynamic BOFF Seat Profession Mapping Bug
+
+**Status: BACKLOG (Discovered 2026-05-01)**
+
+**Problem:**
+With the new `LayoutDetector` strategies, BOFF seats are named dynamically (e.g., `[Boff Seat L_483]`). The current logic in `warp_dialog.py` extracts the substring after "Boff " (resulting in "Seat L_483") to determine the cluster's profession. Because this does not match valid ship professions (Tactical, Engineering, Science), the recognized BOFF abilities are forced into the first Universal fallback seat, overriding the correct build layout in the SETS UI.
+
+**Required Fix:**
+In `warp_dialog.py` (Phase 2), the system should look up the actual recognized item names in `boff_abilities.json` (the source of truth) to determine the profession of the cluster, instead of relying on the raw slot name. For example, if a row contains `Emergency Power to Engines`, it should be classified as an Engineering cluster and matched to an Engineering seat.

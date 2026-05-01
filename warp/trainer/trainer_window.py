@@ -1992,7 +1992,9 @@ class WarpCoreWindow(QMainWindow):
                 _slog2.info(f'add_bbox: discarding {name!r} — not valid for stype={stype}')
                 name, conf, thumb = '', 0.0, None
         # NON_ICON_SLOTS (Ship Name/Type/Tier) — position only, always confirmed
-        if slot in NON_ICON_SLOTS:
+        if slot == 'Ship Name':
+            _auto = True
+        elif slot in NON_ICON_SLOTS:
             _auto = False
         else:
             # Auto-accept before adding to list if conf >= threshold
@@ -2032,7 +2034,7 @@ class WarpCoreWindow(QMainWindow):
             self._recognition_cache[fname] = list(self._recognition_items)
         self._ann_widget.clear_pending()
 
-        if slot in NON_ICON_SLOTS and crop_bgr is not None:
+        if slot in NON_ICON_SLOTS and crop_bgr is not None and slot != 'Ship Name':
             if self._ship_type_combo.count() == 0:
                 self._populate_ship_type_combo()
             v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
@@ -2819,11 +2821,19 @@ class WarpCoreWindow(QMainWindow):
             # Primary source: cache.boff_abilities[environment][career] — keyed by rank dicts
             # Structure: {environment: {career: [{ability: desc}, ...rank levels]}}
             try:
-                domain_key = 'ground' if target_domain == 'Ground' else 'space'
-                career_ranks = self._sets.cache.boff_abilities.get(domain_key, {}).get(mapped_career, [])
-                for rank_dict in career_ranks:
-                    if isinstance(rank_dict, dict):
-                        candidates.extend(rank_dict.keys())
+                domains = []
+                if 'GROUND' in stype:
+                    domains = ['ground']
+                elif 'SPACE' in stype:
+                    domains = ['space']
+                else:
+                    domains = ['space', 'ground']
+                
+                for domain_key in domains:
+                    career_ranks = self._sets.cache.boff_abilities.get(domain_key, {}).get(mapped_career, [])
+                    for rank_dict in career_ranks:
+                        if isinstance(rank_dict, dict):
+                            candidates.extend(rank_dict.keys())
             except Exception:
                 pass
 
