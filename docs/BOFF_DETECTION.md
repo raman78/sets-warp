@@ -11,10 +11,10 @@ panel anchor**, 60/167 markers also enriched with a specialization
 code via the post-hoc stripe classifier.
 
 Per-seat ability-slot projection from those markers (4 abilities/seat):
-**99.9% IoU≥.30, 98.4% IoU≥.50, 84.5% IoU≥.70** vs ground truth on 705
+**99.9% IoU≥.30, 99.9% IoU≥.50, 96.0% IoU≥.70** vs ground truth on 705
 GT slots. Content classification of the projected slots via the
 production `SETSIconMatcher.classify_patch()` (EfficientNet-B0):
-**99.8% bucket accuracy on real abilities, 94.5% exact-name**, but
+**99.8% bucket accuracy on real abilities, 94.9% exact-name**, but
 `__inactive__` is misclassified as `__empty__` ~96% of the time
 (see "Slot content classification" below). Diagnostic:
 `tests/diag_boff_classify.py`.
@@ -122,28 +122,67 @@ count wins if its score (≥15% of strip pixels) clears the threshold;
 otherwise marker has no spec. Verified against user-labelled GT on
 60+ markers across 36 screens.
 
+`full_bar_extent(hsv, marker)` extends the marker bbox to include the
+spec stripe. Walking right from `marker.x + marker.w`:
+
+1. **Phase 1** — skip up to 6 dim cols (`col_fill < 0.35`). This is
+   the gap between the main coloured zone and the spec stripe (~2-4
+   dim cols in practice).
+2. **Phase 2** — extend through the contiguous bright run (the stripe
+   itself), then stop on the next dim col.
+
+Stopping at the **end of the first bright run after the gap** is
+important: the seat name bar starts a few pixels further right and
+shares the same profession hue as the marker, so a "rightmost ≥35%
+fill in look-ahead" rule would grab the name bar's start and inflate
+`full_w` by 5-10 px on Tac/Eng panels. That, in turn, would drag the
+column anchor right by the same amount, shifting the projected slot
+column.
+
 ### 5. Per-seat ability-slot projection (`project_seat_slots`)
 
 Markers tell us WHERE each seat is; we project the four ability bboxes
-above each marker geometrically. Slot **size** and slot **stride** are
-intentionally **separate formulas** — they look similar but answer
-different questions ("how wide is the icon?" vs "how far apart are the
-icon centres?").
-
-For each detected seat marker:
+above each marker geometrically. The X-axis grid is **bible-driven** —
+all distances are measured once on a reference screen (Stations.png,
+"idealny rozkład") in panel-internal pixels and rescaled by a single
+factor at any other resolution.
 
 ```
-med_w, med_h = median width / height across panel markers
+# Bible (panel-internal px, reference scale where marker_bar_w == 29):
+BIBLE_MARKER_W   = 29
+BIBLE_SLOT_W     = 29   # ability icon width
+BIBLE_GAP_FIRST  = 3    # marker right-edge → first slot left-edge
+BIBLE_GAP_SLOT   = 2    # slot right-edge   → next slot left-edge
+BIBLE_STRIDE_X   = BIBLE_SLOT_W + BIBLE_GAP_SLOT   # = 31
 
-ab_w     = med_w                         # icon width ≈ marker width
-ab_h     = round(med_h / 0.63)           # icon is taller than marker
-stride_x = round(med_w / 0.95)           # centre-to-centre x spacing
-gap_x    = round(med_w * 0.08)           # envelope-to-first-slot offset
-gap_y    = round(med_h * 0.20)           # marker-to-icon vertical gap
+k           = full_bar_w_median / BIBLE_MARKER_W   # single scale factor
 
-slot_y   = marker.y - ab_h - gap_y       # icons sit ABOVE the marker
-slot_x[k] = col_anchor + gap_x + k * stride_x   for k in 0..3
+# Float-domain bible distances. NO intermediate rounding.
+stride_f    = k * BIBLE_STRIDE_X
+gap_first_f = k * BIBLE_GAP_FIRST
+ab_w        = round(k * BIBLE_SLOT_W)              # rounded once
+
+slot_x[i]   = round(col_anchor + gap_first_f + i * stride_f)   # round once per slot
+slot_w      = ab_w
+slot_h      = round(med_marker_h / 0.63)           # empirical Y
+slot_y      = marker.y - slot_h - round(0.20 * med_marker_h)
 ```
+
+**Empirical scale validation** (36 GT screens, `tests/diag_marker_scale.py`):
+detected `marker_w` clusters in 11 discrete buckets between 24 and
+43 px while `marker_w / image_w` varies 5×. STO renders UI at a
+**user-configurable discrete scale** (set in-game), independent of
+screen resolution. Per-screen `k = marker_w / 29` is the only scale
+input from detection.
+
+**No cumulative rounding:** every slot position is computed from the
+column anchor in float (`anchor + gap_first_f + i * stride_f`), then
+rounded once. This eliminates both cumulative drift (you'd get from
+`i * round(stride)`) and visual gap alternation (you'd get from
+`stride_x = round(slot_w) + round(gap_slot)` rounding independently).
+Visual gap then matches what STO+JPG actually renders — sometimes
+2 px, sometimes 1 px depending on sub-pixel position, exactly as the
+game does.
 
 `col_anchor` is the rightmost full-bar edge across all markers in the
 seat's column. "Full bar" includes the spec stripe (see
@@ -186,11 +225,11 @@ Baseline (36 GT panels, 704 GT slots matched to projections, IoU≥.30):
 
 | GT state    | bucket-acc | exact-name | notes                       |
 |-------------|------------|------------|-----------------------------|
-| real        | 99.8%      | 94.5%      | localiser + classifier OK   |
-| empty       | 100%       | n/a        | n=2 only                    |
-| inactive    |  3.4%      | n/a        | almost always read as empty |
+| real        | 99.8%      | 94.9%      | localiser + classifier OK   |
+| empty       | 50%        | n/a        | n=2 only                    |
+| inactive    |  5.2%      | n/a        | almost always read as empty |
 
-`__inactive__` confusion is the dominant remaining error (225/233
+`__inactive__` confusion is the dominant remaining error (221/233
 inactive crops classify as `__empty__`). Confidence histogram shows
 nearly all such errors fall in `[0.0..0.1)` — a `conf < 0.10`
 suppression rule would catch ~98% of them, but doesn't recover the
@@ -226,10 +265,12 @@ When wired into `warp/recognition/layout_detector.py`:
     - `env_ab_w = round(median_marker_w / 0.88)`
     - `env_ab_h = round(median_marker_h / 0.80)`
 5. Project per-seat ability slots with `project_seat_slots(panel,
-   hsv=hsv)`. Per-seat geometry uses the formulas in section 5 above
-   (`ab_w = med_w`, `ab_h = med_h / 0.63`, `stride_x = med_w / 0.95`,
-   `gap_x = 0.08·med_w`, `gap_y = 0.20·med_h`). Pass `hsv` so the
-   per-column anchor uses the full bar (main + spec stripe).
+   hsv=hsv)`. Geometry follows section 5: bible-driven X-axis
+   (`k = full_bar_w_median / 29`, `ab_w = round(k·29)`,
+   `gap_slot = round(k·2)`, `stride_x = ab_w + gap_slot`,
+   `gap_x = round(k·3)`) and empirical Y-axis (`ab_h = med_h / 0.63`,
+   `gap_y = 0.20·med_h`). Pass `hsv` so the per-column anchor uses the
+   full bar (main + spec stripe).
 6. Optionally call `annotate_specs(img, panel_markers, icon_w)` to
    tag each seat with its specialization code.
 7. For each projected bbox crop the patch and call
@@ -239,8 +280,9 @@ When wired into `warp/recognition/layout_detector.py`:
 
 ## Failure modes still in play
 
-- 2 GT seats unmatched across 36 screens (single-marker misses, do
-  not break panel anchor — not high priority).
+- All GT seats covered on the 36-screen GT set (177/177 = 100%).
+  Detector still emits an extra marker on Screenshot_96 (6 vs 5 GT)
+  but RANSAC anchors the correct 3+2 panel.
 - Some Spec stripes still rejected at low score (e.g. very narrow or
   partially-cropped stripes). The inspector galleries surface these
   cases for further tuning.

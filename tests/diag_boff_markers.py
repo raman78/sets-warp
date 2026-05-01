@@ -526,36 +526,63 @@ def full_bar_extent(hsv, marker):
     # Column fill fraction in the marker y-range
     col_frac = full_m.mean(axis=0)
     # Walk right from end of main zone. The +spec stripe sits past a
-    # short dark gap (~2-4 dim cols) — so we don't break on first gap.
-    # Take the rightmost column with ≥35% fill within look_ahead.
+    # short dark gap (~2-4 dim cols) — so we skip up to 6 dim cols
+    # before requiring a bright run. We then take the END of THAT run
+    # only — beyond which there's another gap and then the seat name
+    # bar (which has the same profession hue as the marker and would
+    # otherwise be grabbed by a "rightmost ≥35% fill" rule).
     main_end_in_crop = (x + w) - sx0
     last_col = main_end_in_crop - 1
-    for ci in range(main_end_in_crop, col_frac.shape[0]):
-        if col_frac[ci] >= 0.35:
-            last_col = ci
+    n_cols = col_frac.shape[0]
+    ci = main_end_in_crop
+    # Phase 1: skip up to 6 dim cols (the gap between main and stripe).
+    while (ci < n_cols
+           and col_frac[ci] < 0.35
+           and ci - main_end_in_crop < 6):
+        ci += 1
+    # Phase 2: extend through contiguous bright cols (the stripe itself).
+    while ci < n_cols and col_frac[ci] >= 0.35:
+        last_col = ci
+        ci += 1
     full_w = max(w, last_col + 1)
     has_spec = full_w > w + 1
     stripe_w = full_w - w if has_spec else 0
     return (full_w, has_spec, stripe_w)
 
 
+# Bible — measured on Stations.png ("idealny rozkład"). All values are
+# in panel-internal pixels (i.e. how many image pixels the panel UI
+# would occupy at the reference scale where one full marker bar is 29
+# pixels wide). At any other resolution we just rescale by a single
+# factor `k = detected_marker_w / _BIBLE_MARKER_W`.
+_BIBLE_MARKER_W   = 29
+_BIBLE_SLOT_W     = 29
+_BIBLE_SLOT_H     = 37
+_BIBLE_GAP_FIRST  = 3      # marker_right_edge → slot1_left_edge (X)
+_BIBLE_GAP_SLOT   = 2      # slot_right_edge   → next_slot_left   (X)
+_BIBLE_STRIDE_X   = _BIBLE_SLOT_W + _BIBLE_GAP_SLOT   # = 31
+
+
 def project_seat_slots(panel, n_abilities=4, hsv=None):
     """Project 4 ability-icon bboxes per detected seat marker.
 
-    Per-column slot X-start is anchored to the right edge of the
-    longest FULL bar (main + spec stripe) in that column — so seats
-    with a +spec stripe (which shortens the detected MAIN-zone bbox)
-    are aligned to the same x as plain seats in the same column. This
-    matches the green envelope's left edge.
+    Geometry comes from the bible (panel-internal pixels). Detection
+    contributes a single scale factor `k = full_marker_w / 29`, so
+    every grid distance scales coherently — slot 4 cannot drift away
+    from slot 1 just because `med_marker_w` was a pixel low.
 
-    Marker geometry:
-      - ability sits ABOVE the marker, at marker_y - ab_h - gap_y
-      - ab_h = marker_h / 0.63
-      - ab_w = marker_w (icon ≈ marker width in STO)
-      - stride_x = marker_w / 0.88
+    X-axis (per column):
+      anchor   = max(marker_x + full_bar_extent) over markers in column
+      slot_x[i] = anchor + k * (BIBLE_GAP_FIRST + i * BIBLE_STRIDE_X)
+      slot_w   = round(k * BIBLE_SLOT_W)
+      slot_h   = round(k * BIBLE_SLOT_H)
+
+    Y-axis is left as the empirical formula (`ab_h / 0.63`-style was
+    already 98.4% IoU≥.5; not touching what works). Vertical bible
+    constants (51 px row-to-row) were not used because the marker
+    height itself is not specified in the bible.
 
     Returns list of (seat_idx, slot_idx, x, y, w, h, seat_code).
-    seat_idx is panel marker index in (col_a + col_b) order.
     """
     if panel is None:
         return []
@@ -563,13 +590,30 @@ def project_seat_slots(panel, n_abilities=4, hsv=None):
     all_m = a + b
     if not all_m:
         return []
-    med_w = sorted(m[2] for m in all_m)[len(all_m) // 2]
-    med_h = sorted(m[3] for m in all_m)[len(all_m) // 2]
-    stride_x = max(1, int(round(med_w / 0.95)))
-    ab_w = max(1, med_w)
-    ab_h = max(1, int(round(med_h / 0.63)))
-    gap_x = int(round(med_w * 0.08))
-    gap_y = int(round(med_h * 0.20))
+
+    # Scale factor — prefer full bar width (constant 29 panel-px both
+    # for plain and +spec markers); fall back to raw marker.w when no
+    # HSV is supplied.
+    if hsv is not None:
+        widths = sorted(full_bar_extent(hsv, m)[0] for m in all_m)
+    else:
+        widths = sorted(m[2] for m in all_m)
+    det_w = widths[len(widths) // 2]
+    k = det_w / _BIBLE_MARKER_W
+
+    # Float-domain bible distances. We do NOT round any intermediate
+    # value — all bible constants are kept as floats and the only
+    # rounding happens once per slot at the final pixel position. This
+    # eliminates cumulative error from `i * round(stride)` and visual
+    # gap alternation from independent rounding of slot_w vs stride.
+    stride_f    = k * _BIBLE_STRIDE_X    # = k * (29 + 2)
+    gap_first_f = k * _BIBLE_GAP_FIRST   # = k * 3
+    ab_w        = max(1, int(round(k * _BIBLE_SLOT_W)))
+
+    # Y axis — keep the proven empirical formula.
+    med_h    = sorted(m[3] for m in all_m)[len(all_m) // 2]
+    ab_h     = max(1, int(round(med_h / 0.63)))
+    gap_y    = int(round(med_h * 0.20))
 
     def col_anchor(col):
         if hsv is None:
@@ -582,10 +626,11 @@ def project_seat_slots(panel, n_abilities=4, hsv=None):
     for seat_idx, m in enumerate(all_m):
         mx, my, mw, mh, code = m
         slot_y = my - ab_h - gap_y
-        slot_x0 = (a_anchor if seat_idx < len(a) else b_anchor) + gap_x
-        for k in range(n_abilities):
-            x = slot_x0 + k * stride_x
-            out.append((seat_idx, k, x, slot_y, ab_w, ab_h, code))
+        anchor = a_anchor if seat_idx < len(a) else b_anchor
+        slot_x0_f = anchor + gap_first_f
+        for k_idx in range(n_abilities):
+            x = int(round(slot_x0_f + k_idx * stride_f))
+            out.append((seat_idx, k_idx, x, slot_y, ab_w, ab_h, code))
     return out
 
 
@@ -802,6 +847,12 @@ def gt_panel_extent(boffs):
 
 
 def gt_seat_centres(boffs, icon_h):
+    """Cluster GT BOFF abilities into seats (one seat = 4 abilities in
+    one (col, row) cell). Uses tolerance-based 1-D clustering on cy
+    rather than `round(cy/icon_h)` — the latter splits a single row
+    into two ykeys when cy falls on a rounding boundary (e.g.
+    cy=285 with icon_h=38 → 7.5, banker's rounding picks 7 or 8
+    depending on the last digit of cy)."""
     if not boffs:
         return []
     cxs = sorted(b[0] + b[2] / 2 for b in boffs)
@@ -811,19 +862,30 @@ def gt_seat_centres(boffs, icon_h):
     _, gi = max(gaps)
     split_x = (cxs[gi] + cxs[gi + 1]) / 2
 
-    rows = {'L': {}, 'R': {}}
+    # Group by column first, then cluster cy with tolerance 0.6·icon_h.
+    cols = {'L': [], 'R': []}
     for b in boffs:
         cx = b[0] + b[2] / 2
         cy = b[1] + b[3] / 2
         col = 'L' if cx < split_x else 'R'
-        ykey = round(cy / icon_h)
-        rows[col].setdefault(ykey, []).append((b[0], cy))
+        cols[col].append((b[0], cy))
+
+    tol = max(1.0, 0.6 * icon_h)
     out = []
-    for col, ys in rows.items():
-        for _, members in ys.items():
-            yc = st.median(m[1] for m in members)
-            xl = min(m[0] for m in members)
-            out.append((col, yc, xl))
+    for col, members in cols.items():
+        if not members:
+            continue
+        members.sort(key=lambda m: m[1])
+        cluster = [members[0]]
+        for m in members[1:]:
+            if m[1] - cluster[-1][1] <= tol:
+                cluster.append(m)
+            else:
+                out.append((col, st.median(c[1] for c in cluster),
+                            min(c[0] for c in cluster)))
+                cluster = [m]
+        out.append((col, st.median(c[1] for c in cluster),
+                    min(c[0] for c in cluster)))
     out.sort(key=lambda r: (r[0], r[1]))
     return out
 
@@ -981,11 +1043,11 @@ def viz(fname, img, markers, panel, boffs, gt_full=None):
         if has_spec:
             # Single combined frame: main + stripe (magenta border)
             cv2.rectangle(out, (x, y), (x + full_w, y + h),
-                          (255, 0, 255), 2)
+                          (255, 0, 255), 1)
             # Faint inner frame to indicate where main zone ends
             cv2.rectangle(out, (x, y), (x + w, y + h), c, 1)
         else:
-            cv2.rectangle(out, (x, y), (x + w, y + h), c, 2)
+            cv2.rectangle(out, (x, y), (x + w, y + h), c, 1)
     if panel is not None:
         a, b, _ = panel
         all_m = a + b
