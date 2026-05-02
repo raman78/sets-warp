@@ -181,7 +181,10 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
     abs_min_w, abs_min_h = 10, 12
     abs_max_w, abs_max_h = 90, 90
     min_w = max(abs_min_w, int(icon_w * 0.45))
-    max_w = min(abs_max_w, max(int(icon_w * 1.25), 36))
+    # Empirical max marker_w in GT baseline = 43 px; UI scale is user-set
+    # and not proportional to resolution, so cap must accommodate the full
+    # observed range regardless of icon_w estimate.
+    max_w = min(abs_max_w, max(int(icon_w * 1.6), 44))
     min_h = max(abs_min_h, int(icon_h * 0.45))
     max_h = min(abs_max_h, max(int(icon_h * 1.35), 44))
     ar_min, ar_max = 0.30, 1.8
