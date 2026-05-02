@@ -451,8 +451,8 @@ class RecognitionWorker(QThread):
             'SPACE_BOFFS':     'SPACE_BOFFS',
             'GROUND_BOFFS':    'GROUND_BOFFS',
             'SPECIALIZATIONS': 'SPEC',
-            'SPACE_MIXED':     'SPACE',    # WarpImporter has no SPACE_MIXED order; confirmed_layout handles extras
-            'GROUND_MIXED':    'GROUND',   # same rationale
+            'SPACE_MIXED':     'SPACE_MIXED',
+            'GROUND_MIXED':    'GROUND_MIXED',
         }
         importer_type = _STYPE_MAP.get(self._stype)   # None → UNKNOWN
 
