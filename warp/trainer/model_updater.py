@@ -40,6 +40,7 @@ _CHECK_INTERVAL_HOURS = 0.25        # minimum hours between remote checks (15 mi
 _VERSION_CACHE_FILE   = 'warp/models/model_version_remote_cache.json'
 _CONNECT_TIMEOUT      = 5           # seconds
 _READ_TIMEOUT         = 15          # seconds
+_RETRY_DELAYS_MIN     = (5, 15, 60, 240)  # backoff schedule on network failure
 _MODEL_FILES          = [           # files to download from HF knowledge repo
     ('models/icon_classifier.pt',            'icon_classifier.pt'),
     ('models/label_map.json',               'label_map.json'),
@@ -79,7 +80,7 @@ class ModelUpdater:
         """
         threading.Thread(
             target=self._bg_check,
-            args=(Path(sets_root), on_updated, on_progress),
+            args=(Path(sets_root), on_updated, on_progress, 0),
             daemon=True,
             name='warp-model-update',
         ).start()
@@ -91,6 +92,7 @@ class ModelUpdater:
         sets_root: Path,
         on_updated: Callable | None,
         on_progress: Callable[[str, int, int], None] | None = None,
+        retry_idx: int = 0,
     ) -> None:
         _t0 = time.time()
         try:
@@ -109,11 +111,28 @@ class ModelUpdater:
             log.info('ModelUpdater: checking for remote model update...')
             remote = self._fetch_remote_version()
             if remote is None:
-                # Network failure — do NOT save timestamp so next start retries.
-                log.warning(
-                    'ModelUpdater: remote version check failed (network) — '
-                    'will retry on next startup'
-                )
+                # Network failure — schedule a follow-up attempt without saving
+                # the rate-limit timestamp (so a fresh app start still retries).
+                if retry_idx < len(_RETRY_DELAYS_MIN):
+                    delay_min = _RETRY_DELAYS_MIN[retry_idx]
+                    log.warning(
+                        f'ModelUpdater: remote version check failed (network) — '
+                        f'retrying in {delay_min} min '
+                        f'(attempt {retry_idx + 2}/{len(_RETRY_DELAYS_MIN) + 1})'
+                    )
+                    t = threading.Timer(
+                        delay_min * 60,
+                        self._bg_check,
+                        args=(sets_root, on_updated, None, retry_idx + 1),
+                    )
+                    t.daemon = True
+                    t.name = f'warp-model-update-retry-{retry_idx + 1}'
+                    t.start()
+                else:
+                    log.warning(
+                        'ModelUpdater: remote version check failed (network) — '
+                        'giving up until next startup'
+                    )
                 return
             if not remote.get('available'):
                 log.debug('ModelUpdater: no model published on remote yet')
