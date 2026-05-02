@@ -595,6 +595,9 @@ class WarpDialog(QDialog):
                    f'(ship has {len(ship_seats_raw)} seats)')
 
         # ── Phase 2: match each cluster to a ship seat by profession ─────────
+        from warp.recognition.boff_keys import parse_seat_profession, parse_seat_spec
+        from collections import Counter
+
         # Map spec name → profession name (for Universal-spec seats and spec-prof seats)
         _SPEC_TO_PROF = {
             'Temporal Operative': 'Temporal',
@@ -605,13 +608,35 @@ class WarpDialog(QDialog):
         }
 
         # For each cluster, compute the profession distribution from slot annotations.
-        # primary_prof = most-common profession; prof_set = all professions in cluster.
-        ClusterInfo = list[tuple]   # (cluster_items, primary_prof, prof_set, rank_count)
+        ClusterInfo = list[tuple]   # (cluster_items, base_prof, prof_set, spec_prof)
         cluster_info: list = []
         for c in seat_clusters:
-            prof_counts = Counter(ri.slot[5:] for ri in c)   # 'Boff Temporal' → 'Temporal'
-            primary = prof_counts.most_common(1)[0][0]
-            cluster_info.append([c, primary, set(prof_counts.keys())])
+            cluster_slot = c[0].slot
+            base_prof = parse_seat_profession(cluster_slot)
+            spec_prof = parse_seat_spec(cluster_slot)
+            
+            content_profs = []
+            for ri in c:
+                if ri.confidence >= 0.40 and ri.name:
+                    found = False
+                    for domain in ['space', 'ground']:
+                        for career, ranks in self._sets.cache.boff_abilities.get(domain, {}).items():
+                            for rank_dict in ranks:
+                                if isinstance(rank_dict, dict) and ri.name in rank_dict:
+                                    content_profs.append(career)
+                                    found = True
+                                    break
+                            if found: break
+                        if found: break
+            
+            prof_set = set(content_profs)
+            if base_prof is None:
+                if content_profs:
+                    base_prof = Counter(content_profs).most_common(1)[0][0]
+                else:
+                    base_prof = 'Unknown'
+                    
+            cluster_info.append([c, base_prof, prof_set, spec_prof])
 
         # Match clusters to seats in three passes:
         # 1. Named profession seats (non-Universal) with specialization
@@ -621,13 +646,17 @@ class WarpDialog(QDialog):
         unmatched = list(range(len(cluster_info)))      # indices into cluster_info
         assigned: dict[int, int] = {}                   # ship_data_idx → cluster_info_idx
 
-        def _find_cluster(primary_prof: str, spec_prof: str | None) -> int | None:
+        def _find_cluster(primary_prof: str, target_spec: str | None) -> int | None:
             for ci in unmatched:
-                c_primary, c_profs = cluster_info[ci][1], cluster_info[ci][2]
+                c_primary, c_profs, c_spec = cluster_info[ci][1], cluster_info[ci][2], cluster_info[ci][3]
                 if c_primary != primary_prof:
                     continue
-                if spec_prof and spec_prof not in c_profs:
-                    continue
+                if target_spec:
+                    if c_spec:
+                        if c_spec != target_spec:
+                            continue
+                    elif target_spec not in c_profs:
+                        continue
                 return ci
             return None
 

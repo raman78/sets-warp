@@ -384,6 +384,14 @@ def update_boff_seat(
     if clear:
         default_profession = 'Tactical' if profession == 'Universal' else profession
         self.build['space']['boff_specs'][boff_id] = [default_profession, specialization]
+    else:
+        if boff_id < len(self.build['space']['boff_specs']):
+            current_spec = self.build['space']['boff_specs'][boff_id]
+            if current_spec[1] == '':
+                boff_text = current_spec[0]
+            else:
+                boff_text = f'{current_spec[0]} / {current_spec[1]}'
+            label.setCurrentText(boff_text)
 
 
 def clear_boff_seat_ground(self, boff_id: int):

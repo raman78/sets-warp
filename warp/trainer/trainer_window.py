@@ -2813,7 +2813,17 @@ class WarpCoreWindow(QMainWindow):
         target_domain = 'Ground' if 'GROUND' in stype else 'Space'
 
         if slot.startswith('Boff'):
-            target_career = slot.replace('Boff ', '').strip()
+            from warp.recognition.boff_keys import parse_seat_profession, parse_seat_spec
+            parsed_prof = parse_seat_profession(slot)
+            if parsed_prof:
+                target_career = parsed_prof
+            else:
+                # Fallback for spec-only seats or unkeyed Universal
+                parsed_spec = parse_seat_spec(slot)
+                if parsed_spec:
+                    target_career = parsed_spec
+                else:
+                    target_career = slot.replace('Boff ', '').strip()
             
             # Map UI display names to STO cache canonical names
             mapped_career = target_career

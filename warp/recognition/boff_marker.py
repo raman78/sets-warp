@@ -17,10 +17,10 @@ Public API:
 
 PanelResult is a TypedDict-like dict:
     {
-      'col_a':   list[(x, y, w, h, code)],         # left column markers
-      'col_b':   list[(x, y, w, h, code)],         # right column markers
+      'col_a':   list[(x, y, w, h, code, spec_code | None)],  # left column
+      'col_b':   list[(x, y, w, h, code, spec_code | None)],  # right column
       'score':   float,                            # RANSAC score
-      'seats':   list[(side, mx, my, mw, mh, seat_code)],
+      'seats':   list[(side, mx, my, mw, mh, seat_code, spec_code | None)],
       'slots':   list[(seat_idx, slot_idx, x, y, w, h, seat_code)],
     }
 
@@ -549,10 +549,13 @@ def detect_panel(img: np.ndarray) -> Optional[dict]:
     panel is found.
 
     Output dict:
-      'col_a':   list[(x, y, w, h, code)] — left column markers (top→bottom)
-      'col_b':   list[(x, y, w, h, code)] — right column markers
+      'col_a':   list[(x, y, w, h, code, spec_code | None)] — left column
+                 markers (top→bottom). `spec_code` is the spec-stripe code
+                 ('O'/'P'/'Y'/'C'/'L') when detected, else None.
+      'col_b':   list[(x, y, w, h, code, spec_code | None)] — right column
       'score':   float — RANSAC score of the chosen 2-column grid
-      'seats':   list[(side, mx, my, mw, mh, seat_code)] — 'L' or 'R'
+      'seats':   list[(side, mx, my, mw, mh, seat_code, spec_code | None)]
+                 — 'L' or 'R'
       'slots':   list[(seat_idx, slot_idx, x, y, w, h, seat_code)]
                  — `seat_idx` indexes into `col_a + col_b`.
     """
@@ -572,9 +575,16 @@ def detect_panel(img: np.ndarray) -> Optional[dict]:
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     slots = project_seat_slots(panel, hsv=hsv)
     a, b, score = panel
+    # Augment column markers with spec stripe (per-seat) — 6-tuple
+    # (mx, my, mw, mh, code, spec_code | None). Detection rate ~36% on
+    # 36 GT screens; missing specs leave the slot at None.
+    a = [(mx, my, mw, mh, c, classify_stripe(hsv, (mx, my, mw, mh, c))[0])
+         for (mx, my, mw, mh, c) in a]
+    b = [(mx, my, mw, mh, c, classify_stripe(hsv, (mx, my, mw, mh, c))[0])
+         for (mx, my, mw, mh, c) in b]
     seats = (
-        [('L', mx, my, mw, mh, c) for (mx, my, mw, mh, c) in a]
-        + [('R', mx, my, mw, mh, c) for (mx, my, mw, mh, c) in b]
+        [('L', mx, my, mw, mh, c, sp) for (mx, my, mw, mh, c, sp) in a]
+        + [('R', mx, my, mw, mh, c, sp) for (mx, my, mw, mh, c, sp) in b]
     )
     return {
         'col_a':  a,

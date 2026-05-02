@@ -308,14 +308,18 @@ class LayoutDetector:
 
         # MIXED detection chain: learned → OCR-anchored → full_scan → fallback
         if build_type in ('SPACE_MIXED', 'GROUND_MIXED'):
+            marker_boffs = self._detect_boffs_via_markers(img)
+
             learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
             if learned and len(learned) >= 5:
+                if marker_boffs:
+                    learned.update(marker_boffs)
                 _slog.info(f'LayoutDetector: Strategy 1 (learned/MIXED) → {len(learned)} slot groups')
                 return learned
 
             # Strategy 0 BOFF anchor for MIXED: marker-panel detector.
             # Computed once and merged into whichever equipment chain wins.
-            marker_boffs = self._detect_boffs_via_markers(img)
+            # (already computed above)
 
             # OCR-anchored equipment detection (primary path for MIXED)
             ocr_anch = self._detect_via_ocr_anchored(img, build_type, slot_order, profile)
@@ -1065,22 +1069,26 @@ class LayoutDetector:
         n_a = len(a)
         # Group slots by seat_idx → emit a Boff Seat key per seat.
         per_seat: dict[int, list[tuple[int, int, int, int]]] = {}
-        seat_meta: dict[int, tuple[str, int, str]] = {}  # seat_idx → (side, my, code)
-        for (mx, my, mw, mh, code) in a:
+        # seat_idx → (side, my, prof_code, spec_code | None)
+        seat_meta: dict[int, tuple[str, int, str, str | None]] = {}
+        for (mx, my, mw, mh, code, spec) in a:
             si = len(seat_meta)
-            seat_meta[si] = ('L', int(my), code)
-        for (mx, my, mw, mh, code) in b:
+            seat_meta[si] = ('L', int(my), code, spec)
+        for (mx, my, mw, mh, code, spec) in b:
             si = len(seat_meta)
-            seat_meta[si] = ('R', int(my), code)
+            seat_meta[si] = ('R', int(my), code, spec)
 
         for (seat_idx, _slot_idx, x, y, w, h, _code) in slots:
             per_seat.setdefault(seat_idx, []).append((int(x), int(y), int(w), int(h)))
 
         out: dict[str, list] = {}
         for seat_idx, bboxes in per_seat.items():
-            side, my, code = seat_meta.get(seat_idx, ('L', 0, '?'))
-            # Use marker_y as the disambiguator — same key shape as _detect_boffs.
-            seat_id = f'Boff Seat {side}_{my}'
+            side, my, code, spec = seat_meta.get(seat_idx, ('L', 0, 'U', None))
+            # Embed prof code (+ optional spec) so warp_dialog Phase 2 and
+            # trainer autocomplete can recover the seat profession without
+            # re-classifying. Schema parsed by warp.recognition.boff_keys.
+            tag = f'{code}+{spec}' if spec else code
+            seat_id = f'Boff Seat {side}[{tag}]_{my}'
             out[seat_id] = bboxes
 
         _slog.info(
