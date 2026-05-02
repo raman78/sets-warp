@@ -65,12 +65,18 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
     ],
     'BOFFS': [
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
-    'SPECIALIZATIONS': [
-        'Primary Specialization', 'Secondary Specialization',
+    'SPACE_BOFFS': [
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
+        'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
+    'GROUND_BOFFS': [
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
+        'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
+    ],
+    'SPECIALIZATIONS': [],
     # SPACE_MIXED: merged space screenshot — equipment + traits + boffs + specs, no ground gear
     'SPACE_MIXED': [
         'Fore Weapons', 'Deflector', 'Sec-Def', 'Engines', 'Warp Core', 'Shield',
@@ -78,7 +84,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Engineering Consoles', 'Science Consoles', 'Tactical Consoles', 'Hangars',
         'Ship Name', 'Ship Type', 'Ship Tier',
         'Personal Space Traits', 'Starship Traits', 'Space Reputation', 'Active Space Rep',
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
         'Primary Specialization', 'Secondary Specialization',
     ],
@@ -86,7 +92,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
     'GROUND_MIXED': [
         'Body Armor', 'EV Suit', 'Personal Shield', 'Weapons', 'Kit', 'Kit Modules', 'Ground Devices',
         'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Operations',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
         'Primary Specialization', 'Secondary Specialization',
     ],
@@ -94,12 +100,14 @@ SLOT_GROUPS: dict[str, list[str]] = {
 
 SCREEN_TYPE_LABELS: dict[str, str] = {
     'SPACE_EQ': 'Space Equipment', 'GROUND_EQ': 'Ground Equipment', 'TRAITS': 'Traits',
-    'BOFFS': 'Bridge Officers', 'SPECIALIZATIONS': 'Specializations',
+    'BOFFS': 'Bridge Officers', 'SPACE_BOFFS': 'Space Bridge Officers',
+    'GROUND_BOFFS': 'Ground Bridge Officers', 'SPECIALIZATIONS': 'Specializations',
     'SPACE_MIXED': 'Space Mixed (merged)', 'GROUND_MIXED': 'Ground Mixed (merged)', 'UNKNOWN': 'Unknown',
 }
 
 SCREEN_TYPE_ICONS: dict[str, str] = {
-    'SPACE_EQ': '🚀', 'GROUND_EQ': '🦶', 'TRAITS': '✨', 'BOFFS': '👥',
+    'SPACE_EQ': '🚀', 'GROUND_EQ': '🦶', 'TRAITS': '✨',
+    'BOFFS': '👥', 'SPACE_BOFFS': '👥', 'GROUND_BOFFS': '👥',
     'SPECIALIZATIONS': '🎯', 'SPACE_MIXED': '🌌', 'GROUND_MIXED': '🗺️', 'UNKNOWN': '❓',
 }
 
@@ -108,6 +116,8 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
     'GROUND_EQ':      'GROUND_EQ',
     'TRAITS':         'TRAITS',
     'BOFFS':          'BOFFS',
+    'SPACE_BOFFS':    'SPACE_BOFFS',
+    'GROUND_BOFFS':   'GROUND_BOFFS',
     'SPECIALIZATIONS':'SPECIALIZATIONS',
     'SPACE_MIXED':    'SPACE_MIXED',
     'GROUND_MIXED':   'GROUND_MIXED',
@@ -115,7 +125,7 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
 }
 
 FIXED_VALUE_SLOTS: frozenset[str] = frozenset(['Ship Tier', 'Ship Type'])
-from warp.trainer.training_data import NON_ICON_SLOTS, SINGLE_INSTANCE_SLOTS, VIRTUAL_ITEM_NAMES
+from warp.trainer.training_data import NON_ICON_SLOTS, SINGLE_INSTANCE_SLOTS, VIRTUAL_ITEM_NAMES, TEXT_LEARNING_SLOTS
 SHIP_TIER_VALUES: list[str] = ['T1', 'T2', 'T3', 'T4', 'T5', 'T5-U', 'T5-X', 'T5-X2', 'T6', 'T6-X', 'T6-X2']
 _SHIP_INFO_SLOTS = ['Ship Name', 'Ship Type', 'Ship Tier']
 
@@ -330,18 +340,14 @@ class OCRWorker(QThread):
             best_conf = max(res[2] for res in result)
             ocr_raw = full_text
             
-            # Typo correction (Learning)
-            from pathlib import Path
-            import json
-            typo_file = Path('warp') / 'training_data' / 'ocr_typos.json'
-            if typo_file.exists():
-                try:
-                    with open(typo_file, 'r') as f:
-                        typos = json.load(f)
-                    if full_text in typos:
-                        full_text = typos[full_text]
-                        best_conf = 1.0 # Force max conf since user previously corrected it
-                except: pass
+            # Apply community + in-session OCR corrections
+            try:
+                from warp.recognition.text_extractor import TextExtractor
+                if full_text in TextExtractor._corrections:
+                    full_text = TextExtractor._corrections[full_text]
+                    best_conf = 1.0
+            except Exception:
+                pass
             
             text = full_text
             conf = best_conf
@@ -398,16 +404,14 @@ class MatchWorker(QThread):
         try:
             from warp.recognition.icon_matcher import SETSIconMatcher
             from src.setsdebug import log as _slog
-            name, conf, thumb, _ = SETSIconMatcher(self._sets).match(
+            # Seed confirmed crops as session examples (guarded — runs at most once)
+            matcher = SETSIconMatcher(self._sets)
+            SETSIconMatcher.seed_from_training_data(
+                matcher._find_sets_root() / 'warp' / 'training_data')
+            name, conf, thumb, _ = matcher.match(
                 self._crop, candidate_names=self._candidates)
-            _slog.info(f'match_worker pass1 → name={name!r} conf={conf:.2f} '
+            _slog.info(f'match_worker → name={name!r} conf={conf:.2f} '
                        f'(pool={len(self._candidates) if self._candidates else "all"})')
-            if conf < 0.40 and self._candidates:
-                name2, conf2, thumb2, _ = SETSIconMatcher(self._sets).match(
-                    self._crop, candidate_names=None)
-                _slog.info(f'match_worker pass2 (unrestricted) → name={name2!r} conf={conf2:.2f}')
-                if conf2 > conf:
-                    name, conf, thumb = name2, conf2, thumb2
             if conf < 0.40:
                 _slog.info(f'match_worker: conf {conf:.2f} < 0.40 — treating as unmatched')
                 name, conf, thumb = '', 0.0, None
@@ -444,6 +448,8 @@ class RecognitionWorker(QThread):
             'GROUND_EQ':       'GROUND',
             'TRAITS':          'SPACE_TRAITS',   # refined below via CNN
             'BOFFS':           'BOFFS',
+            'SPACE_BOFFS':     'SPACE_BOFFS',
+            'GROUND_BOFFS':    'GROUND_BOFFS',
             'SPECIALIZATIONS': 'SPEC',
             'SPACE_MIXED':     'SPACE',    # WarpImporter has no SPACE_MIXED order; confirmed_layout handles extras
             'GROUND_MIXED':    'GROUND',   # same rationale
@@ -644,45 +650,6 @@ def _get_ml_icon() -> 'QIcon':
 
 
 class WarpCoreWindow(QMainWindow):
-    BOFF_ABILITY_PROPERTIES: dict[str, tuple[str, str]] = {
-        "Beams: Fire at Will": ("Tactical", "Space"), "Beams: Overload": ("Tactical", "Space"),
-        "Tactical Team": ("Tactical", "Space"), "Torpedoes: High Yield": ("Tactical", "Space"),
-        "Torpedoes: Spread": ("Tactical", "Space"), "Target Weapons Subsystems": ("Tactical", "Space"),
-        "Target Engines Subsystems": ("Tactical", "Space"), "Target Shields Subsystems": ("Tactical", "Space"),
-        "Target Auxiliary Subsystems": ("Tactical", "Space"), "Attack Pattern Beta": ("Tactical", "Space"),
-        "Attack Pattern Delta": ("Tactical", "Space"), "Cannons: Rapid Fire": ("Tactical", "Space"),
-        "Cannons: Scatter Volley": ("Tactical", "Space"), "Dispersal Pattern Alpha": ("Tactical", "Space"),
-        "Dispersal Pattern Beta": ("Tactical", "Space"), "Focused Assault": ("Tactical", "Space"),
-        "Attack Pattern Omega": ("Tactical", "Space"), "Photon Grenade": ("Tactical", "Ground"),
-        "Sweeping Strikes": ("Tactical", "Ground"), "Battle Strategies": ("Tactical", "Ground"),
-        "Draw Fire": ("Tactical", "Ground"), "Graviton Spike": ("Tactical", "Ground"),
-        "Corrosive Grenade": ("Tactical", "Ground"), "Cease Fire": ("Tactical", "Ground"),
-        "Lunge": ("Tactical", "Ground"), "Suppressing Fire": ("Tactical", "Ground"),
-        "Target Optics": ("Tactical", "Ground"), "Smoke Grenade": ("Tactical", "Ground"),
-        "Micro Cryonic Warhead": ("Tactical", "Ground"), "Gre'thor's Chains": ("Tactical", "Ground"),
-        "Emergency Power to Auxiliary": ("Engineering", "Space"), "Emergency Power to Weapons": ("Engineering", "Space"),
-        "Emergency Power to Engines": ("Engineering", "Space"), "Emergency Power to Shields": ("Engineering", "Space"),
-        "Engineering Team": ("Engineering", "Space"), "Reverse Shield Polarity": ("Engineering", "Space"),
-        "Boarding Party": ("Engineering", "Space"), "Auxiliary Power to the Emergency Battery": ("Engineering", "Space"),
-        "Auxiliary Power to the Inertial Dampers": ("Engineering", "Space"), "Auxiliary Power to the Structural Integrity Field": ("Engineering", "Space"),
-        "Eject Warp Plasma": ("Engineering", "Space"), "Aceton Beam": ("Engineering", "Space"),
-        "Chroniton Mine Barrier": ("Engineering", "Ground"), "Quick Fix": ("Engineering", "Ground"),
-        "Shield Recharge": ("Engineering", "Ground"), "Weapons Malfunction": ("Engineering", "Ground"),
-        "Hurricane Turret": ("Engineering", "Ground"), "Molten Terrain": ("Engineering", "Ground"),
-        "Photon Grenade Launcher Fabrication": ("Engineering", "Ground"), "Explosive Drone Fabrication": ("Engineering", "Ground"),
-        "Cover Shield": ("Engineering", "Ground"), "Equipment Diagnostics": ("Engineering", "Ground"),
-        "Medical Generator Fabrication": ("Engineering", "Ground"), "Quantum Mortar Fabrication": ("Engineering", "Ground"),
-        "Hazard Emitters": ("Science", "Space"), "Science Team": ("Science", "Space"),
-        "Tachyon Beam": ("Science", "Space"), "Gravity Well": ("Science", "Space"),
-        "Photonic Officer": ("Science", "Space"), "Tyken's Rift": ("Science", "Space"),
-        "Feedback Pulse": ("Science", "Space"), "Scramble Sensors": ("Science", "Space"),
-        "Photonic Shockwave": ("Science", "Space"), "Viral Matrix": ("Science", "Space"),
-        "Medical Tricorder": ("Science", "Ground"), "Stasis Field": ("Science", "Ground"),
-        "Tricorder Scan": ("Science", "Ground"), "Vascular Regenerator": ("Science", "Ground"),
-        "Exothermic Redistribution": ("Science", "Ground"), "Seismic Agitation Field": ("Science", "Ground"),
-        "Sonic Disruption": ("Science", "Ground"), "Nanite Health Monitor": ("Science", "Ground"),
-    }
-
     def __init__(self, sets_app=None, parent=None):
         super().__init__(parent)
         self._sets = sets_app
@@ -1311,6 +1278,21 @@ class WarpCoreWindow(QMainWindow):
         label = SCREEN_TYPE_LABELS.get(stype, 'Unknown')
         self._screen_type_badge.setText(f'Screen: {icon} {label}')
         self._refresh_slot_combo(stype)
+        is_spec = (stype == 'SPECIALIZATIONS')
+        self._slot_combo.setEnabled(not is_spec)
+        self._name_edit.setEnabled(not is_spec)
+        self._btn_accept.setEnabled(not is_spec)
+        if is_spec:
+            self._slot_combo.blockSignals(True)
+            self._slot_combo.clear()
+            self._slot_combo.blockSignals(False)
+            self._name_edit.blockSignals(True)
+            self._name_edit.clear()
+            self._name_edit.blockSignals(False)
+            self._name_edit.setPlaceholderText(
+                'No bboxes can be added to specializations screens')
+        else:
+            self._name_edit.setPlaceholderText("Item name (or leave blank for 'Unknown')")
 
     def _refresh_slot_combo(self, stype: str, keep_slot: str = ''):
         """Rebuild slot combo for screen type, hiding confirmed NON_ICON_SLOTS.
@@ -1442,6 +1424,52 @@ class WarpCoreWindow(QMainWindow):
             # Run auto-accept after panel is populated
             self._run_auto_accept()
 
+    def _ocr_empty_non_icon_items(self):
+        """Re-run OCR for any confirmed NON_ICON_SLOT items that have an empty name.
+
+        This covers the case where Ship Type/Tier was confirmed before OCR finished
+        (or OCR failed), leaving a blank name saved to disk.  On every panel refresh
+        we detect such entries and kick off OCRWorker to fill them in.
+        """
+        if self._current_idx < 0:
+            return
+        try:
+            import cv2
+            path = self._screenshots[self._current_idx]
+            img = None  # lazy-load
+            if self._ship_type_combo.count() == 0:
+                self._populate_ship_type_combo()
+            v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
+            v_types = [self._ship_type_combo.itemText(i) for i in range(self._ship_type_combo.count())]
+            for row, ri in enumerate(self._recognition_items):
+                if ri.get('slot') not in NON_ICON_SLOTS:
+                    continue
+                if ri.get('slot') == 'Ship Name':
+                    continue  # position-only, never store name
+                if ri.get('name'):
+                    continue  # already has a name
+                bbox = ri.get('bbox')
+                if not bbox:
+                    continue
+                if img is None:
+                    img = cv2.imread(str(path))
+                    if img is None:
+                        break
+                x, y, w, h = bbox
+                crop = img[y:y+h, x:x+w].copy()
+                if crop.size == 0:
+                    continue
+                ri['crop_bgr'] = crop
+                worker = OCRWorker(row, crop, ri['slot'], v_tiers, v_types, parent=self)
+                worker.finished.connect(self._on_ocr_finished)
+                worker.start()
+                if not hasattr(self, '_ocr_workers'):
+                    self._ocr_workers = []
+                self._ocr_workers.append(worker)
+        except Exception as _e:
+            from src.setsdebug import log as _sl
+            _sl.debug(f'_ocr_empty_non_icon_items: {_e}')
+
     def _on_recognition_error(self, msg: str):
         if self._recog_dlg:
             self._recog_dlg.close()
@@ -1507,11 +1535,17 @@ class WarpCoreWindow(QMainWindow):
         self._refresh_slot_combo(stype)
         if n > 0:
             self._review_list.setCurrentRow(0)
+        # For confirmed NON_ICON_SLOT items with empty name (e.g. Ship Type confirmed
+        # before OCR finished), re-run OCR now so the name is filled in.
+        self._ocr_empty_non_icon_items()
 
     def _add_review_row(self, name: str, slot: str, conf: float, confirmed: bool = False, cross_check_failed: bool = False):
         is_virtual = name in VIRTUAL_ITEM_NAMES
         if confirmed:
-            label = f'{slot}  ->  {name or "—"}  [confirmed]'
+            if conf > 0.0:
+                label = f'{slot}  ->  {name or "—"}  [confirmed {conf:.0%}]'
+            else:
+                label = f'{slot}  ->  {name or "—"}  [confirmed]'
         elif is_virtual:
             display = 'empty slot' if name == '__empty__' else 'inactive slot'
             label = f'{slot}  ->  [{display}]'
@@ -1599,6 +1633,8 @@ class WarpCoreWindow(QMainWindow):
                 self._name_edit.blockSignals(True)
                 self._name_edit.setText(ri['name'])
                 self._name_edit.blockSignals(False)
+                if hasattr(self, '_completer'):
+                    self._completer.setCompletionPrefix(ri['name'])
                 if ri.get('bbox'):
                     self._ann_widget.set_highlighted_row(row)
                 else:
@@ -1666,7 +1702,8 @@ class WarpCoreWindow(QMainWindow):
                 self._on_remove_item()
                 return True
         # Forward wheel events from anywhere in scroll area to the canvas widget
-        if event.type() == QEvent.Type.Wheel and sa and aw:
+        # (only when WARP CORE is the active window)
+        if event.type() == QEvent.Type.Wheel and sa and aw and self.isActiveWindow():
             from PySide6.QtGui import QCursor
             gpos = QCursor.pos()
             sa_pos = sa.mapFromGlobal(gpos)
@@ -1778,9 +1815,25 @@ class WarpCoreWindow(QMainWindow):
     def _update_add_bbox_btn(self):
         is_done = (self._current_idx >= 0
                    and self._screenshots[self._current_idx].name in self._screenshots_done)
-        self._btn_add_bbox.setEnabled(self._current_idx >= 0 and not is_done)
+        is_spec = (self._current_idx >= 0
+                   and self._screen_types.get(
+                       self._screenshots[self._current_idx].name, 'UNKNOWN') == 'SPECIALIZATIONS')
+        enabled = self._current_idx >= 0 and not is_done and not is_spec
+        self._btn_add_bbox.setEnabled(enabled)
+        if is_spec:
+            self._btn_add_bbox.setToolTip(
+                'Specialization screens are used only for screen-type training.\n'
+                'Icon annotation is not supported for this screen type.')
+        else:
+            self._btn_add_bbox.setToolTip('')
 
     def _on_bbox_drawn(self, bbox: tuple):
+        if self._current_idx >= 0 and self._screen_types.get(
+                self._screenshots[self._current_idx].name, 'UNKNOWN') == 'SPECIALIZATIONS':
+            self._add_bbox_mode = False
+            self._btn_add_bbox.setChecked(False)
+            self._ann_widget.set_draw_mode(False)
+            return
         if self._manual_bbox_mode:
             row = self._review_list.currentRow()
             if 0 <= row < len(self._recognition_items):
@@ -1812,6 +1865,23 @@ class WarpCoreWindow(QMainWindow):
                             self._slot_combo.blockSignals(False)
                             _slog.info(f'add_bbox: P1 slot suggestion → {suggested!r}')
                         _current_slot = self._slot_combo.currentText()
+                        # If slot_suggest gave no suggestion and the combo still shows a
+                        # confirmed single-instance slot, skip matching entirely — the
+                        # icon is in a different panel (e.g. traits to the right of the
+                        # equipment column). Show unmatched; user picks slot manually.
+                        if (not suggested
+                                and _current_slot in SINGLE_INSTANCE_SLOTS
+                                and self._current_idx >= 0):
+                            _already = {
+                                ann.slot for ann in self._data_mgr.get_annotations(path)
+                                if ann.state == AnnotationState.CONFIRMED
+                            }
+                            if _current_slot in _already:
+                                _slog.info(
+                                    f'add_bbox: no suggestion, {_current_slot!r} already '
+                                    f'confirmed — skipping match (different panel)')
+                                self._finish_bbox_drawn('', 0.0, None, crop_bgr, bbox)
+                                return
                         # If current slot is a NON_ICON_SLOT already confirmed for this image,
                         # advance to the next unconfirmed NON_ICON_SLOT to prevent
                         # SINGLE_INSTANCE step from silently deleting the earlier annotation.
@@ -1831,8 +1901,25 @@ class WarpCoreWindow(QMainWindow):
                                                  f'→ advanced slot to {_next!r}')
                                         break
                         if _current_slot not in NON_ICON_SLOTS:
-                            _candidates = set(self._build_search_candidates(_current_slot)) or None
-                            self._start_match_worker(crop_bgr, bbox, _candidates)
+                            _candidates = set(self._build_search_candidates(_current_slot))
+                            # Optional slots (Sec-Def, Experimental, Hangars) may not exist on
+                            # the current ship. Expand candidates with the next mandatory slot so
+                            # the ML can determine which one this icon actually is.
+                            # _infer_slot_from_name will assign the correct slot after matching.
+                            _OPTIONAL_SLOTS = ('Sec-Def', 'Experimental', 'Hangars')
+                            if _current_slot in _OPTIONAL_SLOTS:
+                                _stype_key = self._screen_types.get(path.name, 'UNKNOWN')
+                                _grp = SCREEN_TO_SLOT_GROUP.get(_stype_key, 'ALL')
+                                _ord = SLOT_GROUPS.get(_grp, ALL_SLOTS)
+                                if _current_slot in _ord:
+                                    for _ns in _ord[_ord.index(_current_slot) + 1:]:
+                                        if _ns not in NON_ICON_SLOTS and _ns not in _OPTIONAL_SLOTS:
+                                            _candidates |= set(self._build_search_candidates(_ns))
+                                            _slog.info(
+                                                f'add_bbox: {_current_slot!r} is optional — '
+                                                f'expanding candidates with {_ns!r}')
+                                            break
+                            self._start_match_worker(crop_bgr, bbox, _candidates or None)
                             return
                         # NON_ICON_SLOT: icon matching skipped, fall through to _finish_bbox_drawn
                 except Exception as _e:
@@ -1872,11 +1959,17 @@ class WarpCoreWindow(QMainWindow):
             allowed = SLOT_GROUPS.get(group_key)  # None means no restriction
             inferred = self._infer_slot_from_name(name, allowed_slots=allowed)
             if inferred:
+                # Weapon slots (Fore/Aft/Experimental) are positionally interchangeable
+                # for generic 'Ship Weapon' type items — the cache type only says "weapon",
+                # not fore vs aft.  P1 position suggestion is more accurate.
+                _weapon_slots = frozenset({'Fore Weapons', 'Aft Weapons', 'Experimental'})
                 # Universal Console items are valid in any console slot.
                 # If P1 position already identified a specific console slot, trust it.
                 _specific_console_slots = frozenset({
                     'Engineering Consoles', 'Science Consoles', 'Tactical Consoles'})
-                if inferred == 'Universal Consoles' and slot in _specific_console_slots:
+                if inferred in _weapon_slots and slot in _weapon_slots:
+                    pass  # keep P1 position suggestion — fore vs aft determined by position
+                elif inferred == 'Universal Consoles' and slot in _specific_console_slots:
                     pass  # keep P1 position suggestion
                 elif inferred in SINGLE_INSTANCE_SLOTS and self._current_idx >= 0:
                     # Skip suggestion if this single-instance slot is already confirmed
@@ -1890,14 +1983,18 @@ class WarpCoreWindow(QMainWindow):
                     # else: keep P1 position suggestion — slot is taken
                 else:
                     slot = inferred
-            else:
+            elif name not in VIRTUAL_ITEM_NAMES:
                 # Name found by matcher but doesn't belong to any allowed slot
-                # for this screen type — discard to avoid wrong slot assignment
+                # for this screen type — discard to avoid wrong slot assignment.
+                # Virtual names (__inactive__, __empty__) are always valid training labels,
+                # so they keep the positional slot suggestion and are never discarded here.
                 from src.setsdebug import log as _slog2
                 _slog2.info(f'add_bbox: discarding {name!r} — not valid for stype={stype}')
                 name, conf, thumb = '', 0.0, None
         # NON_ICON_SLOTS (Ship Name/Type/Tier) — position only, always confirmed
-        if slot in NON_ICON_SLOTS:
+        if slot == 'Ship Name':
+            _auto = True
+        elif slot in NON_ICON_SLOTS:
             _auto = False
         else:
             # Auto-accept before adding to list if conf >= threshold
@@ -1937,7 +2034,7 @@ class WarpCoreWindow(QMainWindow):
             self._recognition_cache[fname] = list(self._recognition_items)
         self._ann_widget.clear_pending()
 
-        if slot in NON_ICON_SLOTS and crop_bgr is not None:
+        if slot in NON_ICON_SLOTS and crop_bgr is not None and slot != 'Ship Name':
             if self._ship_type_combo.count() == 0:
                 self._populate_ship_type_combo()
             v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
@@ -2090,35 +2187,116 @@ class WarpCoreWindow(QMainWindow):
         allowed = set(SLOT_GROUPS.get(group_key, ALL_SLOTS))
 
         # ── Source 1: existing annotations on this screenshot ────────────────
-        # Build a map: slot → average center-Y from current recognition items
-        slot_y_map: dict[str, list[int]] = {}
+        # Build a map: slot → list of (cx, cy) — includes NON_ICON_SLOTS so
+        # Ship Name/Type/Tier can still be suggested when the user draws near them.
+        slot_pos_map: dict[str, list[tuple[int, int]]] = {}
         for ri in self._recognition_items:
             ri_bbox = ri.get('bbox')
             ri_slot = ri.get('slot', '')
             if ri_bbox and ri_slot and ri_slot in allowed:
+                ri_cx = ri_bbox[0] + ri_bbox[2] // 2
                 ri_cy = ri_bbox[1] + ri_bbox[3] // 2
-                slot_y_map.setdefault(ri_slot, []).append(ri_cy)
+                slot_pos_map.setdefault(ri_slot, []).append((ri_cx, ri_cy))
 
-        if slot_y_map:
-            # Find the slot whose average Y is closest to our bbox
+        if slot_pos_map:
+            from src.setsdebug import log as _sl
+            slot_order = SLOT_GROUPS.get(group_key, ALL_SLOTS)
+            bx_center = bx + bw // 2
+
+            # "Next in order" strategy: look at icon slots (not NON_ICON_SLOTS)
+            # that are above OR in the same row as the new bbox.
+            # Same-row slots (|Δy| < 0.5*bh) count when the new bbox is to the
+            # right — handles Body Armor → EV Suit which are side-by-side.
+            icon_above = []
+            for slot, positions in slot_pos_map.items():
+                if slot in NON_ICON_SLOTS:
+                    continue
+                avg_cx = sum(p[0] for p in positions) / len(positions)
+                avg_cy = sum(p[1] for p in positions) / len(positions)
+                same_row = abs(avg_cy - cy) < bh * 0.5
+                if avg_cy < cy or (same_row and avg_cx < bx_center):
+                    icon_above.append((slot, avg_cy, avg_cx))
+
+            if icon_above:
+                last_slot, last_cy, last_cx = max(icon_above, key=lambda x: x[1])
+                vertically_below = cy > last_cy + bh * 0.4
+                same_row_right   = abs(cy - last_cy) < bh * 0.5 and bx_center > last_cx + bw * 0.5
+                # Same-row-right: Y = slot group, X = index within group.
+                # Stay in the same slot unless it is already at capacity.
+                # BOFF slots have no fixed max — always keep same slot.
+                _SAME_ROW_MULTI: dict[str, int] = {
+                    'Fore Weapons': 5, 'Aft Weapons': 5, 'Devices': 6,
+                    'Kit Modules': 6, 'Weapons': 2, 'Ground Devices': 3,
+                    'Engineering Consoles': 5, 'Science Consoles': 5,
+                    'Tactical Consoles': 5, 'Universal Consoles': 3, 'Hangars': 4,
+                    'Personal Space Traits': 10, 'Starship Traits': 7,
+                    'Space Reputation': 5, 'Active Space Rep': 5,
+                    'Personal Ground Traits': 10, 'Ground Reputation': 5,
+                    'Active Ground Rep': 5,
+                }
+                # X gap limit for same-slot same-row returns.
+                # Use max_cx (rightmost confirmed item) not avg_cx — consecutive
+                # items in a row are ~1×bw apart; a different panel is 5-10×bw away.
+                # Threshold bw*2 allows one slot gap, rejects cross-panel jumps.
+                _last_max_cx = max(
+                    (p[0] for p in slot_pos_map.get(last_slot, [])),
+                    default=last_cx,
+                )
+                same_row_close = same_row_right and bx_center - _last_max_cx < bw * 1.5
+                if same_row_close:
+                    if last_slot.startswith('Boff '):
+                        _sl.info(f'slot_suggest: bbox cy={cy} → {last_slot!r} '
+                                 f'(same-row BOFF — keep slot, source=slot_order)')
+                        return last_slot
+                    if last_slot in _SAME_ROW_MULTI:
+                        current = len(slot_pos_map.get(last_slot, []))
+                        cap = _SAME_ROW_MULTI[last_slot]
+                        if current < cap:
+                            _sl.info(f'slot_suggest: bbox cy={cy} → {last_slot!r} '
+                                     f'(same-row index {current + 1}/{cap}, source=slot_order)')
+                            return last_slot
+
+                # Next-in-order via same_row_right only for slots that are genuinely
+                # side-by-side horizontally (ground layout: Body Armor → EV Suit).
+                # Vertical equipment column slots (Deflector, Engines, Sec-Def…) must
+                # only advance via vertically_below — they share a column, not a row.
+                _HORIZONTAL_ADVANCE = frozenset({'Body Armor', 'EV Suit', 'Personal Shield'})
+                advance = vertically_below or (same_row_right and last_slot in _HORIZONTAL_ADVANCE)
+                if advance and last_slot in slot_order:
+                    last_idx = slot_order.index(last_slot)
+                    for candidate in slot_order[last_idx + 1:]:
+                        if candidate in allowed and candidate not in NON_ICON_SLOTS:
+                            reason = 'below' if vertically_below else 'same-row-right'
+                            _sl.info(f'slot_suggest: bbox cy={cy} → {candidate!r} '
+                                     f'(next-in-order after {last_slot!r}@{last_cy:.0f}, '
+                                     f'{reason}, source=slot_order)')
+                            return candidate
+
+            # Nearest fallback: 2D distance (Y dominant, X at 0.4 weight).
+            # Skip single-instance slots already in slot_pos_map — they are
+            # already confirmed and a new bbox at a different position belongs
+            # to a different slot (e.g. traits to the right of Engines).
             best_slot = ''
             best_dist = float('inf')
-            for slot, ys in slot_y_map.items():
-                avg_y = sum(ys) / len(ys)
-                dist = abs(cy - avg_y)
+            for slot, positions in slot_pos_map.items():
+                if slot in SINGLE_INSTANCE_SLOTS:
+                    continue
+                avg_cx = sum(p[0] for p in positions) / len(positions)
+                avg_cy = sum(p[1] for p in positions) / len(positions)
+                dist = abs(cy - avg_cy) + abs(bx_center - avg_cx) * 0.4
                 if dist < best_dist:
                     best_dist = dist
                     best_slot = slot
-            # Accept if within half an icon height (~30-40px typically)
             threshold = bh * 0.6
             if best_dist <= threshold:
-                from src.setsdebug import log as _sl
                 _sl.info(f'slot_suggest: bbox cy={cy} → {best_slot!r} (dist={best_dist:.0f}, '
                          f'threshold={threshold:.0f}, source=annotations)')
                 return best_slot
 
         # ── Source 2: learned layouts from anchors.json ───────────────────────
-        if self._current_idx >= 0:
+        # Skip for MIXED screen types — their layout differs from pure EQ screens,
+        # so SPACE/GROUND anchors would suggest wrong slots for trait/boff regions.
+        if self._current_idx >= 0 and stype not in ('SPACE_MIXED', 'GROUND_MIXED'):
             try:
                 import cv2
                 from warp.recognition.layout_detector import LayoutDetector
@@ -2141,7 +2319,7 @@ class WarpCoreWindow(QMainWindow):
                                 best_slot = ''
                                 best_dist = float('inf')
                                 for slot_name, geo in layout['slots'].items():
-                                    if slot_name not in allowed:
+                                    if slot_name not in allowed or slot_name in NON_ICON_SLOTS:
                                         continue
                                     if isinstance(geo, (int, float)):
                                         slot_cy = int(geo * h)
@@ -2257,8 +2435,8 @@ class WarpCoreWindow(QMainWindow):
                     self._data_mgr.save()
                     break
         
-        # Re-run recognition for this specific crop if not already confirmed
-        if ri.get('state') != 'confirmed' and self._current_idx >= 0:
+        # Re-run recognition for this specific crop to update confidence
+        if self._current_idx >= 0:
             try:
                 import cv2
                 from warp.warp_importer import WarpImporter
@@ -2284,11 +2462,20 @@ class WarpCoreWindow(QMainWindow):
                         # Optional: limit candidates by slot type
                         # For now, just match against full index for better flexibility in trainer
                         name, conf, thumb, _used_sess = matcher.match(crop)
-                        ri['name'] = name
-                        ri['conf'] = conf
-                        # Refresh visual row
-                        self._review_list.takeItem(row)
-                        self._add_review_row(name, ri['slot'], conf, confirmed=False)
+                        
+                        if ri.get('state') != 'confirmed':
+                            ri['name'] = name
+                            ri['conf'] = conf
+                            # Refresh visual row
+                            self._review_list.takeItem(row)
+                            self._add_review_row(name, ri['slot'], conf, confirmed=False)
+                        else:
+                            ri['conf'] = conf
+                            ri['orig_name'] = name
+                            # Refresh visual row but keep confirmed status and user-selected name
+                            self._review_list.takeItem(row)
+                            self._add_review_row(ri['name'], ri['slot'], conf, confirmed=True)
+                            
                         self._review_list.insertItem(row, self._review_list.takeItem(self._review_list.count()-1))
                         self._review_list.setCurrentRow(row)
             except Exception as e:
@@ -2441,33 +2628,23 @@ class WarpCoreWindow(QMainWindow):
                 self._ann_widget.refresh_annotations(path)
             litem = self._review_list.item(row)
             if litem:
-                litem.setText(f'{slot}  ->  {name or "—"}  [confirmed]')
+                conf = ri.get('conf', 0.0)
+                if conf > 0.0:
+                    litem.setText(f'{slot}  ->  {name or "—"}  [confirmed {conf:.0%}]')
+                else:
+                    litem.setText(f'{slot}  ->  {name or "—"}  [confirmed]')
                 litem.setForeground(QColor('#7effc8'))
             if name and ri.get('crop_bgr') is not None and slot not in NON_ICON_SLOTS:
                 from warp.recognition.icon_matcher import SETSIconMatcher
                 SETSIconMatcher.add_session_example(ri['crop_bgr'], name)
                 self._contribute(ri, name)
-            elif name and slot in NON_ICON_SLOTS:
+            elif name and slot in TEXT_LEARNING_SLOTS:
                 ocr_raw = ri.get('ocr_raw', '')
-                # Only log OCR typo if the user actually chose a name different from what OCR settled on
-                if ocr_raw and prev_name != name:
+                if ocr_raw and ocr_raw != name:
                     from src.setsdebug import log as _slog
-                    _slog.info(f"Learned new OCR typo correction: {ocr_raw!r} -> {name!r}")
-                    from pathlib import Path
-                    import json
-                    typo_file = Path('warp') / 'training_data' / 'ocr_typos.json'
-                    try:
-                        typos = {}
-                        if typo_file.exists():
-                            with open(typo_file, 'r') as f:
-                                typos = json.load(f)
-                        if typos.get(ocr_raw) != name:
-                            typos[ocr_raw] = name
-                            with open(typo_file, 'w') as f:
-                                json.dump(typos, f, indent=2)
-                    except Exception as e:
-                        from src.setsdebug import log as _slog2
-                        _slog2.warning(f"Failed to save ocr_typos: {e}")
+                    _slog.info(f'OCR correction: {ocr_raw!r} → {name!r} (queued for HF upload)')
+                    from warp.recognition.text_extractor import TextExtractor
+                    TextExtractor._corrections[ocr_raw] = name
         else:
             self._ann_widget.confirm_current(slot=slot, name=name)
         # Keep name_edit showing the accepted value — don't clear after accept
@@ -2592,11 +2769,7 @@ class WarpCoreWindow(QMainWindow):
                         for rank_dict in rank_list:
                             if isinstance(rank_dict, dict) and item_name in rank_dict:
                                 return _allowed(f'Boff {career}')
-                # Fallback: static BOFF_ABILITY_PROPERTIES
-                props = self.BOFF_ABILITY_PROPERTIES.get(item_name)
-                if props:
-                    career, _ = props
-                    return _allowed(f'Boff {career}')
+
         except Exception:
             pass
 
@@ -2640,22 +2813,40 @@ class WarpCoreWindow(QMainWindow):
         target_domain = 'Ground' if 'GROUND' in stype else 'Space'
 
         if slot.startswith('Boff'):
-            target_career = slot.replace('Boff ', '').strip()
+            from warp.recognition.boff_keys import parse_seat_profession, parse_seat_spec
+            parsed_prof = parse_seat_profession(slot)
+            if parsed_prof:
+                target_career = parsed_prof
+            else:
+                # Fallback for spec-only seats or unkeyed Universal
+                parsed_spec = parse_seat_spec(slot)
+                if parsed_spec:
+                    target_career = parsed_spec
+                else:
+                    target_career = slot.replace('Boff ', '').strip()
+            
+            # Map UI display names to STO cache canonical names
+            mapped_career = target_career
+
             # Primary source: cache.boff_abilities[environment][career] — keyed by rank dicts
             # Structure: {environment: {career: [{ability: desc}, ...rank levels]}}
             try:
-                domain_key = 'ground' if target_domain == 'Ground' else 'space'
-                career_ranks = self._sets.cache.boff_abilities.get(domain_key, {}).get(target_career, [])
-                for rank_dict in career_ranks:
-                    if isinstance(rank_dict, dict):
-                        candidates.extend(rank_dict.keys())
+                domains = []
+                if 'GROUND' in stype:
+                    domains = ['ground']
+                elif 'SPACE' in stype:
+                    domains = ['space']
+                else:
+                    domains = ['space', 'ground']
+                
+                for domain_key in domains:
+                    career_ranks = self._sets.cache.boff_abilities.get(domain_key, {}).get(mapped_career, [])
+                    for rank_dict in career_ranks:
+                        if isinstance(rank_dict, dict):
+                            candidates.extend(rank_dict.keys())
             except Exception:
                 pass
-            # Fallback: static BOFF_ABILITY_PROPERTIES (covers Tactical/Engineering/Science)
-            if not candidates:
-                for ability, (career, domain) in self.BOFF_ABILITY_PROPERTIES.items():
-                    if career == target_career and domain == target_domain:
-                        candidates.append(ability)
+
             # Last resort: all abilities
             if not candidates:
                 try:
@@ -2867,9 +3058,25 @@ class WarpCoreWindow(QMainWindow):
 
     def _on_completer_activated(self, text: str):
         self._name_edit.setText(text)
-        if text in self.BOFF_ABILITY_PROPERTIES:
-            career, _ = self.BOFF_ABILITY_PROPERTIES[text]
-            self._slot_combo.setCurrentText(f'Boff {career}')
+        
+        try:
+            if self._sets and hasattr(self._sets.cache, 'boff_abilities'):
+                boff_cache = self._sets.cache.boff_abilities
+                found_career = None
+                for env in ['space', 'ground']:
+                    for career, rank_list in boff_cache.get(env, {}).items():
+                        if not isinstance(rank_list, list): continue
+                        for rank_dict in rank_list:
+                            if isinstance(rank_dict, dict) and text in rank_dict:
+                                found_career = career
+                                break
+                        if found_career: break
+                    if found_career: break
+                
+                if found_career:
+                    self._slot_combo.setCurrentText(f'Boff {found_career}')
+        except Exception:
+            pass
         # Selection from dropdown = immediate confirm, no need to click Accept
         self._on_accept()
         self._review_list.setFocus()

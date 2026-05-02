@@ -30,7 +30,7 @@ SCREENSHOT_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 TEMPLATE_CONF_THRESHOLD = 0.72
 # Minimum confidence to include a recognition result in output
 # Below this threshold the matcher is essentially guessing
-MIN_ACCEPT_CONF = 0.40
+MIN_ACCEPT_CONF = 0.35
 # ── P5: Anchoring constants ──────────────────────────────────────────────────
 # Slots used as reference points for layout recalibration
 ANCHOR_SLOTS = frozenset({'Deflector', 'Engines', 'Warp Core', 'Shield'})
@@ -96,7 +96,6 @@ BOFFS_SLOT_ORDER: list[dict] = [
     {'name': 'Boff Tactical',      'key': 'boff_tac', 'mandatory': True,  'max': 20, 'weapon': False, 'exp': False},
     {'name': 'Boff Engineering',   'key': 'boff_eng', 'mandatory': True,  'max': 20, 'weapon': False, 'exp': False},
     {'name': 'Boff Science',       'key': 'boff_sci', 'mandatory': True,  'max': 20, 'weapon': False, 'exp': False},
-    {'name': 'Boff Operations',    'key': 'boff_ops', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
     {'name': 'Boff Intelligence',  'key': 'boff_int', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
     {'name': 'Boff Command',       'key': 'boff_cmd', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
     {'name': 'Boff Pilot',         'key': 'boff_plt', 'mandatory': False, 'max': 20, 'weapon': False, 'exp': False},
@@ -117,6 +116,8 @@ SLOT_ORDER = {
     'SPACE_TRAITS':  SPACE_TRAITS_SLOT_ORDER,
     'GROUND_TRAITS': GROUND_TRAITS_SLOT_ORDER,
     'BOFFS':         BOFFS_SLOT_ORDER,
+    'SPACE_BOFFS':   BOFFS_SLOT_ORDER,   # same slot structure, different write target
+    'GROUND_BOFFS':  BOFFS_SLOT_ORDER,
     'SPEC':          SPEC_SLOT_ORDER,
     # MIXED = all slot groups combined; used as fallback when no confirmed_layout exists.
     # layout_detector returns only the bboxes it actually finds, so unused slots
@@ -276,13 +277,13 @@ _BOFF_RANK_SLOTS: dict[str, int] = {
 _BOFF_PROF_TO_SLOT: dict[str, str] = {
     'Tactical':           'Boff Tactical',
     'Engineering':        'Boff Engineering',
+  #  'Operations':         'Boff Engineering',
     'Science':            'Boff Science',
     'Command':            'Boff Command',
     'Intelligence':       'Boff Intelligence',
     'Miracle Worker':     'Boff Miracle Worker',
     'Temporal Operative': 'Boff Temporal',
     'Pilot':              'Boff Pilot',
-    'Operations':         'Boff Operations',
 }
 
 # Game-defined maximums for slots not covered by ShipDB equipment data.
@@ -291,7 +292,7 @@ _BOFF_PROF_TO_SLOT: dict[str, str] = {
 _GAME_SLOT_MAXES: dict[str, int] = {
     'Personal Space Traits':  11,  # character-level cap
     'Personal Ground Traits': 11,
-    'Starship Traits':         7,  # max with T6-X2 mastery upgrade
+    'Starship Traits':         5,  # base T6 cap; T6-X/X2 adds +1/+2 via tier logic below
     'Space Reputation':        5,  # always 5 in STO
     'Ground Reputation':       5,
     'Active Space Rep':        5,
@@ -306,7 +307,6 @@ _GAME_SLOT_MAXES: dict[str, int] = {
     'Boff Pilot':              6,
     'Boff Miracle Worker':     6,
     'Boff Temporal':           6,
-    'Boff Operations':         6,
 }
 
 
@@ -356,6 +356,15 @@ def _boff_profile_from_shipdb(boffs: list) -> dict[str, int]:
 
 # ── ShipDB — primary source of truth for slot counts ──────────────────────────
 
+def _parse_tier_num(tier_str: str) -> int:
+    """Extract integer tier from OCR string like 'T6-X2' → 6. Returns 0 if absent."""
+    if not tier_str:
+        return 0
+    import re
+    m = re.search(r'[Tt](\d+)', str(tier_str))
+    return int(m.group(1)) if m else 0
+
+
 class ShipDB:
     """
     Wraps ship_list.json from SETS cargo.
@@ -374,6 +383,10 @@ class ShipDB:
         self._ships: list[dict] = []
         self._index:   dict[str, dict] = {}  # lowercase name → ship entry
         self._by_type: dict[str, dict] = {}  # lowercase type → ship entry
+        # Display-name index: OCR sees in-game text built from
+        # displayprefix + displayclass + displaytype + name tokens.
+        # Each entry: (words_frozenset, tier_int, ship_dict).
+        self._display_index: list[tuple[frozenset, int, dict]] = []
         self._load(cargo_dir)
 
     def _load(self, cargo_dir: Path):
@@ -393,21 +406,41 @@ class ShipDB:
                 stype = (' '.join(raw_type) if isinstance(raw_type, list) else str(raw_type)).strip()
                 if stype:
                     self._by_type[stype.lower()] = ship
+                # Build display-word set from displayprefix/class/type + name
+                disp_parts: list[str] = []
+                for key in ('displayprefix', 'displayclass', 'displaytype'):
+                    v = ship.get(key)
+                    if v:
+                        disp_parts.append(str(v))
+                if name:
+                    disp_parts.append(name)
+                disp_words = frozenset(' '.join(disp_parts).lower().split())
+                try:
+                    tier = int(ship.get('tier') or 0)
+                except (TypeError, ValueError):
+                    tier = 0
+                if disp_words:
+                    self._display_index.append((disp_words, tier, ship))
             log.info(f'ShipDB: loaded {len(self._ships)} ships, '
-                     f'{len(self._by_type)} unique types')
+                     f'{len(self._by_type)} unique types, '
+                     f'{len(self._display_index)} display entries')
         except Exception as e:
             log.warning(f'ShipDB load error: {e}')
 
-    def get_profile(self, ship_name: str, ship_type: str) -> dict[str, int]:
+    def get_profile(self, ship_name: str, ship_type: str,
+                    ship_tier: str = '') -> dict[str, int]:
         """
         Returns exact slot counts for a ship.
         ship_type is the primary key — it determines layout/slots.
         ship_name is cosmetic only (player-given name, irrelevant to slots).
+        ship_tier (e.g. 'T6-X2') — used to disambiguate display-name candidates.
 
         Priority:
           1. Exact type match
-          2. Fuzzy type match (handles OCR errors, multi-line joins)
-          3. Keyword fallback from type string
+          2a. Word-subset type match
+          2b. Display-name match (OCR words ⊆ display words) + tier filter
+          2c. Fuzzy type match
+          3. Keyword fallback
         """
         st = ship_type.lower().strip()
 
@@ -437,7 +470,31 @@ class ShipDB:
                           f'{ship_type!r} → {best[0]!r}')
                 return self._entry_to_profile(best[1])
 
-            # 2b. Standard fuzzy match as fallback
+            # 2b. Display-name match — the `type` field in ship_list.json is
+            # generic ("Cruiser", "Destroyer"; 44 unique values), but the
+            # in-game text OCR sees combines displayprefix+displayclass+displaytype
+            # (e.g. "Fleet Yamaguchi Support Cruiser"). Match OCR words against
+            # the display-word index; tier disambiguates siblings (T5 Retrofit vs T6).
+            tier_num = _parse_tier_num(ship_tier)
+            disp_hits = [(dw, t, s) for (dw, t, s) in self._display_index
+                         if ocr_words and ocr_words.issubset(dw)]
+            if disp_hits and tier_num:
+                tier_filtered = [h for h in disp_hits if h[1] == tier_num]
+                if tier_filtered:
+                    disp_hits = tier_filtered
+            if len(disp_hits) == 1:
+                _, _, ship = disp_hits[0]
+                log.debug(f'ShipDB display match: {ship_type!r}+{ship_tier!r} '
+                          f'→ {ship.get("name")!r}')
+                return self._entry_to_profile(ship)
+            elif len(disp_hits) > 1:
+                # Prefer the entry with fewest extra words (closest to OCR text)
+                best = min(disp_hits, key=lambda h: len(h[0] - ocr_words))
+                log.debug(f'ShipDB display match (best of {len(disp_hits)}): '
+                          f'{ship_type!r}+{ship_tier!r} → {best[2].get("name")!r}')
+                return self._entry_to_profile(best[2])
+
+            # 2c. Standard fuzzy match as fallback
             type_matches = get_close_matches(st, type_candidates, n=1, cutoff=0.68)
             if type_matches:
                 entry = self._by_type[type_matches[0]]
@@ -484,7 +541,7 @@ _KEYWORD_PROFILES: list[tuple[str, dict]] = [
     # Most specific first — confirmed against actual STO ships.
     # exp=0 and hang=0 by default: these slots are RARE, only specific ships.
     # ShipDB (ship_list.json) is the primary source; this is only the fallback.
-    ('carrier',        dict(fore=3, aft=3, exp=0, hang=2, sec=0, uni=0, eng=4, sci=3, tac=3, dev=5)),
+    ('carrier',        dict(fore=3, aft=3, exp=0, hang=2, sec=0, uni=0, eng=4, sci=3, tac=3, dev=4)),
     ('dreadnought',    dict(fore=5, aft=3, exp=0, hang=0, sec=0, uni=0, eng=4, sci=3, tac=3, dev=4)),
     ('miracle worker', dict(fore=5, aft=3, exp=0, hang=0, sec=0, uni=0, eng=3, sci=3, tac=4, dev=4)),
     ('temporal',       dict(fore=5, aft=3, exp=0, hang=0, sec=0, uni=0, eng=3, sci=3, tac=3, dev=4)),
@@ -495,7 +552,7 @@ _KEYWORD_PROFILES: list[tuple[str, dict]] = [
     ('escort',         dict(fore=4, aft=3, exp=0, hang=0, sec=0, uni=0, eng=3, sci=3, tac=5, dev=4)),
     ('intel',          dict(fore=4, aft=3, exp=0, hang=0, sec=1, uni=0, eng=3, sci=4, tac=3, dev=4)),
     ('science',        dict(fore=3, aft=3, exp=0, hang=0, sec=1, uni=0, eng=3, sci=5, tac=3, dev=4)),
-    ('cruiser',        dict(fore=4, aft=4, exp=0, hang=0, sec=0, uni=0, eng=5, sci=3, tac=3, dev=5)),
+    ('cruiser',        dict(fore=4, aft=4, exp=0, hang=0, sec=0, uni=0, eng=5, sci=3, tac=3, dev=4)),
 ]
 
 _GENERIC_PROFILE = dict(fore=4, aft=3, exp=0, hang=0, sec=0,
@@ -616,12 +673,17 @@ class WarpImporter:
                 img         = self._load_image(fpath)
                 file_result = self._process_image(
                     img, str(fpath), _base_pct=base_pct, _end_pct=end_pct)
-                if not result.ship_name and file_result.ship_name:
-                    result.ship_name    = file_result.ship_name
-                    result.ship_type    = file_result.ship_type
-                    result.ship_tier    = file_result.ship_tier
-                    result.ship_profile = file_result.ship_profile
-                    result.build_type   = file_result.build_type
+                if file_result.ship_name:
+                    _upgrade = (
+                        not result.ship_name or  # no result yet
+                        (file_result.ship_tier and not result.ship_tier)  # new has tier, current doesn't
+                    )
+                    if _upgrade:
+                        result.ship_name    = file_result.ship_name
+                        result.ship_type    = file_result.ship_type
+                        result.ship_tier    = file_result.ship_tier
+                        result.ship_profile = file_result.ship_profile
+                        result.build_type   = file_result.build_type
                 for item in file_result.items:
                     key = (item.slot, item.slot_index)
                     if key not in best or item.confidence > best[key].confidence:
@@ -660,15 +722,27 @@ class WarpImporter:
             # traits + boffs simultaneously).  Never downgrade.
             _ocr_bt = text_info.get('build_type', '')
             if self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
-                                    'GROUND_TRAITS', 'BOFFS', 'SPEC',
-                                    'SPACE_MIXED', 'GROUND_MIXED'):
+                                    'GROUND_TRAITS', 'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+                                    'SPEC', 'SPACE_MIXED', 'GROUND_MIXED'):
                 build_type = self._build_type
                 if build_type == 'SPACE' and _ocr_bt in ('SPACE_TRAITS', 'SPACE_MIXED'):
                     build_type = 'SPACE_MIXED'
                     _slog.info('WarpImporter: upgraded SPACE → SPACE_MIXED (OCR detected richer screen)')
+                elif build_type == 'SPACE' and _ocr_bt in ('BOFFS', 'SPACE_BOFFS') and text_info.get('scan_scope') == 'full':
+                    build_type = _ocr_bt  # SPACE_BOFFS preferred over generic BOFFS
+                    _slog.info(f'WarpImporter: upgraded SPACE → {build_type} (dedicated BOFFS screen, full scan only)')
+                elif build_type == 'SPACE' and _ocr_bt == 'GROUND_BOFFS':
+                    build_type = 'GROUND_BOFFS'
+                    _slog.info('WarpImporter: upgraded SPACE → GROUND_BOFFS (OCR detected ground boff screen)')
+                elif build_type == 'SPACE' and _ocr_bt == 'SPEC':
+                    build_type = 'SPEC'
+                    _slog.info('WarpImporter: upgraded SPACE → SPEC (OCR detected specialization screen)')
                 elif build_type == 'GROUND' and _ocr_bt in ('GROUND_TRAITS', 'GROUND_MIXED'):
                     build_type = 'GROUND_MIXED'
                     _slog.info('WarpImporter: upgraded GROUND → GROUND_MIXED (OCR detected richer screen)')
+                elif build_type == 'GROUND' and _ocr_bt == 'GROUND_BOFFS':
+                    build_type = 'GROUND_BOFFS'
+                    _slog.info('WarpImporter: upgraded GROUND → GROUND_BOFFS (OCR detected ground boff screen)')
             else:
                 build_type = 'GROUND' if _ocr_bt == 'GROUND' else 'SPACE'
             _slog.info(f'WarpImporter: OCR result: name={ship_name!r} type={ship_type!r} '
@@ -677,15 +751,17 @@ class WarpImporter:
         # Step 2 — get exact slot profile from ship_list.json
         # Skip for GROUND/GROUND_MIXED — ShipDB contains space ship data only
         _is_ground = build_type in ('GROUND', 'GROUND_MIXED')
-        if _is_ground:
-            profile = {}
-            _slog.info(f'WarpImporter: GROUND build — skipping ShipDB lookup')
-        else:
-            profile = self._get_shipdb().get_profile(ship_name, ship_type)
-            _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}: {dict((k,v) for k,v in profile.items() if v)}')
+        _no_ship_profile = _is_ground or build_type in ('SPEC', 'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+                                                         'SPACE_TRAITS', 'GROUND_TRAITS')
         ship_tier = text_info.get('ship_tier', '')
+        if _no_ship_profile:
+            profile = {}
+            _slog.info(f'WarpImporter: {build_type} build — skipping ShipDB lookup')
+        else:
+            profile = self._get_shipdb().get_profile(ship_name, ship_type, ship_tier)
+            _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}/{ship_tier!r}: {dict((k,v) for k,v in profile.items() if v)}')
         if _is_trainer_call:
-            # Trainer (WARP CORE): annotation counts are authoritative —
+            # Trainer (WARP CORE): annotation counts are authoritative for equipment —
             # the user has confirmed every bbox, so the profile must match exactly.
             if not profile_override:
                 profile_override = self._load_confirmed_profile(source)
@@ -693,6 +769,12 @@ class WarpImporter:
                 if count > profile.get(slot, 0):
                     profile[slot] = count
                     _slog.info(f'WarpImporter: trainer profile {slot}={count} (confirmed)')
+            # Trait/rep/boff slots: confirmed count reflects partial annotation —
+            # user may not have confirmed all visible items. Apply game caps so the
+            # layout detector's full detection isn't artificially capped.
+            for slot, max_val in _GAME_SLOT_MAXES.items():
+                if max_val > profile.get(slot, 0):
+                    profile[slot] = max_val
         else:
             # WARP dialog import: coded game rules only — annotations are training data.
             # Traits / Rep / Active Rep: fixed STO game caps.
@@ -701,10 +783,18 @@ class WarpImporter:
             for slot, max_val in _GAME_SLOT_MAXES.items():
                 if max_val > profile.get(slot, 0):
                     profile[slot] = max_val
-            # T6-X2: +1 Device slot
-            if 'X2' in ship_tier and profile.get('Devices', 0) > 0:
-                profile['Devices'] = profile['Devices'] + 1
-                _slog.info(f'WarpImporter: T6-X2 — Devices +1 → {profile["Devices"]}')
+            # T6-X / T6-X2 tier upgrades (cumulative per level):
+            #   T6-X  (level 1): +1 Universal Console, +1 Starship Trait, +1 Device
+            #   T6-X2 (level 2): additional +1 each → total +2 vs base T6
+            if '-X' in ship_tier:
+                _x_bonus = 2 if 'X2' in ship_tier else 1
+                if profile.get('Devices', 0) > 0:
+                    profile['Devices'] += _x_bonus
+                    _slog.info(f'WarpImporter: {ship_tier} — Devices +{_x_bonus} → {profile["Devices"]}')
+                profile['Universal Consoles'] = profile.get('Universal Consoles', 0) + _x_bonus
+                _slog.info(f'WarpImporter: {ship_tier} — Universal Consoles +{_x_bonus} → {profile["Universal Consoles"]}')
+                profile['Starship Traits'] = profile.get('Starship Traits', 5) + _x_bonus
+                _slog.info(f'WarpImporter: {ship_tier} — Starship Traits +{_x_bonus} → {profile["Starship Traits"]}')
             _slog.debug(f'WarpImporter: game-rule profile (traits/rep/boff): '
                         f'{dict((k,v) for k,v in profile.items() if "Boff" in k or "Trait" in k or "Rep" in k)}')
 
@@ -718,19 +808,37 @@ class WarpImporter:
         )
 
         # Step 3 — layout detection.
-        # For MIXED screens confirmed annotations (exact bboxes + user labels) are used
-        # directly because MIXED spans multiple slot orders that cannot be inferred from
-        # SLOT_ORDER alone.  For all other build types (SPACE, GROUND, BOFFS, TRAITS,
-        # SPEC) the layout is always inferred via layout_detector strategies, keeping
-        # annotations strictly as ML training data — never as direct import output.
-        _use_confirmed = 'MIXED' in build_type
+        # ARCHITECTURE RULE: annotations.json is TRAINING DATA ONLY. WARP must
+        # perform clean detection via layout_detector, never fall back to user
+        # annotations as output — otherwise we hide detection bugs and can't
+        # measure real recognition quality.
+        # Only WARP CORE (trainer) uses confirmed annotations — there every
+        # bbox was explicitly confirmed by the user and represents ground truth
+        # being fed back into training.
+        # NOTE: The MIXED branch is DISABLED (2026-04-19) by user request to
+        # force clean detection. Old behavior preserved below for reference —
+        # do NOT re-enable without explicit approval.
+        # _use_confirmed = 'MIXED' in build_type or _is_trainer_call
+        _use_confirmed = _is_trainer_call
         confirmed_layout = self._load_confirmed_layout(source) if _use_confirmed else None
         if confirmed_layout:
-            _slog.info(f'WarpImporter: MIXED screen — using confirmed layout from annotations '
-                       f'({sum(len(v) for v in confirmed_layout.values())} bboxes)')
+            _slog.info(f'WarpImporter: confirmed layout ({build_type}) — '
+                       f'{sum(len(v) for v in confirmed_layout.values())} bboxes from annotations')
             layout = confirmed_layout
         else:
-            layout = self._get_layout().detect(img, build_type, profile)
+            _use_full_scan = build_type in (
+                'SPACE_MIXED', 'GROUND_MIXED',
+                'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+            )
+            layout = self._get_layout().detect(
+                img, build_type, profile,
+                icon_matcher=self._get_matcher() if _use_full_scan else None,
+                app_cache=self._app.cache if _use_full_scan else None,
+            )
+            _slog.info(
+                f'WarpImporter: layout → {len(layout)} slot groups, '
+                f'{sum(len(v) for v in layout.values())} bboxes ({build_type})'
+            )
 
         # If ShipDB gave generic fallback (ship_name empty), refine profile
         # using actual icon counts from layout + keyword profile matching.
@@ -751,7 +859,9 @@ class WarpImporter:
                         profile[slot] = count
                         changed = True
                 if changed:
-                    layout = self._get_layout().detect(img, build_type, profile)
+                    # Keep confirmed layout — re-detection would overwrite pixel-perfect bboxes
+                    if not confirmed_layout:
+                        layout = self._get_layout().detect(img, build_type, profile)
                     _slog.info(f'WarpImporter: refined profile from pixel counts: '
                                f'{dict((k,v) for k,v in profile.items() if v)}')
 
@@ -765,7 +875,17 @@ class WarpImporter:
             slot_defs_to_process = [sd for sd in _ALL_SLOT_DEFS.values()
                                     if sd['name'] in confirmed_layout]
         else:
-            slot_defs_to_process = SLOT_ORDER.get(build_type, [])
+            slot_defs_to_process = list(SLOT_ORDER.get(build_type, []))
+
+        # Add dynamically detected BOFF seats to the processing list
+        if not confirmed_layout:
+            for key in layout.keys():
+                if key.startswith('Boff Seat'):
+                    slot_defs_to_process.append({
+                        'name': key, 'key': '', 'mandatory': False, 'max': 4, 'weapon': False, 'exp': False
+                    })
+                    # Add them to profile so they are not skipped by max_count limit
+                    profile[key] = 4
 
         # Build per-slot candidate sets restricted by SLOT_VALID_TYPES.
         # This prevents template matching from picking items of the wrong type
@@ -790,6 +910,9 @@ class WarpImporter:
         _stat_core_n    = 0   # items recognized via WARP CORE session examples
         _stat_auto_conf = 0.0
         _stat_core_conf = 0.0
+        _stat_skip_conf = 0   # skipped due to low confidence
+        _stat_skip_type = 0   # skipped due to wrong type for slot
+        _stat_per_slot: dict[str, dict] = {}  # per-slot hit/skip counters
 
         for slot_def in slot_defs_to_process:
             slot_name = slot_def['name']
@@ -839,6 +962,29 @@ class WarpImporter:
                 if crop is None or crop.size == 0:
                     _slog.info(f'  [{slot_name}][{idx}] bbox={bbox} — empty crop, skipped')
                     continue
+                    
+                candidates = slot_candidates.get(slot_name)  # None = no type constraint
+                
+                # Dynamic candidate filtering for BOFF seats based on color heuristic
+                if slot_name.startswith('Boff Seat'):
+                    base_prof_key = self._get_layout()._classify_boff_profession(crop)
+                    if base_prof_key:
+                        prof_map = {
+                            'tactical': 'Tactical', 'engineering': 'Engineering', 'science': 'Science',
+                            'intelligence': 'Intelligence', 'command': 'Command', 'pilot': 'Pilot',
+                            'miracle worker': 'Miracle Worker', 'temporal': 'Temporal Operative' # In STO it's Temporal Operative
+                        }
+                        base_prof = prof_map.get(base_prof_key)
+                        if base_prof:
+                            allowed_profs = {base_prof, 'Intelligence', 'Command', 'Pilot', 'Miracle Worker', 'Temporal Operative', 'Temporal'}
+                            try:
+                                boff_cache = self._app.cache.boff_abilities.get('all', {})
+                                if boff_cache:
+                                    candidates = {c_name for c_name, info in boff_cache.items() if info.get('profession') in allowed_profs}
+                                    _slog.debug(f"  [{slot_name}][{idx}] Restricted candidates to {base_prof} + Specializations ({len(candidates)} items)")
+                            except Exception:
+                                pass
+
                 name, conf, thumb, used_session = matcher.match(crop, candidate_names=candidates)
                 
                 # ── P5: Icon-to-Layout Feedback Loop ──────────────────────────
@@ -868,16 +1014,38 @@ class WarpImporter:
                 # Reject low-confidence results — below threshold is a guess
                 if conf < MIN_ACCEPT_CONF:
                     _slog.info(f'  [{slot_name}][{idx}] SKIP — conf {conf:.2f} < {MIN_ACCEPT_CONF}')
+                    _stat_skip_conf += 1
+                    _stat_per_slot.setdefault(slot_name, {'ok': 0, 'skip': 0})['skip'] += 1
                     continue
                 # Validate item type matches slot category
                 if not self._item_valid_for_slot(name, slot_name):
                     _slog.info(f'  [{slot_name}][{idx}] SKIP — {name!r} wrong type for slot')
+                    _stat_skip_type += 1
+                    _stat_per_slot.setdefault(slot_name, {'ok': 0, 'skip': 0})['skip'] += 1
                     continue
                 # Experimental slot: only Experimental Weapon items allowed
                 if slot_def['exp'] and not self._is_experimental(name):
                     _slog.info(f'  [{slot_name}][{idx}] SKIP — not experimental weapon: {name!r}')
                     continue
+                final_slot_name = slot_name
+                if slot_name.startswith('Boff Seat') and name and name not in ('__empty__', '__inactive__'):
+                    try:
+                        boff_cache = self._app.cache.boff_abilities.get('all', {})
+                        item_info = boff_cache.get(name)
+                        if item_info:
+                            prof = item_info.get('profession')
+                            if prof:
+                                prof_to_slot = {
+                                    'Tactical': 'Boff Tactical', 'Engineering': 'Boff Engineering', 'Science': 'Boff Science',
+                                    'Intelligence': 'Boff Intelligence', 'Command': 'Boff Command', 'Pilot': 'Boff Pilot',
+                                    'Miracle Worker': 'Boff Miracle Worker', 'Temporal Operative': 'Boff Temporal', 'Temporal': 'Boff Temporal'
+                                }
+                                final_slot_name = prof_to_slot.get(prof, final_slot_name)
+                    except Exception:
+                        pass
+
                 # Track recognition stats
+                _stat_per_slot.setdefault(final_slot_name, {'ok': 0, 'skip': 0})['ok'] += 1
                 if used_session:
                     _stat_core_n    += 1
                     _stat_core_conf += conf
@@ -885,7 +1053,7 @@ class WarpImporter:
                     _stat_auto_n    += 1
                     _stat_auto_conf += conf
                 result.items.append(RecognisedItem(
-                    slot        = slot_name,
+                    slot        = final_slot_name,
                     slot_index  = idx,
                     name        = name,
                     confidence  = conf,
@@ -905,6 +1073,11 @@ class WarpImporter:
             auto_conf   = _stat_auto_conf,
             core_n      = _stat_core_n,
             core_conf   = _stat_core_conf,
+            skip_conf   = _stat_skip_conf,
+            skip_type   = _stat_skip_type,
+            slots_found = len(layout),
+            bboxes_found= sum(len(v) for v in layout.values()),
+            per_slot    = _stat_per_slot,
         )
         _slog.info(f'####### WARP: {Path(source).name} done #######')
         return result
@@ -916,38 +1089,70 @@ class WarpImporter:
         auto_conf: float,
         core_n: int,
         core_conf: float,
+        skip_conf: int = 0,
+        skip_type: int = 0,
+        slots_found: int = 0,
+        bboxes_found: int = 0,
+        per_slot: dict | None = None,
     ) -> None:
-        """Log per-session recognition stats and compare to rolling average."""
+        """Log per-session recognition stats with per-slot breakdown and trend analysis."""
         import datetime, json as _json
 
         total = auto_n + core_n
-        if total == 0:
-            return
+        attempted = total + skip_conf + skip_type
 
-        auto_pct      = 100.0 * auto_n / total
+        auto_pct      = 100.0 * auto_n / total if total else 0.0
         avg_auto_conf = auto_conf / auto_n if auto_n else 0.0
         avg_core_conf = core_conf / core_n if core_n else 0.0
+        hit_rate      = 100.0 * total / attempted if attempted else 0.0
 
-        # Load history
+        # ── Summary table ─────────────────────────────────────────────────
+        _slog.info(f'┌── Recognition Report [{build_type}] ──────────────────────')
+        _slog.info(f'│ Layout:    {slots_found} slot groups, {bboxes_found} bboxes')
+        _slog.info(f'│ Matched:   {total}/{attempted}  hit rate {hit_rate:.0f}%')
+        if total:
+            _slog.info(f'│   Autodetect: {auto_n} ({auto_pct:.0f}%)  avg conf {avg_auto_conf:.2f}')
+        if core_n:
+            _slog.info(f'│   WARP CORE:  {core_n} ({100-auto_pct:.0f}%)  avg conf {avg_core_conf:.2f}')
+        if skip_conf:
+            _slog.info(f'│ Skipped (low conf): {skip_conf}')
+        if skip_type:
+            _slog.info(f'│ Skipped (wrong type): {skip_type}')
+
+        # Per-slot breakdown
+        if per_slot:
+            _slog.info(f'│ Per-slot:')
+            for slot_name in sorted(per_slot.keys()):
+                s = per_slot[slot_name]
+                ok, skip = s['ok'], s['skip']
+                bar = '█' * ok + '░' * skip
+                _slog.info(f'│   {slot_name:30s}  {ok:2d}/{ok+skip:2d}  {bar}')
+
+        # ── Persist + trend ───────────────────────────────────────────────
         stats_path = Path(__file__).resolve().parent.parent / '.config' / 'recognition_stats.json'
         try:
             history: list[dict] = _json.loads(stats_path.read_text(encoding='utf-8'))
         except Exception:
             history = []
 
-        # Append current session (keep last 50)
         entry = {
             'ts':           datetime.datetime.now().isoformat(timespec='seconds'),
             'build_type':   build_type,
             'total':        total,
+            'attempted':    attempted,
             'auto_n':       auto_n,
             'core_n':       core_n,
+            'skip_conf':    skip_conf,
+            'skip_type':    skip_type,
+            'hit_rate':     round(hit_rate, 1),
             'auto_pct':     round(auto_pct, 1),
             'avg_auto_conf': round(avg_auto_conf, 3),
             'avg_core_conf': round(avg_core_conf, 3),
+            'slots_found':  slots_found,
+            'bboxes_found': bboxes_found,
         }
         history.append(entry)
-        history = history[-50:]
+        history = history[-100:]
 
         try:
             stats_path.parent.mkdir(parents=True, exist_ok=True)
@@ -955,28 +1160,22 @@ class WarpImporter:
         except Exception as e:
             _slog.debug(f'WarpImporter: could not save recognition stats: {e}')
 
-        # Rolling average over previous sessions (same build_type, excluding current)
+        # Rolling average over previous sessions (same build_type)
         prev = [h for h in history[:-1] if h.get('build_type') == build_type]
         if prev:
-            avg_auto_pct_hist  = sum(h['auto_pct']      for h in prev) / len(prev)
-            avg_auto_conf_hist = sum(h['avg_auto_conf']  for h in prev) / len(prev)
-            delta_pct  = auto_pct - avg_auto_pct_hist
-            delta_conf = avg_auto_conf - avg_auto_conf_hist
-            trend_pct  = '↑' if delta_pct  > 1.0 else ('↓' if delta_pct  < -1.0 else '→')
+            avg_hit_hist = sum(h.get('hit_rate', 0) for h in prev) / len(prev)
+            avg_conf_hist = sum(h.get('avg_auto_conf', 0) for h in prev) / len(prev)
+            delta_hit  = hit_rate - avg_hit_hist
+            delta_conf = avg_auto_conf - avg_conf_hist
+            trend_hit  = '↑' if delta_hit  > 2.0 else ('↓' if delta_hit  < -2.0 else '→')
             trend_conf = '↑' if delta_conf > 0.02 else ('↓' if delta_conf < -0.02 else '→')
-            hist_str = (f'  vs {len(prev)}-session avg: '
-                        f'Autodetect {avg_auto_pct_hist:.1f}% {trend_pct}  '
-                        f'conf {avg_auto_conf_hist:.2f} {trend_conf}')
+            _slog.info(
+                f'│ Trend (vs {len(prev)} prev):  '
+                f'hit {avg_hit_hist:.0f}%{trend_hit}  conf {avg_conf_hist:.2f}{trend_conf}'
+            )
         else:
-            hist_str = '  (no history yet for comparison)'
-
-        _slog.info(
-            f'WarpImporter stats [{build_type}]: '
-            f'total={total}  '
-            f'Autodetect={auto_n} ({auto_pct:.1f}%) avg_conf={avg_auto_conf:.2f}  |  '
-            f'WARP CORE={core_n} ({100-auto_pct:.1f}%) avg_conf={avg_core_conf:.2f}'
-        )
-        _slog.info(hist_str)
+            _slog.info(f'│ Trend: first session for {build_type}')
+        _slog.info(f'└─────────────────────────────────────────────────────')
 
 
     def _load_confirmed_layout(self, source: str) -> dict[str, list] | None:
@@ -1061,6 +1260,7 @@ class WarpImporter:
         so candidate_names=None is passed to match() → full index searched as before.
 
         Console slots include universal consoles since they are accepted everywhere.
+        Boff slots are restricted to boff abilities to prevent equipment from matching.
         """
         result: dict[str, set[str]] = {}
         try:
@@ -1082,6 +1282,64 @@ class WarpImporter:
                 names |= uni_names
             if names:
                 result[slot_name] = names
+
+        # Boff slots: restrict to boff abilities only.
+        # Without this, candidate_names=None → full index search → equipment items
+        # (Deflectors, Consoles, etc.) can match ability slots at conf=1.00 via
+        # session examples that were accidentally confirmed in the wrong slot.
+        try:
+            boff_names = set(self._app.cache.boff_abilities.get('all', {}).keys())
+        except Exception:
+            boff_names = set()
+        if boff_names:
+            for sd in slot_defs:
+                slot_name = sd['name']
+                if slot_name.startswith('Boff ') and slot_name not in result:
+                    result[slot_name] = boff_names
+
+        # Trait slots: restrict to the matching trait category.
+        # Without this, candidate_names=None → full index search lets a ground
+        # trait land in a space trait slot, equipment icons match trait slots,
+        # or the same name repeats across every slot of a panel.
+        try:
+            traits_cache = self._app.cache.traits
+            starship_traits_cache = getattr(
+                self._app.cache, 'starship_traits', {}) or {}
+        except Exception:
+            traits_cache = {}
+            starship_traits_cache = {}
+
+        def _trait_names(env: str, cat: str) -> set[str]:
+            try:
+                return set(traits_cache.get(env, {}).get(cat, {}).keys())
+            except Exception:
+                return set()
+
+        trait_slot_pools: dict[str, set[str]] = {
+            'Personal Space Traits':  _trait_names('space',  'personal'),
+            'Personal Ground Traits': _trait_names('ground', 'personal'),
+            'Space Reputation':       _trait_names('space',  'rep'),
+            'Ground Reputation':      _trait_names('ground', 'rep'),
+            'Active Space Rep':       _trait_names('space',  'active_rep'),
+            'Active Ground Rep':      _trait_names('ground', 'active_rep'),
+            'Starship Traits':        set(starship_traits_cache.keys()),
+        }
+        for sd in slot_defs:
+            slot_name = sd['name']
+            if slot_name in result:
+                continue
+            pool = trait_slot_pools.get(slot_name)
+            if pool:
+                result[slot_name] = pool
+
+        # Add virtual items so ML and session examples can match empty/inactive slots
+        try:
+            from warp.trainer.training_data import VIRTUAL_ITEM_NAMES
+        except ImportError:
+            VIRTUAL_ITEM_NAMES = {'__empty__', '__inactive__'}
+            
+        for names_set in result.values():
+            names_set.update(VIRTUAL_ITEM_NAMES)
 
         return result
 
@@ -1144,18 +1402,24 @@ class WarpImporter:
             from warp.recognition.icon_matcher import SETSIconMatcher
             self._matcher = SETSIconMatcher(self._app,
                                             sync_client=self._get_sync_client())
-            # Prime session examples with confirmed crops from training data so
-            # real in-game crops have higher priority than wiki-icon templates.
-            here = Path(__file__).resolve().parent
-            for _ in range(6):
-                td = here / 'warp' / 'training_data'
-                if td.exists():
-                    break
-                here = here.parent
+            # Seed session examples with confirmed crops ONLY for WARP CORE (trainer) path.
+            # WARP must not read annotations.json — that would hide detection bugs behind
+            # user-confirmed ground truth. Mirrors the _use_confirmed gate at line ~707.
+            if self._from_trainer:
+                here = Path(__file__).resolve().parent
+                for _ in range(6):
+                    td = here / 'warp' / 'training_data'
+                    if td.exists():
+                        break
+                    here = here.parent
+                else:
+                    td = None
+                if td is not None:
+                    SETSIconMatcher.seed_from_training_data(td)
             else:
-                td = None
-            if td is not None:
-                SETSIconMatcher.seed_from_training_data(td)
+                # WARP path: clear any session examples a prior trainer run left in the
+                # class-level state, so WARP sees pristine detection quality.
+                SETSIconMatcher.reset_ml_session()
         return self._matcher
 
     def _get_sync_client(self):

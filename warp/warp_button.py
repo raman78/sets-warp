@@ -175,15 +175,19 @@ def _start_background_sync(sets_app) -> None:
         sync_mgr = SyncManager(sets_app)
         sets_app._warp_sync_manager = sync_mgr
 
-        btm = BackgroundTaskManager()
+        if not hasattr(sets_app, '_bg_tasks') or sets_app._bg_tasks is None:
+            btm = BackgroundTaskManager()
+            btm.start()
+            sets_app._bg_tasks = btm
+        else:
+            btm = sets_app._bg_tasks
+
         btm.register(
             sync_mgr.check_and_upload,
             interval_ms=10 * 60 * 1000,   # every 10 minutes
             startup_delay_ms=15_000,       # first run 15 s after startup
         )
         btm.on_stop(sync_mgr.stop)
-        btm.start()
-        sets_app._bg_tasks = btm
 
         log.info('WARP SyncManager started (10-min interval, first run in 15 s)')
     except Exception as e:

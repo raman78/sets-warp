@@ -384,6 +384,14 @@ def update_boff_seat(
     if clear:
         default_profession = 'Tactical' if profession == 'Universal' else profession
         self.build['space']['boff_specs'][boff_id] = [default_profession, specialization]
+    else:
+        if boff_id < len(self.build['space']['boff_specs']):
+            current_spec = self.build['space']['boff_specs'][boff_id]
+            if current_spec[1] == '':
+                boff_text = current_spec[0]
+            else:
+                boff_text = f'{current_spec[0]} / {current_spec[1]}'
+            label.setCurrentText(boff_text)
 
 
 def clear_boff_seat_ground(self, boff_id: int):
@@ -536,10 +544,33 @@ def slot_trait_item(self, item: dict, environment: str, build_key: str, build_su
     - :param build_key: key to self.build[environment]
     - :param build_subkey: index of the item within its build_key (category)
     """
+    name = item['item']
+    # Resolve which cache bucket should contain this trait
+    if build_key == 'starship_traits':
+        cache_bucket = getattr(self.cache, 'starship_traits', {}) or {}
+    else:
+        _trait_type_map = {
+            'traits': 'personal', 'rep_traits': 'rep', 'active_rep_traits': 'active_rep'}
+        ckey = _trait_type_map.get(build_key)
+        cache_bucket = self.cache.traits.get(environment, {}).get(ckey, {}) if ckey else {}
+
+    if name not in cache_bucket:
+        alias = self.cache.item_aliases.get('traits', {}).get(name)
+        if alias is not None and alias in cache_bucket:
+            log.info(f"slot_trait_item: alias '{name}' -> '{alias}'")
+            item = dict(item, item=alias)
+            name = alias
+        else:
+            log.warning(
+                f"slot_trait_item: trait '{name}' missing from cache "
+                f"(env={environment}, build_key={build_key}) - clearing widget")
+            self.widgets.build[environment][build_key][build_subkey].clear()
+            return
+
     self.build[environment][build_key][build_subkey] = item
-    item_image = image(self, item['item'])
+    item_image = image(self, name)
     self.widgets.build[environment][build_key][build_subkey].set_item_full(
-            item_image, None, get_tooltip(self, item['item'], build_key, environment))
+            item_image, None, get_tooltip(self, name, build_key, environment))
 
 
 def set_skill_unlock_ground(self, id: int, state: int | None):

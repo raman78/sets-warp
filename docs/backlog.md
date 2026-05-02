@@ -23,21 +23,11 @@ Items here are not yet scheduled. Each has a status and open questions to resolv
 
 ## 2. User-drawn slot label bboxes (Fore Weapons, Deflector, …)
 
-**Decision needed:** Implement label bbox annotation / skip in favour of P11.
+**Status: SKIPPED (2026-04-10)**
 
-**Context:** WARP CORE lets users draw bboxes for icon slots. Currently the intent is to mark
-where icons are. A related idea: let users draw bboxes around the **slot label text** (e.g.
-"Fore Weapons", "Deflector") to provide ground truth for layout detection.
-
-**Open questions:**
-- Is this worth the UI complexity? Slot label positions can already be inferred from icon
-  positions once icons are confirmed.
-- If implemented: label bboxes would be a new slot type (e.g. `Label: Fore Weapons`) — they
-  feed only into `anchors.json` / community anchors (P11), not into icon training.
-- Alternative: skip label bboxes entirely; P11 community anchors cover this use case without
-  requiring users to annotate text.
-
-**Recommendation:** Skip — P11 community anchors cover this without extra UI complexity.
+P11 community anchors cover the layout anchoring use case without requiring users to
+annotate text labels separately. Adding label bbox annotation would increase UI complexity
+for no practical gain — icon bbox positions already imply label positions. Decision final.
 
 ---
 
@@ -80,27 +70,16 @@ where icons are. A related idea: let users draw bboxes around the **slot label t
 
 ## 5. Central model pipeline — verification
 
-**Status: CODE REVIEW COMPLETE (2026-03-29) — runtime test pending**
+**Status: COMPLETE (2026-04-10)**
 
-**Findings from `model_updater.py` code review:**
-- `_CHECK_INTERVAL_HOURS = 0.25` (15 min) — correct.
-- Backend endpoint: `GET https://sets-warp-backend.onrender.com/model/version`
-- Downloads 6 files from `sets-sto/warp-knowledge`: `icon_classifier.pt`, `label_map.json`,
-  `icon_classifier_meta.json`, `model_version.json`, `screen_classifier.pt`, `screen_classifier_labels.json`.
-- Timestamp comparison: `remote_ts > local_ts` → download; otherwise skip.
-- After download: calls `SETSIconMatcher.reset_ml_session()` to reload immediately.
-- `_ensure_screen_classifier()`: runs on every check, downloads screen classifier if missing
-  (bypasses rate limit for this one-time bootstrap).
-- Logic is correct and complete. No bugs found.
-
-**Pending:** Actual runtime verification (open WARP CORE, wait 15 min, confirm model update
-from log output). Use test script if needed:
-```python
-from pathlib import Path
-from warp.trainer.model_updater import ModelUpdater
-result = ModelUpdater().check_and_update(Path('.'))
-print('update result:', result)
+**Verified in runtime log (2026-04-10):**
 ```
+ModelUpdater: checking for remote model update...
+ModelUpdater: remote model is newer (remote=2026-04-08, local=2026-04-06) — downloading...
+ModelUpdater: model downloaded at 16:34 UTC — 3199 classes, val_acc=74.2%
+ModelUpdater: icon matcher reloaded with new model
+```
+Full cycle confirmed: version check → download → matcher reload. No issues.
 
 ---
 
@@ -125,7 +104,7 @@ community_anchors.json is generated. Code is complete.
 
 ## 7. Ship Type / Ship Tier — community OCR correction data
 
-**Status: COMPLETE (2026-04-03)**
+**Status: COMPLETE (2026-04-10)**
 
 **Previous design (opt-in) superseded.**
 
@@ -274,7 +253,7 @@ diluted by correct crops from other users.
 
 ## 11. GROUND_MIXED screen classifier regression
 
-**Status: PARTIAL FIX (2026-04-03) — backend improvement pending**
+**Status: COMPLETE (2026-04-10)**
 
 **Symptoms (observed 2026-04-03):**
 - `ScreenTypeDetector` returned UNKNOWN for 96% of 119 screenshots (threshold 0.70).
@@ -298,3 +277,78 @@ diluted by correct crops from other users.
 - Log per-class sample counts in training output so imbalance is visible.
 - Consider replacing `_FocalLoss` with plain `CrossEntropyLoss` + class weights only;
   Focal Loss adds miscalibration without clear benefit on a 7-class balanced dataset.
+
+---
+
+## 12. MIXED + BOFFS layout detection — intelligent approach
+
+**Status: COMPLETE (2026-04-10) — full scan implemented**
+
+**Problem (resolved):**
+For MIXED screenshots the `_find_panel_right_edge` heuristic failed when the image
+contains multiple panels arranged arbitrarily.  For BOFFS the same pixel-column scan
+was equally unreliable across different seat layouts.
+
+**Solution implemented (2026-04-10):**
+
+New `_detect_via_full_scan()` in `layout_detector.py`:
+
+1. **Phase B — OCR section labels:** Full-image EasyOCR scan → match text against
+   extended `SLOT_LABEL_ALIASES` (equipment + traits + boffs) → collect
+   `{slot_name: (cx, cy)}` anchor positions.
+
+2. **Phase C — Dense icon scan:** Sliding window (stride = icon_est//2), skip uniform
+   patches (std < 12), run `icon_matcher.classify_patch()` (EfficientNet ML-only, no
+   template matching) → NMS deduplication → list of `(x, y, w, h, name, conf, type)`.
+
+3. **Fusion — row scoring:** Cluster detections into rows by Y proximity.
+   For each (row, slot_name) pair compute score:
+   - `0.65 × type_score` — fraction of icons in row whose EfficientNet type matches
+     `_SCAN_SLOT_VALID_TYPES` (equipment), `_TRAIT_SLOT_MARKER` (traits), or
+     `__boff_*` marker (boff abilities)
+   - `0.35 × ocr_score` — proximity bonus if OCR label for that slot is nearby
+   Row is assigned to highest-scoring slot (≥ 0.30 threshold).
+
+**Screen types using full scan:**
+- `SPACE_MIXED`, `GROUND_MIXED` — full scan after learned layouts fail
+- `BOFFS`, `SPACE_BOFFS`, `GROUND_BOFFS` — full scan after learned layouts fail,
+  before old pixel-based `_detect_boffs()` fallback
+
+**Files changed:**
+- `warp/recognition/icon_matcher.py` — added `classify_patch()` public method
+- `warp/recognition/layout_detector.py` — module-level helpers + two new methods
+- `warp/warp_importer.py` — passes `icon_matcher` + `app_cache` for MIXED + BOFFS types
+
+**Detection chain (updated):**
+```
+MIXED / BOFFS:
+  Strategy 1: Learned layouts (anchors.json) — if ≥5 slots found
+  Strategy FS: Full scan (OCR + EfficientNet + fusion) — if ≥2/3 slots found
+  Strategy 2+: Existing pixel / canonical / OCR / anchors fallbacks
+```
+
+---
+
+## 13. `__inactive__` / `__empty__` slot discarded in WARP CORE add_bbox
+
+**Status: FIXED (2026-04-10)**
+
+`_finish_bbox_drawn` was calling `_infer_slot_from_name` for all matched names, including
+virtual names (`__inactive__`, `__empty__`).  Since these are not cache items, inference
+returned `None`, triggering the discard branch with "not valid for stype=..." message.
+
+**Fix:** In the `elif name not in VIRTUAL_ITEM_NAMES:` discard branch — virtual names
+bypass slot inference and keep the positional slot suggestion.  They are always valid
+training labels regardless of screen type.  File: `warp/trainer/trainer_window.py`.
+
+---
+
+## 14. Dynamic BOFF Seat Profession Mapping Bug
+
+**Status: BACKLOG (Discovered 2026-05-01)**
+
+**Problem:**
+With the new `LayoutDetector` strategies, BOFF seats are named dynamically (e.g., `[Boff Seat L_483]`). The current logic in `warp_dialog.py` extracts the substring after "Boff " (resulting in "Seat L_483") to determine the cluster's profession. Because this does not match valid ship professions (Tactical, Engineering, Science), the recognized BOFF abilities are forced into the first Universal fallback seat, overriding the correct build layout in the SETS UI.
+
+**Required Fix:**
+In `warp_dialog.py` (Phase 2), the system should look up the actual recognized item names in `boff_abilities.json` (the source of truth) to determine the profession of the cluster, instead of relying on the raw slot name. For example, if a row contains `Emergency Power to Engines`, it should be classified as an Engineering cluster and matched to an Engineering seat.

@@ -145,6 +145,115 @@ The colour is updated whenever annotations or done state changes.
 
 ---
 
+## BOFF panel detection (profession-marker anchor)
+
+Read-only prototype: `tests/diag_boff_markers.py`. Sampling helpers used
+to characterise the marker palette: `tests/diag_boff_markers_sample.py`
+and `tests/diag_boff_marker_stripe.py`. Visual reference:
+`docs/images/boff_seat_marker_colors.png`
+(generator: `tests/diag_boff_marker_swatch.py`).
+
+### Why a marker-based anchor
+
+The earlier EQ-anchored sweep + `grid_from_anchor` failed at panel
+selection on more than 30 % of full-screen shots. The previous bar
+detector (`tests/diag_boff_seats.py`) keyed on the dark+saturated name
+bar, which also matched many decorative UI strips.
+
+The profession marker badge (left edge of each seat's name bar, BELOW
+the abilities) is a much stronger anchor:
+
+- solid coloured, fixed-size, on every seat regardless of which
+  abilities are slotted;
+- combines a wide main zone (seat type) with a narrow spec stripe — a
+  two-tone signature random UI rarely produces;
+- placement is panel-internal, so it works regardless of where the user
+  positioned the BOFF panel on screen (per the
+  *no fixed-position assumptions* rule).
+
+See `docs/sto_slots_rules.md` "Bridge Officers → Seat marker colours"
+for the colour reference and HSV bands.
+
+### Algorithm
+
+1. **Mask per band.** Build five HSV masks
+   (Tactical / Engineering / Science / Universal × the 4 spec-stripe
+   colours). Tactical's hue wraps the 0/180 boundary so it uses two
+   sub-bands.
+2. **Connected components.** Filter by size
+   (`w ∈ [0.25..1.4]·icon_w`, `h ∈ [0.4..1.6]·icon_h`) and density
+   (≥ 25 % of the bbox is mask).
+3. **Dedupe** overlapping detections across bands (IoU > 0.4) — keeps
+   the larger component, since a seat marker may match both its main
+   colour and the spec stripe colour.
+4. **RANSAC pair selection.** For each candidate pair `(m_i, m_j)` at
+   similar Y and `dx ∈ [3..9]·icon_w` (the L/R column gap), sweep five
+   `pitch_y` candidates `[1.6, 2.0, 2.4, 3.0, 3.6]·icon_h` and count
+   inliers per row index.
+5. **Score.** Prefer canonical 3+2=5 layouts via
+   `canon_table = {5: 1.5, 4: 1.0, 3: 0.4, 6: 0.6, 2: 0.0}`, plus
+   profession diversity (≥ 2 codes → +0.6), L≥R column layout (+0.3),
+   and pitch consistency.
+
+### Baseline (2026-04-26, 35 GT screens, 175 GT seats)
+
+| Metric                | Value         |
+|-----------------------|---------------|
+| Panel anchor          | 32 / 35 = 91.4 % |
+| Seat hits             | 160 / 175 = 91.4 % |
+| Mean markers / screen | ~33           |
+
+Adding the **Universal** band (pale cream yellow) was a net win: it
+both recovered Universal seats *and* let us tighten the Engineering
+saturation band from `S > 60` to `S 120–200`, removing many false
+positives from bright UI elements.
+
+### Known failures (3 screens)
+
+`Ambassador-broadside`, `Chronos-broadside`,
+`screenshot_2026-01-23-21-27-06`: each finds ≥ 4/5 real seats but the
+RANSAC search picks a competing 3+2 cluster elsewhere in the image.
+Candidate next steps (not yet implemented):
+
+- require the **two-zone marker structure** (wide main + narrow stripe
+  of matching seat type) — a near-unique signature;
+- post-anchor verification by counting ability icons inside the panel
+  envelope.
+
+### Specialization classification (post-hoc)
+
+After the seat-type detector returns markers, `classify_stripe()`
+samples the right edge of each marker bbox and scores it against the
+five spec-stripe bands (Command, Intelligence, Temporal, Pilot,
+Miracle Worker). The dominant band, if its match fraction exceeds
+0.15, is recorded as the seat's specialization.
+
+Verified on 15 user-labelled GT seats (`tests/diag_boff_spec_stripe_gt.py`):
+**9/15 correctly identified.** The 6 misses are not classifier errors —
+in 5 cases the seat-type detector picked a non-marker CC for that
+seat (so there was no real marker for the classifier to read), and 1
+case scored just below the 0.15 acceptance threshold.
+
+The classifier deliberately runs *after* detection so it doesn't
+contribute extra noise to the RANSAC panel search. An earlier
+experiment used the five stripe colours as additional detection seeds:
+total markers per screen rose from 33 to 40 and panel anchor dropped
+from 91.4 % to 88.6 % — the reverted approach.
+
+### Marker geometry
+
+Per-seat sampling region used by the diagnostics:
+
+```
+y ∈ [yc + 0.6·icon_h , yc + 1.4·icon_h]
+x ∈ [x_left − 0.9·icon_w , x_left − 0.05·icon_w]
+```
+
+where `yc` is the centre Y of the 4-icon ability row and `x_left` is
+the leftmost ability's X.
+
+---
+
 ## BOFF slot assignment (`warp_dialog.py`)
 
 ### Cluster → seat matching (Phase 2)

@@ -163,6 +163,19 @@ class SETSIconMatcher:
                 auto_name  = entry['name']
                 auto_entry = entry
 
+        # ── Phase B — session examples (confirmed crops from training data) ────
+        # Checked BEFORE ML: human-confirmed game-screenshot crops take priority
+        # over a model that may confuse visually similar items.
+        # sess_score > auto_score is the guard — template only beats confirmed
+        # crops when template matching is already confident.
+        sess_name, sess_score, sess_entry = self._best_session_match(
+            crop64, q_hist, candidate_names)
+        if sess_score > auto_score and sess_name:
+            thumb = self._bgr_to_qimage(sess_entry.get('orig')) if sess_entry else None
+            log.debug(f'WARP: session example beats template '
+                      f'({sess_score:.3f} > {auto_score:.3f}) → {sess_name!r}')
+            return sess_name, sess_score, thumb, True
+
         # Stage 3 (P8 confidence fusion): run ML when template score < FUSION_THRESHOLD.
         # fused = max(template_conf, 0.4*template_conf + 0.6*ml_conf)
         # When template is borderline and ML is high, ML name wins with fused confidence.
@@ -172,43 +185,58 @@ class SETSIconMatcher:
             if ml_name and (candidate_names is None or ml_name in candidate_names):
                 fused = max(auto_score, 0.4 * auto_score + 0.6 * ml_conf)
                 if fused > auto_score:
+                    # Re-check session examples: if confirmed crops still beat ML-fused score, prefer them
+                    if sess_score > fused and sess_name:
+                        thumb = self._bgr_to_qimage(sess_entry.get('orig')) if sess_entry else None
+                        log.debug(f'WARP: session example beats ML-fused '
+                                  f'({sess_score:.3f} > {fused:.3f}) → {sess_name!r}')
+                        return sess_name, sess_score, thumb, True
                     auto_name  = ml_name
                     auto_score = fused
                     auto_entry = None
-
-        # ── Phase B — session examples (confirmed crops from training data) ────
-        # Only runs when autonomous recognition is not confident enough.
-        # This is the fallback path — finding a match here is a training gap.
-        if auto_score < TEMPLATE_THRESHOLD:
-            expected_shape = tuple(HIST_BINS)
-            sess_name  = ''
-            sess_score = 0.0
-            sess_entry = None
-            for entry in self._session_examples:
-                if candidate_names is not None and entry['name'] not in candidate_names:
-                    continue
-                if entry['hist_hsv'].shape != expected_shape:
-                    continue
-                res      = cv2.matchTemplate(crop64, entry['tmpl64'],
-                                             cv2.TM_CCOEFF_NORMED)
-                tm_score = float(res.max())
-                h_score  = max(0.0, float(cv2.compareHist(
-                    q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL)))
-                combined = tm_score * (1.0 - HIST_WEIGHT) + h_score * HIST_WEIGHT
-                if combined > sess_score:
-                    sess_score = combined
-                    sess_name  = entry['name']
-                    sess_entry = entry
-
-            if sess_score > auto_score and sess_name:
-                thumb = self._bgr_to_qimage(sess_entry.get('orig')) if sess_entry else None
-                return sess_name, sess_score, thumb, True   # training gap
 
         # Phase A result (autonomous)
         thumb = None
         if auto_entry is not None and auto_score >= TEMPLATE_THRESHOLD:
             thumb = self._bgr_to_qimage(auto_entry.get('orig'))
         return auto_name, auto_score, thumb, False
+
+    def _best_session_match(
+        self,
+        crop64: np.ndarray,
+        q_hist: np.ndarray,
+        candidate_names: set[str] | None,
+    ) -> tuple[str, float, dict | None]:
+        """Return (name, score, entry) for the best session example match."""
+        import cv2
+        expected_shape = tuple(HIST_BINS)
+        sess_name  = ''
+        sess_score = 0.0
+        sess_entry = None
+        for entry in self._session_examples:
+            if candidate_names is not None and entry['name'] not in candidate_names:
+                continue
+            if entry['hist_hsv'].shape != expected_shape:
+                continue
+            res      = cv2.matchTemplate(crop64, entry['tmpl64'],
+                                         cv2.TM_CCOEFF_NORMED)
+            tm_score = float(res.max())
+            h_score  = max(0.0, float(cv2.compareHist(
+                q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL)))
+            combined = tm_score * (1.0 - HIST_WEIGHT) + h_score * HIST_WEIGHT
+            if combined > sess_score:
+                sess_score = combined
+                sess_name  = entry['name']
+                sess_entry = entry
+        return sess_name, sess_score, sess_entry
+
+    def classify_patch(self, patch_bgr: np.ndarray) -> tuple[str, float]:
+        """Classify a single BGR patch using ML only (fast path for dense scanning)."""
+        import cv2
+        if patch_bgr is None or patch_bgr.size == 0:
+            return '', 0.0
+        crop64 = cv2.resize(patch_bgr, (MATCH_SIZE, MATCH_SIZE), interpolation=cv2.INTER_AREA)
+        return self._classify_ml(crop64)
 
     def classify_ml_batch(
         self,
@@ -309,12 +337,24 @@ class SETSIconMatcher:
     def _classify_ml(self, crop64: np.ndarray) -> tuple[str, float]:
         """Run local PyTorch classifier on a 64x64 BGR crop.
         Falls back to ONNX session for HuggingFace-downloaded model.
+
+        Preprocessing must match admin_train.py CropDataset.__getitem__:
+          1. BGR → RGB  (training uses cv2.COLOR_BGR2RGB)
+          2. /255.0
+          3. ImageNet mean/std normalization  (training uses T.Normalize)
+        Missing either step produces a completely wrong input distribution
+        (model was trained on normalized RGB, but would receive raw BGR).
         """
         import cv2
         model = self._get_ml_session()
         if model is None:
             return '', 0.0
-        inp = cv2.resize(crop64, (224, 224)).astype(np.float32) / 255.0
+        rgb = cv2.cvtColor(cv2.resize(crop64, (224, 224)), cv2.COLOR_BGR2RGB)
+        inp = rgb.astype(np.float32) / 255.0
+        # ImageNet normalization (same as T.Normalize in admin_train.py)
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        inp = (inp - mean) / std
         inp = np.expand_dims(np.transpose(inp, (2, 0, 1)), axis=0)
         try:
             if hasattr(model, 'run'):  # onnxruntime session (HuggingFace model)

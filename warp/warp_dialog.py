@@ -493,7 +493,8 @@ class WarpDialog(QDialog):
                         f'for "{ri.name}"')
 
         if boff_items:
-            self._write_boffs_to_build(boff_items, _ship_data)
+            _is_ground_boffs = getattr(self.result, 'build_type', '') == 'GROUND_BOFFS'
+            self._write_boffs_to_build(boff_items, _ship_data, is_ground=_is_ground_boffs)
 
         # Switch to the correct build tab
         tab_map = {
@@ -506,7 +507,8 @@ class WarpDialog(QDialog):
         self._sets.switch_main_tab(tab_idx)
         self._sets.autosave()
 
-    def _write_boffs_to_build(self, boff_items: list, ship_data: dict | None) -> None:
+    def _write_boffs_to_build(self, boff_items: list, ship_data: dict | None,
+                               is_ground: bool = False) -> None:
         """Write recognized boff abilities to the SETS build.
 
         Two-phase approach:
@@ -516,30 +518,43 @@ class WarpDialog(QDialog):
         2. Profession matching: each cluster is matched to the correct ship seat by
            comparing the dominant ability profession against seat definitions.
            This is robust regardless of ship_data['boffs'] ordering.
+
+        is_ground=True: write to build['ground']['boffs'] using the current ground
+        build's seat configuration (4 fixed seats, no ship_data needed).
         """
         from collections import Counter
         from src.buildupdater import get_boff_spec, load_boff_stations
 
-        if not ship_data:
-            _slog.debug(f'WARP boff: no ship_data — {len(boff_items)} items ignored')
-            return
-
-        ship_seats_raw = ship_data.get('boffs', [])
-        if not ship_seats_raw:
-            _slog.warning('WARP boff: ship_data has no boffs field')
-            return
-
-        # Parse all seats; build SETS seat_id mapping (rank-descending sort,
-        # same as align_space_frame).
-        try:
-            seats_visual = [get_boff_spec(self._sets, s) for s in ship_seats_raw]
-        except Exception as e:
-            _slog.warning(f'WARP boff: could not parse seat specs: {e}')
-            return
-
-        # visual_to_seat_id[ship_data_idx] = SETS seat_id (rank-desc position)
-        sorted_ix = sorted(enumerate(seats_visual), key=lambda p: p[1], reverse=True)
-        visual_to_seat_id = {vis_i: seat_id for seat_id, (vis_i, _) in enumerate(sorted_ix)}
+        if is_ground:
+            # Ground boffs: 4 fixed seats defined by the current build, not ship_data
+            boffs_build  = self._sets.build['ground']['boffs']
+            _boff_profs  = self._sets.build['ground'].get('boff_profs', {})
+            _boff_specs  = self._sets.build['ground'].get('boff_specs', {})
+            n_seats      = len(boffs_build)
+            seats_visual = [(4, _boff_profs.get(i, 'Universal'), _boff_specs.get(i))
+                            for i in range(n_seats)]
+            visual_to_seat_id = {i: i for i in range(n_seats)}
+        else:
+            if not ship_data:
+                _slog.debug(f'WARP boff: no ship_data — {len(boff_items)} items ignored')
+                return
+            ship_seats_raw = ship_data.get('boffs', [])
+            if not ship_seats_raw:
+                _slog.warning('WARP boff: ship_data has no boffs field')
+                return
+            # Parse all seats; build SETS seat_id mapping (rank-descending sort,
+            # same as align_space_frame).
+            try:
+                seats_visual = [get_boff_spec(self._sets, s) for s in ship_seats_raw]
+            except Exception as e:
+                _slog.warning(f'WARP boff: could not parse seat specs: {e}')
+                return
+            # visual_to_seat_id[ship_data_idx] = SETS seat_id (rank-desc position)
+            sorted_ix = sorted(enumerate(seats_visual), key=lambda p: p[1], reverse=True)
+            visual_to_seat_id = {vis_i: seat_id for seat_id, (vis_i, _) in enumerate(sorted_ix)}
+            boffs_build  = self._sets.build['space']['boffs']
+            _boff_profs  = None   # not used for space
+            _boff_specs  = self._sets.build['space']['boff_specs']
 
         # ── Phase 1: cluster boff items into per-seat groups ─────────────────
         # Pass A: Y-bands (new band if Y gap > threshold)
@@ -580,6 +595,9 @@ class WarpDialog(QDialog):
                    f'(ship has {len(ship_seats_raw)} seats)')
 
         # ── Phase 2: match each cluster to a ship seat by profession ─────────
+        from warp.recognition.boff_keys import parse_seat_profession, parse_seat_spec
+        from collections import Counter
+
         # Map spec name → profession name (for Universal-spec seats and spec-prof seats)
         _SPEC_TO_PROF = {
             'Temporal Operative': 'Temporal',
@@ -590,13 +608,35 @@ class WarpDialog(QDialog):
         }
 
         # For each cluster, compute the profession distribution from slot annotations.
-        # primary_prof = most-common profession; prof_set = all professions in cluster.
-        ClusterInfo = list[tuple]   # (cluster_items, primary_prof, prof_set, rank_count)
+        ClusterInfo = list[tuple]   # (cluster_items, base_prof, prof_set, spec_prof)
         cluster_info: list = []
         for c in seat_clusters:
-            prof_counts = Counter(ri.slot[5:] for ri in c)   # 'Boff Temporal' → 'Temporal'
-            primary = prof_counts.most_common(1)[0][0]
-            cluster_info.append([c, primary, set(prof_counts.keys())])
+            cluster_slot = c[0].slot
+            base_prof = parse_seat_profession(cluster_slot)
+            spec_prof = parse_seat_spec(cluster_slot)
+            
+            content_profs = []
+            for ri in c:
+                if ri.confidence >= 0.40 and ri.name:
+                    found = False
+                    for domain in ['space', 'ground']:
+                        for career, ranks in self._sets.cache.boff_abilities.get(domain, {}).items():
+                            for rank_dict in ranks:
+                                if isinstance(rank_dict, dict) and ri.name in rank_dict:
+                                    content_profs.append(career)
+                                    found = True
+                                    break
+                            if found: break
+                        if found: break
+            
+            prof_set = set(content_profs)
+            if base_prof is None:
+                if content_profs:
+                    base_prof = Counter(content_profs).most_common(1)[0][0]
+                else:
+                    base_prof = 'Unknown'
+                    
+            cluster_info.append([c, base_prof, prof_set, spec_prof])
 
         # Match clusters to seats in three passes:
         # 1. Named profession seats (non-Universal) with specialization
@@ -606,13 +646,17 @@ class WarpDialog(QDialog):
         unmatched = list(range(len(cluster_info)))      # indices into cluster_info
         assigned: dict[int, int] = {}                   # ship_data_idx → cluster_info_idx
 
-        def _find_cluster(primary_prof: str, spec_prof: str | None) -> int | None:
+        def _find_cluster(primary_prof: str, target_spec: str | None) -> int | None:
             for ci in unmatched:
-                c_primary, c_profs = cluster_info[ci][1], cluster_info[ci][2]
+                c_primary, c_profs, c_spec = cluster_info[ci][1], cluster_info[ci][2], cluster_info[ci][3]
                 if c_primary != primary_prof:
                     continue
-                if spec_prof and spec_prof not in c_profs:
-                    continue
+                if target_spec:
+                    if c_spec:
+                        if c_spec != target_spec:
+                            continue
+                    elif target_spec not in c_profs:
+                        continue
                 return ci
             return None
 
@@ -673,8 +717,7 @@ class WarpDialog(QDialog):
         # dropdown the user sees in the SETS UI).
         _BASE_PROFS = {'Tactical', 'Engineering', 'Science'}
 
-        boffs_build    = self._sets.build['space']['boffs']
-        boff_specs     = self._sets.build['space']['boff_specs']
+        env_key        = 'ground' if is_ground else 'space'
         all_boff_cache = self._sets.cache.boff_abilities.get('all', {})
         written        = 0
 
@@ -688,13 +731,42 @@ class WarpDialog(QDialog):
             cluster_items = sorted(cluster_info[ci][0], key=lambda ri: ri.bbox[0])
 
             # For Universal seats: set the profession dropdown to match what was
-            # recognised — exactly as the user would do manually before picking abilities.
-            # Only applies to base professions (Tactical/Engineering/Science).
-            # Spec-based professions (Temporal, Command, …) don't change the base.
+            # recognised — exactly as the user would do manually before picking
+            # abilities. Switch the dropdown BEFORE writing abilities so the
+            # profession-changed callback (which clears stale abilities of the
+            # old profession) only wipes the empty defaults from align_space_frame
+            # — our new abilities are written below into already-correct seat.
+            # Only applies to base professions (Tactical/Engineering/Science);
+            # spec-based professions (Temporal, Command, …) keep the seat base.
             if profession == 'Universal' and primary_prof in _BASE_PROFS:
-                if seat_id < len(boff_specs) and isinstance(boff_specs[seat_id], list):
-                    boff_specs[seat_id][0] = primary_prof
-                    _slog.info(f'WARP boff: seat[{seat_id}] Universal → set to {primary_prof}')
+                if is_ground:
+                    _boff_profs[seat_id] = primary_prof
+                    try:
+                        ground_label = self._sets.widgets.build['ground']['boff_profs'][seat_id]
+                        ground_label.setCurrentText(primary_prof)
+                    except Exception as _e:
+                        _slog.warning(f'WARP boff: ground seat[{seat_id}] dropdown switch failed: {_e}')
+                    _slog.info(f'WARP boff: ground seat[{seat_id}] Universal → set to {primary_prof}')
+                elif seat_id < len(_boff_specs) and isinstance(_boff_specs[seat_id], list):
+                    # Take spec from the ship's seat config (`seats_visual`) — same
+                    # source `update_boff_seat` uses to build the combo options.
+                    # `_boff_specs[seat_id][1]` carries stale spec from the previous
+                    # build (preserved by align_space_frame(clear=False)) and may
+                    # not match any combo option → setCurrentText silently no-ops.
+                    seat_spec = spec or ''
+                    target_text = (f'{primary_prof} / {seat_spec}'
+                                   if seat_spec else primary_prof)
+                    try:
+                        # setCurrentText fires currentTextChanged → callback
+                        # boff_profession_callback_space which clears stale
+                        # abilities AND sets _boff_specs[seat_id]. Order matters:
+                        # this MUST run before the ability-write loop below.
+                        space_label = self._sets.widgets.build['space']['boff_labels'][seat_id]
+                        space_label.setCurrentText(target_text)
+                    except Exception as _e:
+                        _slog.warning(f'WARP boff: seat[{seat_id}] dropdown switch failed: {_e}')
+                        _boff_specs[seat_id][0] = primary_prof  # fallback
+                    _slog.info(f'WARP boff: seat[{seat_id}] Universal → set to {target_text!r}')
 
             slot_indices = _slot_indices_from_x(cluster_items, rank)
             _slog.info(f'WARP boff: seat[{seat_id}] {profession}/{spec or "-"} rank={rank} '
@@ -712,7 +784,7 @@ class WarpDialog(QDialog):
                 written += 1
 
         if written:
-            load_boff_stations(self._sets, 'space')
+            load_boff_stations(self._sets, env_key)
             _slog.info(f'WARP: wrote {written} boff abilities to build')
         else:
             _slog.warning('WARP boff: 0 abilities written — check cache or cluster matching')

@@ -31,6 +31,26 @@ Star Trek Online build planning tool with ML-based screenshot recognition.
 
 ---
 
+## CORE ARCHITECTURAL RULE
+
+**WARP = detection. WARP CORE = trains WARP. `annotations.json` = training data ONLY.**
+
+WARP must NEVER use `annotations.json` as direct import output. If WARP falls back to
+reading user-confirmed ground truth instead of performing detection, we:
+- Hide real detection bugs behind seemingly-good recognition results
+- Cannot measure actual recognition quality
+- Defeat the whole purpose of improving the detector
+
+Only **WARP CORE** (the trainer) reads annotations — to display for user review and
+feed back into training data for the EfficientNet / MobileNetV3 models.
+
+**Enforcement:** `_use_confirmed = _is_trainer_call` in `warp_importer.py:~763`.
+The old condition `'MIXED' in build_type or _is_trainer_call` was disabled on
+2026-04-19 by user request. Old line preserved as comment — do NOT re-enable
+without explicit user approval.
+
+---
+
 ## Repository structure
 
 ```
@@ -355,6 +375,145 @@ Credentials in `.env`: `HF_TOKEN`, `HF_REPO_ID=sets-sto/warp-knowledge`, `ADMIN_
 
 `WARPSyncClient` (`warp/knowledge/sync_client.py`) talks to the Render backend.
 `SyncWorker` (`warp/trainer/sync.py`) uploads directly to HF.
+
+---
+
+## Changes made in this development session (2026-04-25)
+
+### BOFF detection — honest baseline + 2 small wins + A1 fix
+
+| File | Change | Commit |
+|------|--------|--------|
+| `warp/warp_importer.py` | **A1 fix**: gate `seed_from_training_data` in `_get_matcher` on `_from_trainer`; non-trainer path also calls `reset_ml_session()`. Closes second CORE-RULE violation flagged in 2026-04-20 memory. | `e979114` |
+| `warp/recognition/layout_detector.py` | **Knob B** (`_classify_boff_profession`): `mid_blue >= 60` alone routes to temporal. HSV classifier 84.7% → 85.8%. | `e979114` |
+| `warp/recognition/layout_detector.py` | **H1** (`_detect_boffs_in_mixed`): reject candidates with `> 20` bboxes (BOFF panel physical max). NOT yet e2e-verified — measure on next run, revert if regression. | `e979114` |
+| `tests/diag_boff_*.py` | 4 new read-only diagnostics (HSV, sweep, e2e, coverage). Output → `tests/_diag_out/` (gitignored). | `de3c780` |
+| `tests/test_*.py` | Reorganization: moved `warp/test_*.py` → `tests/`. NOTE: `test_boff_logic.py` has its own broken HSV classifier (pre-existing, flagged for removal). | `de3c780` |
+
+### Honest baseline (34 screens, 442 GT BOFF abilities, IoU≥0.30)
+
+- **HSV classifier accuracy**: 85.8%
+- **Detector seat coverage**: 74.0%
+- **Matcher ceiling (with GT bbox)**: 57.2%
+- **End-to-end slot accuracy**: 33.5%
+
+The old 2026-04-18 number (39%) was wrong — the test harness had a broken
+MockApp that disabled template matching, so the matcher ran ML-only. After
+fixing MockApp (`config_subfolders.images` wired), real production reaches
+57.2% on perfect bboxes.
+
+### Layout geometry on full screenshots (n=15, iw≥700)
+
+```
+panel_w_norm   17–30%, median 22%
+panel_h_norm   22–32%, median 27%
+icon_w_norm    1.7–3.1%, median 2.1%
+structure      2 cols × (3+2) seats × 4 abilities = max 20 bboxes
+```
+
+Position varies arbitrarily, but **size and structure are stable per
+resolution** — this is what makes the next-step EQ-anchored scan tractable.
+
+### Coverage breakdown (115 uncovered GT)
+
+| Class | GT | % of GT |
+|---|---|---|
+| near_detector | 58 | 13.1% |
+| mirror_layout | 28 | 6.3% |
+| middle_image | 16 | 3.6% |
+| panel_crop | 13 | 2.9% |
+
+`near_detector` and `mirror_layout` are the same root cause: 34% left/right
+strip heuristic is too rigid when panel is shifted, mirrored, or in middle.
+
+### Next iteration plan: EQ-anchored sliding-window scan
+
+1. Use detected EQ as **negative anchor** (BOFFs can't overlap with EQ region)
+2. Use EQ icon size to **scale** expected BOFF window (~22% × 27% of image)
+3. Sweep BOFF-sized window over non-EQ region
+4. Score by `(n_bboxes_in_4-icon-rows) × (grid_fit_to_2×(3+2)×4)` − penalty(>20 bboxes)
+5. Window with highest score = BOFF panel
+
+**Prototype path**: `tests/diag_boff_scan.py` (next session) using **GT EQ
+bboxes** as anchor — isolates "is the concept right?" from "is EQ detector
+good enough?". Production must use detected EQ (CORE RULE).
+
+---
+
+## Changes made in this development session (2026-04-18)
+
+### BOFFS detection — stabilization + ModelUpdater reliability
+
+| File | Change | Commit |
+|------|--------|--------|
+| `warp/trainer/model_updater.py` | `urllib` → `requests` with `(connect=5, read=15)` timeouts; network error → no timestamp save (retry next start); server "no model" → save timestamp (rate-limit). Watchdog warning if check >60s. | `e459957` |
+| `warp/recognition/layout_detector.py` | **Removed rightward-preference** in `_detect_boffs` template slide — was shifting correct peaks by +32px on right column. | `e459957` |
+| `warp/recognition/layout_detector.py` | Per-column band scan + merge (captures Pilot rows with icons only in one column). | `e459957` |
+| `warp/recognition/layout_detector.py` | Band scoring by **peak − gap** (4 icons vs 3 gaps) + leading-gap bonus for deep dark cliff before first icon. | `e459957` |
+| `warp/recognition/layout_detector.py` | Narrower sub-region crop in `_detect_boffs_in_mixed` (`panel_w = w*0.34`) — prevents dilution from adjacent content. | `e459957` |
+| `warp/recognition/layout_detector.py` | **BOFF-in-MIXED tiebreak**: `sort((slot_groups, item_count))` instead of raw count. Traits panel lumped all items into one profession (16-count Boff Science) was beating real BOFFs. | `8bf6072` |
+
+### Regression baseline (2026-04-18, 15 screenshots ≥8 BOFFs, w ≥800px)
+
+- **106/269 (39%) IoU hits ≥ 0.3**
+- 3 GOOD (≥85%): broadside.png, Chronos-broadside.png, image10.png
+- 2 MOSTLY (50-85%): Nautilus.png, Screenshot_20260310
+- 5 PARTIAL (<50%)
+- 5 WRONG_REGION: empire, image.png, Screenshot_2026-01-19, Screenshot_96, Yeetus
+- Ambassador-broadside.png: **+8** (0→8) thanks to tiebreak fix
+
+### Research: what NOT to do next
+
+Investigated and REJECTED (documented to avoid re-exploring):
+
+- **OCR anchoring (Plan D)**: EasyOCR finds 0 BOFF keywords on Ambassador-broadside.png and image.png — STO rank labels too small/stylized. Would fix only 1/4 WRONG_REGION.
+- **HSV badge detection (Plan G)**: `_classify_boff_profession` has **93% false-positive rate** on non-BOFF crops (53/57 Ambassador equipment/traits classify as a profession). Method is a classifier, not a detector.
+- **Canonical layout per aspect bucket (Plan H)**: BOFF panel position in MIXED is not anchored to edges (normalized-y varies 0.178–0.550 across full-screen shots). Bucketing not useful.
+
+### Remaining failure classes (each needs its own approach)
+
+1. **BOFFs in middle of image** (Screenshot_2026-01-19 — x=337-593 on w=1065): outside 34% left/right strips. Fix: add middle strip or dynamic x-range from content.
+2. **BOFFs right of equipment** (Pumwl1, empire, Screenshot_96): STO mirror UI. Detector finds them on RIGHT but IoU<0.3 — likely off-by-pixels in offset handling when using non-square MIXED dims.
+3. **Traits win tiebreak** (image.png: L=16/1g, R=20/3g → RIGHT=traits wins by diversity). Need distinguishing signal: BOFF row has 2-3 rows × 4 icons max; traits has different shape.
+
+### Key spatial insight (for future work)
+
+- **9/13 screenshots**: BOFF left of equipment x-range
+- **3/13**: BOFF right of equipment (mirror layout)
+- **1/13**: 56px overlap (Yeetus edge case)
+- **BOFF and equipment are always in disjoint x-bands** — could use equipment detection (reliable) as exclusion anchor, BUT only helps when our current detector already sees BOFFs on correct side with right dims
+
+---
+
+## Changes made in this development session (2026-04-10)
+
+### Item 12 — Full scan for MIXED + BOFFS (Phase A + B + C)
+
+| File | Change |
+|------|--------|
+| `warp/recognition/screen_classifier.py` | Added SPACE_BOFFS, GROUND_BOFFS to SCREEN_TYPES |
+| `warp/recognition/text_extractor.py` | Detect 'space stations' → SPACE_BOFFS, 'standard away team' → GROUND_BOFFS |
+| `warp/recognition/layout_detector.py` | Full-scan infrastructure: module-level helpers + `_detect_via_full_scan()` + `_ocr_section_labels()`; MIXED + BOFFS routed to full scan |
+| `warp/recognition/icon_matcher.py` | Added `classify_patch()` public method (ML-only, used by full scan) |
+| `warp/warp_importer.py` | Passes `icon_matcher` + `app_cache` for MIXED + BOFFS types; SPACE_BOFFS/GROUND_BOFFS in SLOT_ORDER + upgrade logic; `_write_boffs_to_build` ground path complete |
+| `warp/trainer/trainer_window.py` | SPACE_BOFFS/GROUND_BOFFS slot groups + screen type labels |
+| `warp/warp_dialog.py` | `_write_boffs_to_build` is_ground=True path — writes to ground boff seats |
+| `warp/trainer/training_data.py` | TEXT_LEARNING_SLOTS added |
+| `warp/trainer/sync.py` | OCR correction upload support |
+| `src/datafunctions.py` | Fix None image field crash in ship_images list |
+| `sets-warp-backend/admin_train.py` | SPACE_BOFFS/GROUND_BOFFS in SCREEN_TYPES; CrossEntropyLoss replaces FocalLoss |
+
+### Full scan architecture (layout_detector.py)
+
+```
+MIXED / BOFFS detection chain:
+  Strategy 1:  Learned layouts (anchors.json) — highest accuracy when present
+  Strategy FS: Full scan — OCR labels + EfficientNet dense window + fusion
+    Phase B: _ocr_section_labels() — full-image EasyOCR → {slot_name: (cx, cy)}
+    Phase C: sliding window stride=icon_est//2, classify_patch() per patch, NMS
+    Fusion:  cluster rows by Y → score(row, slot) = 0.65×type_score + 0.35×ocr_score
+  Strategy 2+: Existing pixel / canonical / OCR / anchors fallbacks
+```
 
 ---
 
