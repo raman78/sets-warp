@@ -731,16 +731,37 @@ class WarpDialog(QDialog):
             cluster_items = sorted(cluster_info[ci][0], key=lambda ri: ri.bbox[0])
 
             # For Universal seats: set the profession dropdown to match what was
-            # recognised — exactly as the user would do manually before picking abilities.
-            # Only applies to base professions (Tactical/Engineering/Science).
-            # Spec-based professions (Temporal, Command, …) don't change the base.
+            # recognised — exactly as the user would do manually before picking
+            # abilities. Switch the dropdown BEFORE writing abilities so the
+            # profession-changed callback (which clears stale abilities of the
+            # old profession) only wipes the empty defaults from align_space_frame
+            # — our new abilities are written below into already-correct seat.
+            # Only applies to base professions (Tactical/Engineering/Science);
+            # spec-based professions (Temporal, Command, …) keep the seat base.
             if profession == 'Universal' and primary_prof in _BASE_PROFS:
                 if is_ground:
                     _boff_profs[seat_id] = primary_prof
+                    try:
+                        ground_label = self._sets.widgets.build['ground']['boff_profs'][seat_id]
+                        ground_label.setCurrentText(primary_prof)
+                    except Exception as _e:
+                        _slog.warning(f'WARP boff: ground seat[{seat_id}] dropdown switch failed: {_e}')
                     _slog.info(f'WARP boff: ground seat[{seat_id}] Universal → set to {primary_prof}')
                 elif seat_id < len(_boff_specs) and isinstance(_boff_specs[seat_id], list):
-                    _boff_specs[seat_id][0] = primary_prof
-                    _slog.info(f'WARP boff: seat[{seat_id}] Universal → set to {primary_prof}')
+                    current_spec = _boff_specs[seat_id][1] if len(_boff_specs[seat_id]) > 1 else ''
+                    target_text = (f'{primary_prof} / {current_spec}'
+                                   if current_spec else primary_prof)
+                    try:
+                        # setCurrentText fires currentTextChanged → callback
+                        # boff_profession_callback_space which clears stale
+                        # abilities AND sets _boff_specs[seat_id]. Order matters:
+                        # this MUST run before the ability-write loop below.
+                        space_label = self._sets.widgets.build['space']['boff_labels'][seat_id]
+                        space_label.setCurrentText(target_text)
+                    except Exception as _e:
+                        _slog.warning(f'WARP boff: seat[{seat_id}] dropdown switch failed: {_e}')
+                        _boff_specs[seat_id][0] = primary_prof  # fallback
+                    _slog.info(f'WARP boff: seat[{seat_id}] Universal → set to {target_text!r}')
 
             slot_indices = _slot_indices_from_x(cluster_items, rank)
             _slog.info(f'WARP boff: seat[{seat_id}] {profession}/{spec or "-"} rank={rank} '
