@@ -748,9 +748,14 @@ class WarpDialog(QDialog):
                         _slog.warning(f'WARP boff: ground seat[{seat_id}] dropdown switch failed: {_e}')
                     _slog.info(f'WARP boff: ground seat[{seat_id}] Universal → set to {primary_prof}')
                 elif seat_id < len(_boff_specs) and isinstance(_boff_specs[seat_id], list):
-                    current_spec = _boff_specs[seat_id][1] if len(_boff_specs[seat_id]) > 1 else ''
-                    target_text = (f'{primary_prof} / {current_spec}'
-                                   if current_spec else primary_prof)
+                    # Take spec from the ship's seat config (`seats_visual`) — same
+                    # source `update_boff_seat` uses to build the combo options.
+                    # `_boff_specs[seat_id][1]` carries stale spec from the previous
+                    # build (preserved by align_space_frame(clear=False)) and may
+                    # not match any combo option → setCurrentText silently no-ops.
+                    seat_spec = spec or ''
+                    target_text = (f'{primary_prof} / {seat_spec}'
+                                   if seat_spec else primary_prof)
                     try:
                         # setCurrentText fires currentTextChanged → callback
                         # boff_profession_callback_space which clears stale
