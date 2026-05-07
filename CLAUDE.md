@@ -378,6 +378,51 @@ Credentials in `.env`: `HF_TOKEN`, `HF_REPO_ID=sets-sto/warp-knowledge`, `ADMIN_
 
 ---
 
+## Changes made in this development session (2026-05-07)
+
+### WARP CORE re-detection — proposes ALL detected positions, not just confirmed
+
+When the user confirms some annotations and runs autodetect again, the trainer
+must re-propose freshly-detected positions on top of the user's confirmations,
+not erase them. Previously, three coupled bugs caused detected-but-not-yet-
+confirmed bboxes to silently disappear — fixed in `warp_importer.py`:
+
+| Bug | Symptom | Fix |
+|---|---|---|
+| `layout.update(confirmed_layout)` replaced detected per-slot bboxes | Deleting a confirmed BOFF ability left the position blank instead of re-proposing | Per-slot IoU≥0.30 merge: confirmed wins on overlap (pixel-perfect), unmatched detected kept (re-proposed), unmatched confirmed appended (user drew outside grid). Helper `_bbox_iou()` added. |
+| `max_count = len(confirmed_layout[slot])` capped processing to confirmed-only count | Even after merge, only N confirmed bboxes ran through the matcher | `max_count = len(layout[slot_name])` after merge — merged layout is the authoritative truth |
+| `slot_defs_to_process` filtered by `confirmed_layout` only | Slots with 0 confirmations (e.g. user accepted Fore Weapons but not Aft Weapons) were never processed | Union: `set(confirmed_layout.keys()) \| set(layout.keys())` — every slot with any bbox gets processed |
+
+Net effect: in WARP CORE, every autodetect run re-proposes the full detected
+grid. Confirmed positions stay confirmed; freshly detected ones land in the
+review list as pending. The trainer's `_populate_review_panel` already merges
+incoming items with confirmed-by-id annotations from disk, so confirmed and
+pending coexist correctly without duplicates.
+
+### Recognition Review — user-friendly BOFF slot names
+
+`warp/recognition/boff_keys.py` gained `pretty_slot()` — single source of
+truth for converting dynamic seat keys to readable labels:
+
+- `Boff Seat L[E]_392` → `Boff Engineering`
+- `Boff Seat R[T+P]_510` → `Boff Tactical+Intelligence`
+- `Boff Seat L[U]_478` → `Boff Universal`
+- non-seat keys pass through unchanged
+
+Applied in `trainer_window._add_review_row` (label + tooltip),
+`_enter_manual_bbox_mode` (status hint), the rematch redraw at line ~2177,
+and `annotation_widget` canvas hover tooltip.
+
+### Canvas-click slot combo sync
+
+`_on_item_selected` mapped raw seat keys (`Boff Seat L[E]_392`) into the slot
+combo via `setCurrentText`, but the combo only contains canonical entries
+(`Boff Engineering` etc.) — `setCurrentText` silently failed and the combo
+stayed stale. Now uses `parse_seat_profession`/`parse_seat_spec` to derive
+the canonical label (base prof preferred, spec as Universal+spec fallback).
+
+---
+
 ## Changes made in this development session (2026-04-25)
 
 ### BOFF detection — honest baseline + 2 small wins + A1 fix

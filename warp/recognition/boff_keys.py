@@ -107,3 +107,23 @@ def is_seat_keyed(slot_name: str) -> bool:
     profession code), i.e. matches `Boff Seat L_<y>` or `Boff Seat L[T]_<y>`.
     """
     return isinstance(slot_name, str) and bool(_SEAT_KEY_RE.match(slot_name))
+
+
+def pretty_slot(slot_name: str) -> str:
+    """Convert a dynamic BOFF seat key into a user-friendly label:
+    - `Boff Seat L[E]_392`   → `Boff Engineering`
+    - `Boff Seat R[T+P]_510` → `Boff Tactical+Intelligence`
+    - `Boff Seat L[U]_478`   → `Boff Universal`
+    - `Boff Seat L_478`      → `Boff Universal` (legacy seat-keyed without code)
+
+    Non-seat-keyed slot names (e.g. `Boff Tactical`, `Fore Weapons`,
+    `Ship Name`) are returned unchanged.
+    """
+    if not isinstance(slot_name, str) or not slot_name.startswith('Boff Seat'):
+        return slot_name
+    if not is_seat_keyed(slot_name):
+        return slot_name
+    prof = parse_seat_profession(slot_name)
+    spec = parse_seat_spec(slot_name)
+    base = f'Boff {prof}' if prof else 'Boff Universal'
+    return f'{base}+{spec}' if spec else base

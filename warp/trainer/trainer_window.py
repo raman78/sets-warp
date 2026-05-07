@@ -48,6 +48,8 @@ _KEY_AUTO_CONF      = 'warp_core/auto_accept_conf'
 CONF_HIGH   = 0.85
 CONF_MEDIUM = 0.70
 
+from warp.recognition.boff_keys import pretty_slot as _pretty_slot
+
 SLOT_GROUPS: dict[str, list[str]] = {
     # SPACE_EQ: space equipment + ship metadata (name/type/tier live on space screenshots)
     'SPACE_EQ': [
@@ -1541,34 +1543,35 @@ class WarpCoreWindow(QMainWindow):
 
     def _add_review_row(self, name: str, slot: str, conf: float, confirmed: bool = False, cross_check_failed: bool = False):
         is_virtual = name in VIRTUAL_ITEM_NAMES
+        slot_disp = _pretty_slot(slot)
         if confirmed:
             if conf > 0.0:
-                label = f'{slot}  ->  {name or "—"}  [confirmed {conf:.0%}]'
+                label = f'{slot_disp}  ->  {name or "—"}  [confirmed {conf:.0%}]'
             else:
-                label = f'{slot}  ->  {name or "—"}  [confirmed]'
+                label = f'{slot_disp}  ->  {name or "—"}  [confirmed]'
         elif is_virtual:
             display = 'empty slot' if name == '__empty__' else 'inactive slot'
-            label = f'{slot}  ->  [{display}]'
+            label = f'{slot_disp}  ->  [{display}]'
         elif cross_check_failed:
-            label = f'⚠️ {slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
+            label = f'⚠️ {slot_disp}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
         else:
-            label = f'{slot}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
+            label = f'{slot_disp}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
         item = QListWidgetItem(label)
         if confirmed:
             if conf > 0.0:  # real confidence saved
-                tooltip = (f'Slot: {slot}\nItem: {name or "—"}\n'
+                tooltip = (f'Slot: {slot_disp}\nItem: {name or "—"}\n'
                            f'Status: confirmed by user\n'
                            f'ML recognition: {conf:.1%}')
             else:           # conf=0.0 — old annotation without saved confidence
-                tooltip = (f'Slot: {slot}\nItem: {name or "—"}\n'
+                tooltip = (f'Slot: {slot_disp}\nItem: {name or "—"}\n'
                            f'Status: confirmed by user\n'
                            f'ML recognition: unknown (previous session)')
         elif name:
-            tooltip = f'Slot: {slot}\nItem: {name}\nConfidence: {conf:.1%}'
+            tooltip = f'Slot: {slot_disp}\nItem: {name}\nConfidence: {conf:.1%}'
             if cross_check_failed:
                 tooltip += '\n\n⚠️ WARNING: Item type does not match slot type!'
         else:
-            tooltip = f'Slot: {slot}\nNo item recognised'
+            tooltip = f'Slot: {slot_disp}\nNo item recognised'
         item.setToolTip(tooltip)
         if confirmed and is_virtual:
             item.setForeground(QColor('#888888'))   # grey — virtual, no build value
@@ -1791,7 +1794,7 @@ class WarpCoreWindow(QMainWindow):
             self._ann_widget.set_selected_row(row)
         else:
             slot = '?'
-        self._manual_mode_lbl.setText(f'Draw a rectangle to redefine region for:\n{slot}')
+        self._manual_mode_lbl.setText(f'Draw a rectangle to redefine region for:\n{_pretty_slot(slot)}')
         self._manual_mode_lbl.setVisible(True)
         self._ann_widget.set_draw_mode(True)
 
@@ -2154,7 +2157,7 @@ class WarpCoreWindow(QMainWindow):
             if litem:
                 colour = ('#ffcc00' if _cross_check else '#7effc8' if conf >= CONF_HIGH else '#e8c060' if conf >= CONF_MEDIUM else '#ff7e7e')
                 prefix = '⚠️ ' if _cross_check else ''
-                litem.setText(f'{prefix}{ri["slot"]}  ->  {name or "— unmatched —"}  [{conf:.0%}]')
+                litem.setText(f'{prefix}{_pretty_slot(ri["slot"])}  ->  {name or "— unmatched —"}  [{conf:.0%}]')
                 litem.setForeground(QColor(colour))
             # Auto-accept if conf >= threshold and checkbox enabled
             if (name and conf > 0
@@ -2500,14 +2503,30 @@ class WarpCoreWindow(QMainWindow):
                     self._set_review_buttons_enabled(True)
                     break
 
+        # Map dynamic BOFF seat keys (`Boff Seat L[E]_392`) to a canonical
+        # combo entry. The slot combo is built from SLOT_GROUPS — only static
+        # names like 'Boff Engineering' are present, never seat keys, so
+        # setCurrentText would silently fail to match and leave the combo stale.
+        from warp.recognition.boff_keys import (
+            parse_seat_profession, parse_seat_spec, is_seat_keyed,
+        )
+        combo_slot = slot
+        if is_seat_keyed(slot):
+            prof = parse_seat_profession(slot)
+            spec = parse_seat_spec(slot)
+            # Prefer base profession; fall back to spec for Universal+spec seats.
+            combo_slot = (f'Boff {prof}' if prof
+                          else f'Boff {spec}' if spec
+                          else slot)
+
         # Ensure slot is visible in combo (confirmed NON_ICON_SLOTS may be hidden)
         if self._current_idx >= 0:
             _stype = self._screen_types.get(
                 self._screenshots[self._current_idx].name, 'UNKNOWN')
-            self._refresh_slot_combo(_stype, keep_slot=slot)
+            self._refresh_slot_combo(_stype, keep_slot=combo_slot)
         # Set slot without triggering _on_slot_changed's clear() on name_edit
         self._slot_combo.blockSignals(True)
-        self._slot_combo.setCurrentText(slot)
+        self._slot_combo.setCurrentText(combo_slot)
         self._slot_combo.blockSignals(False)
         if slot not in NON_ICON_SLOTS:
             self._populate_name_completer(slot)

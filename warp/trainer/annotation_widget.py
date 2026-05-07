@@ -491,9 +491,10 @@ class AnnotationWidget(QWidget):
             from PySide6.QtWidgets import QToolTip
             QToolTip.hideText()
             return
+        from warp.recognition.boff_keys import pretty_slot
         ri        = self._review_items[row]
         name      = ri.get('name') or '— unmatched —'
-        slot      = ri.get('slot', '?')
+        slot      = pretty_slot(ri.get('slot', '?'))
         conf      = ri.get('conf', 0.0)
         state     = ri.get('state', 'pending')
         orig_name = ri.get('orig_name', '')

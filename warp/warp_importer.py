@@ -28,6 +28,20 @@ except Exception:
 
 SCREENSHOT_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 TEMPLATE_CONF_THRESHOLD = 0.72
+
+
+def _bbox_iou(a, b) -> float:
+    """IoU for two (x, y, w, h) bboxes."""
+    ax, ay, aw, ah = a[0], a[1], a[2], a[3]
+    bx, by, bw, bh = b[0], b[1], b[2], b[3]
+    ix1 = max(ax, bx); iy1 = max(ay, by)
+    ix2 = min(ax + aw, bx + bw); iy2 = min(ay + ah, by + bh)
+    iw = max(0, ix2 - ix1); ih = max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0: return 0.0
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
 # Minimum confidence to include a recognition result in output
 # Below this threshold the matcher is essentially guessing
 MIN_ACCEPT_CONF = 0.35
@@ -839,8 +853,32 @@ class WarpImporter:
         if confirmed_layout:
             _slog.info(f'WarpImporter: merging confirmed layout ({build_type}) — '
                        f'{sum(len(v) for v in confirmed_layout.values())} bboxes from annotations')
-            # Override detected layout with confirmed annotations for the slots that have them
-            layout.update(confirmed_layout)
+            # IoU-based merge: confirmed bboxes win when they overlap a detected one
+            # (user drew the exact pixel-perfect rect), but unmatched detected bboxes
+            # are KEPT so positions where the user deleted a confirmation get
+            # re-proposed by the detector instead of vanishing from the review list.
+            for slot, conf_boxes in confirmed_layout.items():
+                det_boxes = list(layout.get(slot, []))
+                used = [False] * len(conf_boxes)
+                merged: list = []
+                for d in det_boxes:
+                    best_i, best_iou = -1, 0.0
+                    for i, c in enumerate(conf_boxes):
+                        if used[i]: continue
+                        iou = _bbox_iou(d, c)
+                        if iou > best_iou:
+                            best_iou, best_i = iou, i
+                    if best_i >= 0 and best_iou >= 0.3:
+                        merged.append(conf_boxes[best_i])
+                        used[best_i] = True
+                    else:
+                        merged.append(d)
+                # Append confirmed bboxes that didn't match any detected bbox
+                # (user drew outside the detector grid).
+                for i, c in enumerate(conf_boxes):
+                    if not used[i]:
+                        merged.append(c)
+                layout[slot] = merged
 
         # If ShipDB gave generic fallback (ship_name empty), refine profile
         # using actual icon counts from layout + keyword profile matching.
@@ -870,12 +908,16 @@ class WarpImporter:
         matcher = self._get_matcher()
 
         # Step 4 — match icons per slot (in canonical order)
-        # When confirmed layout is available, process ALL slots present in it —
-        # a single screenshot may contain equipment + traits + boff abilities,
-        # which span multiple slot orders beyond the selected build_type.
+        # When confirmed layout is available, process every slot that has
+        # bboxes — confirmed by the user OR freshly detected. Filtering by
+        # confirmed_layout alone would skip slots the detector found but the
+        # user hasn't annotated yet (e.g. user confirms Fore Weapons but not
+        # Aft Weapons; without `layout.keys()` in the union, autodetect would
+        # never re-propose Aft Weapons positions).
         if confirmed_layout:
+            relevant_slots = set(confirmed_layout.keys()) | set(layout.keys())
             slot_defs_to_process = [sd for sd in _ALL_SLOT_DEFS.values()
-                                    if sd['name'] in confirmed_layout]
+                                    if sd['name'] in relevant_slots]
         else:
             slot_defs_to_process = list(SLOT_ORDER.get(build_type, []))
 
@@ -923,9 +965,14 @@ class WarpImporter:
 
         for slot_def in slot_defs_to_process:
             slot_name = slot_def['name']
-            # When confirmed_layout is available its bbox count IS the ground truth —
-            # do not let the profile (ShipDB estimate) silently cap or skip slots.
-            if confirmed_layout and slot_name in confirmed_layout:
+            # The merged layout is the authoritative truth (confirmed + freshly
+            # detected after IoU dedup). For BOFF seat keys especially, the
+            # detector emits the full 4-ability grid — capping by confirmed-only
+            # count would drop the re-proposed positions when the user deletes
+            # a previously-confirmed annotation.
+            if slot_name in layout:
+                max_count = len(layout[slot_name])
+            elif confirmed_layout and slot_name in confirmed_layout:
                 max_count = len(confirmed_layout[slot_name])
             else:
                 max_count = profile.get(slot_name, 0)
