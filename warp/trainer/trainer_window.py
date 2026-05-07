@@ -67,15 +67,15 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
     ],
     'BOFFS': [
-        'Boff Tactical', 'Boff Engineering', 'Boff Science',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Universal',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
     'SPACE_BOFFS': [
-        'Boff Tactical', 'Boff Engineering', 'Boff Science',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Universal',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
     'GROUND_BOFFS': [
-        'Boff Tactical', 'Boff Engineering', 'Boff Science',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Universal',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
     'SPECIALIZATIONS': [],
@@ -86,7 +86,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Engineering Consoles', 'Science Consoles', 'Tactical Consoles', 'Hangars',
         'Ship Name', 'Ship Type', 'Ship Tier',
         'Personal Space Traits', 'Starship Traits', 'Space Reputation', 'Active Space Rep',
-        'Boff Tactical', 'Boff Engineering', 'Boff Science',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Universal',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
         'Primary Specialization', 'Secondary Specialization',
     ],
@@ -94,7 +94,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
     'GROUND_MIXED': [
         'Body Armor', 'EV Suit', 'Personal Shield', 'Weapons', 'Kit', 'Kit Modules', 'Ground Devices',
         'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
-        'Boff Tactical', 'Boff Engineering', 'Boff Science',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Universal',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
         'Primary Specialization', 'Secondary Specialization',
     ],
@@ -2508,16 +2508,19 @@ class WarpCoreWindow(QMainWindow):
         # names like 'Boff Engineering' are present, never seat keys, so
         # setCurrentText would silently fail to match and leave the combo stale.
         from warp.recognition.boff_keys import (
-            parse_seat_profession, parse_seat_spec, is_seat_keyed,
+            parse_seat_profession, is_seat_keyed,
         )
         combo_slot = slot
         if is_seat_keyed(slot):
             prof = parse_seat_profession(slot)
-            spec = parse_seat_spec(slot)
-            # Prefer base profession; fall back to spec for Universal+spec seats.
-            combo_slot = (f'Boff {prof}' if prof
-                          else f'Boff {spec}' if spec
-                          else slot)
+            if prof:
+                # Base profession known from marker (T/E/S) — use as-is.
+                combo_slot = f'Boff {prof}'
+            else:
+                # Universal seat: profession is whatever the player seated
+                # there. Vote from the abilities recognized in this seat.
+                voted = self._vote_universal_profession(slot)
+                combo_slot = f'Boff {voted}' if voted else 'Boff Universal'
 
         # Ensure slot is visible in combo (confirmed NON_ICON_SLOTS may be hidden)
         if self._current_idx >= 0:
@@ -2820,6 +2823,42 @@ class WarpCoreWindow(QMainWindow):
         'Ground Devices':        'ground_devices',
     }
 
+    def _vote_universal_profession(self, seat_key: str) -> str | None:
+        """Universal BOFF seats (`Boff Seat L[U]_*` / `Boff Seat L[U+spec]_*`)
+        carry no inherent profession — the player decides which boff sits
+        there. Vote on profession from abilities already recognized in this
+        seat by looking each name up in `cache.boff_abilities[env][prof]`.
+        Returns the most-frequent profession or None if no votes yet.
+        """
+        if not self._sets or not seat_key.startswith('Boff Seat'):
+            return None
+        # Pick environment from current screen type (space/ground)
+        domain = 'space'
+        if self._current_idx >= 0:
+            stype = self._screen_types.get(
+                self._screenshots[self._current_idx].name, 'UNKNOWN')
+            if 'GROUND' in stype:
+                domain = 'ground'
+        try:
+            env_abilities = self._sets.cache.boff_abilities.get(domain, {})
+        except Exception:
+            return None
+        votes: dict[str, int] = {}
+        for ri in self._recognition_items:
+            if ri.get('slot') != seat_key:
+                continue
+            name = ri.get('name') or ri.get('orig_name') or ''
+            if not name or name in VIRTUAL_ITEM_NAMES:
+                continue
+            for prof, rank_lists in env_abilities.items():
+                hit = any(isinstance(rd, dict) and name in rd for rd in rank_lists)
+                if hit:
+                    votes[prof] = votes.get(prof, 0) + 1
+                    break
+        if not votes:
+            return None
+        return max(votes.items(), key=lambda kv: kv[1])[0]
+
     def _build_search_candidates(self, slot: str = '') -> list[str]:
         candidates: list[str] = []
         if not self._sets:
@@ -2832,37 +2871,42 @@ class WarpCoreWindow(QMainWindow):
         target_domain = 'Ground' if 'GROUND' in stype else 'Space'
 
         if slot.startswith('Boff'):
-            from warp.recognition.boff_keys import parse_seat_profession, parse_seat_spec
+            from warp.recognition.boff_keys import parse_seat_profession, is_seat_keyed
             parsed_prof = parse_seat_profession(slot)
             if parsed_prof:
-                target_career = parsed_prof
+                target_career: str | None = parsed_prof
+            elif slot == 'Boff Universal' or is_seat_keyed(slot):
+                # Universal seat (with or without spec) — abilities of any
+                # profession are valid; the spec marker only constrains
+                # which abilities CAN sit there for the build, but for the
+                # candidate pool we accept all professions.
+                target_career = None
             else:
-                # Fallback for spec-only seats or unkeyed Universal
-                parsed_spec = parse_seat_spec(slot)
-                if parsed_spec:
-                    target_career = parsed_spec
-                else:
-                    target_career = slot.replace('Boff ', '').strip()
-            
-            # Map UI display names to STO cache canonical names
-            mapped_career = target_career
+                target_career = slot.replace('Boff ', '').strip()
 
-            # Primary source: cache.boff_abilities[environment][career] — keyed by rank dicts
-            # Structure: {environment: {career: [{ability: desc}, ...rank levels]}}
+            # Determine domain(s) to search
             try:
-                domains = []
                 if 'GROUND' in stype:
                     domains = ['ground']
                 elif 'SPACE' in stype:
                     domains = ['space']
                 else:
                     domains = ['space', 'ground']
-                
+
+                # cache.boff_abilities = {env: {career: [rank0_dict, ...]}}
                 for domain_key in domains:
-                    career_ranks = self._sets.cache.boff_abilities.get(domain_key, {}).get(mapped_career, [])
-                    for rank_dict in career_ranks:
-                        if isinstance(rank_dict, dict):
-                            candidates.extend(rank_dict.keys())
+                    env = self._sets.cache.boff_abilities.get(domain_key, {})
+                    if target_career is None:
+                        # Universal — pull every profession's abilities
+                        for rank_lists in env.values():
+                            for rank_dict in rank_lists:
+                                if isinstance(rank_dict, dict):
+                                    candidates.extend(rank_dict.keys())
+                    else:
+                        career_ranks = env.get(target_career, [])
+                        for rank_dict in career_ranks:
+                            if isinstance(rank_dict, dict):
+                                candidates.extend(rank_dict.keys())
             except Exception:
                 pass
 

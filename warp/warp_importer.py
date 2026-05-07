@@ -176,7 +176,9 @@ EXPERIMENTAL_TYPES = frozenset({'Experimental Weapon'})
 SLOT_VALID_TYPES: dict[str, frozenset] = {
     'Fore Weapons':          frozenset({'Ship Fore Weapon', 'Ship Weapon', 'Experimental Weapon'}),
     'Aft Weapons':           frozenset({'Ship Aft Weapon', 'Ship Weapon', 'Experimental Weapon'}),
-    'Deflector':             frozenset({'Ship Deflector Dish', 'Ship Secondary Deflector'}),
+    'Experimental':          frozenset({'Experimental Weapon'}),
+    'Deflector':             frozenset({'Ship Deflector Dish'}),
+    'Sec-Def':               frozenset({'Ship Secondary Deflector'}),
     'Impulse':               frozenset({'Impulse Engine'}),
     'Engines':               frozenset({'Impulse Engine'}),
     'Warp Core':             frozenset({'Warp Engine', 'Singularity Engine'}),
@@ -189,6 +191,26 @@ SLOT_VALID_TYPES: dict[str, frozenset] = {
     'Universal Consoles':    frozenset({'Universal Console', 'Ship Tactical Console',
                                         'Ship Engineering Console', 'Ship Science Console'}),
     'Hangar':                frozenset({'Hangar Bay'}),
+    'Hangars':               frozenset({'Hangar Bay'}),
+    # Ground equipment
+    'Body Armor':            frozenset({'Body Armor'}),
+    'EV Suit':               frozenset({'EV Suit'}),
+    'Personal Shield':       frozenset({'Personal Shield'}),
+    'Weapons':               frozenset({'Ground Weapon'}),
+    'Kit':                   frozenset({'Kit'}),
+    'Kit Modules':           frozenset({'Kit Module'}),
+    'Ground Devices':        frozenset({'Ground Device'}),
+}
+
+# Slot → trait category in cache.traits[env][cat] (or cache.starship_traits)
+TRAIT_SLOT_CATEGORY: dict[str, tuple[str, str]] = {
+    'Personal Space Traits':  ('space',  'personal'),
+    'Space Reputation':       ('space',  'rep'),
+    'Active Space Rep':       ('space',  'active_rep'),
+    'Personal Ground Traits': ('ground', 'personal'),
+    'Ground Reputation':      ('ground', 'rep'),
+    'Active Ground Rep':      ('ground', 'active_rep'),
+    # Starship Trait uses its own flat dict — handled separately
 }
 
 # OCR label → canonical slot name
@@ -1402,8 +1424,64 @@ class WarpImporter:
         return result
 
     def _item_valid_for_slot(self, item_name: str, slot_name: str) -> bool:
-        """Check that item type from cache matches what the slot expects.
-        Returns True if no type constraint exists for this slot (permissive)."""
+        """Check that the item belongs in the slot. Routes to the right
+        sub-cache by slot family: equipment (cache.equipment) → trait
+        (cache.traits / cache.starship_traits) → BOFF (cache.boff_abilities).
+        Returns True permissively when no constraint applies or when the
+        item is not in any cache (likely a new community item)."""
+        # Virtual placeholders pass through — they don't represent items.
+        if item_name in VIRTUAL_ITEM_NAMES:
+            return True
+
+        # ── Trait slots ──
+        if slot_name == 'Starship Traits':
+            try:
+                if item_name in (self._app.cache.starship_traits or {}):
+                    return True
+            except Exception:
+                return True
+            _slog.info(f'  _item_valid_for_slot: {item_name!r} not a Starship Trait')
+            return False
+        cat_tuple = TRAIT_SLOT_CATEGORY.get(slot_name)
+        if cat_tuple:
+            env, cat = cat_tuple
+            try:
+                pool = (self._app.cache.traits or {}).get(env, {}).get(cat, {})
+                if item_name in pool:
+                    return True
+            except Exception:
+                return True
+            _slog.info(f'  _item_valid_for_slot: {item_name!r} not in traits[{env}][{cat}]')
+            return False
+
+        # ── BOFF seat slots ──
+        # Marker-keyed seats encode profession in the key. Universal seats
+        # accept any profession (player decides); typed seats (T/E/S) and
+        # legacy 'Boff <Profession>' keys must match the ability's profession.
+        if slot_name.startswith('Boff'):
+            from warp.recognition.boff_keys import parse_seat_profession, is_seat_keyed
+            seat_prof = parse_seat_profession(slot_name)
+            if not seat_prof and (is_seat_keyed(slot_name) or slot_name == 'Boff Universal'):
+                return True  # Universal — any profession allowed
+            if not seat_prof:
+                # Legacy 'Boff Tactical' / 'Boff Engineering' / etc.
+                seat_prof = slot_name.replace('Boff ', '').strip() or None
+            if not seat_prof:
+                return True
+            try:
+                for env in ('space', 'ground'):
+                    rank_lists = (self._app.cache.boff_abilities
+                                  .get(env, {}).get(seat_prof, []))
+                    for rank_dict in rank_lists:
+                        if isinstance(rank_dict, dict) and item_name in rank_dict:
+                            return True
+            except Exception:
+                return True
+            _slog.info(f'  _item_valid_for_slot: {item_name!r} not a {seat_prof} ability '
+                       f'(slot {slot_name!r})')
+            return False
+
+        # ── Equipment slots ──
         valid_types = SLOT_VALID_TYPES.get(slot_name)
         if not valid_types:
             return True  # no constraint defined — allow
@@ -1415,8 +1493,8 @@ class WarpImporter:
                 item_type = entry.get('type', '') if isinstance(entry, dict) else ''
                 if item_type in valid_types:
                     return True
-                # Item found in cache but wrong type
-                _slog.info(f'  _item_valid_for_slot: {item_name!r} type={item_type!r} not valid for {slot_name!r}')
+                _slog.info(f'  _item_valid_for_slot: {item_name!r} type={item_type!r} '
+                           f'not valid for {slot_name!r}')
                 return False
         except Exception:
             pass
