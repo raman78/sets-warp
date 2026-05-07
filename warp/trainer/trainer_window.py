@@ -2602,6 +2602,20 @@ class WarpCoreWindow(QMainWindow):
             name = self._ship_type_combo.currentText().strip()
         else:
             name = self._name_edit.text().strip()
+        # Strict name validation for icon slots: only allow exact matches
+        # against the slot's candidate list (or empty = Unknown). NON_ICON_SLOTS
+        # have their own widgets/use cases (Ship Name = free text, Ship Type/Tier
+        # via combos) so they bypass.
+        if slot not in NON_ICON_SLOTS and name:
+            allowed = set(self._build_search_candidates(slot)) | set(VIRTUAL_ITEM_NAMES)
+            if name not in allowed:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, 'Invalid item name',
+                    f'{name!r} is not in the allowed list for slot {slot!r}.\n'
+                    f'Pick from the dropdown or type an exact match.')
+                self._name_edit.setFocus()
+                self._name_edit.selectAll()
+                return
         row = self._review_list.currentRow()
         if 0 <= row < len(self._recognition_items):
             ri = self._recognition_items[row]
@@ -3114,9 +3128,18 @@ class WarpCoreWindow(QMainWindow):
             return
         matches = [n for n in all_names if query in n.lower()][:60]
         self._completer_model.clear()
-        for name in matches:
-            self._completer_model.appendRow(QStandardItem(name))
         if matches:
+            for name in matches:
+                self._completer_model.appendRow(QStandardItem(name))
+        else:
+            # No match for typed query — fall back to the full allowed list
+            # so the user can still pick from the dropdown instead of staring
+            # at an empty popup. Virtuals first, then all candidates.
+            for vname in sorted(VIRTUAL_ITEM_NAMES):
+                self._completer_model.appendRow(QStandardItem(vname))
+            for name in all_names:
+                self._completer_model.appendRow(QStandardItem(name))
+        if self._completer_model.rowCount():
             self._completer.complete()
 
     def _on_completer_activated(self, text: str):
