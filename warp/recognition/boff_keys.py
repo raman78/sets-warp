@@ -8,14 +8,14 @@ Consumers: `warp_dialog` (Phase 2 cluster→seat matching) and
 
 Key formats supported
 ---------------------
-- `Boff Tactical`             — legacy profession-keyed
+- `Boff Tactical`              — legacy profession-keyed
 - `Boff Engineering`
 - `Boff Science`
-- `Boff Temporal` (etc.)      — legacy spec-prof seat
-- `Boff Seat L[T]_483`        — new marker-keyed (side, prof code, marker_y)
-- `Boff Seat L[T+P]_483`      — new with spec stripe
-- `Boff Seat L[U]_483`        — Universal — caller does content-based fallback
-- `Boff Seat L_483`           — legacy seat-keyed without prof code
+- `Boff Temporal` (etc.)       — legacy spec-prof seat
+- `Boff Seat L[T]_483`         — new marker-keyed (side, prof code, marker_y)
+- `Boff Seat L[T+Plt]_483`     — new with spec stripe (multi-char spec code)
+- `Boff Seat L[U]_483`         — Universal — caller does content-based fallback
+- `Boff Seat L_483`            — legacy seat-keyed without prof code
 
 `parse_seat_profession` returns the base profession (Tactical /
 Engineering / Science) or None when the key is Universal / legacy
@@ -37,12 +37,15 @@ _SEAT_CODE_TO_PROF = {
     # 'U' (Universal) intentionally maps to None — Universal seats have
     # no inherent profession; callers must derive it from ability content.
 }
+# Multi-char human-friendly spec codes — single letters (O/P/Y/C/L)
+# were not first-letter mnemonics and confused human readers of logs
+# and the Recognition Report.
 _SPEC_CODE_TO_PROF = {
-    'O': 'Command',
-    'P': 'Intelligence',
-    'Y': 'Temporal',
-    'C': 'Pilot',
-    'L': 'Miracle Worker',
+    'Cmd': 'Command',
+    'Int': 'Intelligence',
+    'Tem': 'Temporal',
+    'Plt': 'Pilot',
+    'MW':  'Miracle Worker',
 }
 
 # Legacy profession-keyed names emitted by _detect_via_full_scan and
@@ -53,10 +56,10 @@ _LEGACY_PROFESSIONS = frozenset({
 })
 _LEGACY_SPEC_PROFESSIONS = frozenset(_SPEC_CODE_TO_PROF.values())
 
-# Boff Seat L[T+P]_483 → groups (side, code, spec, my)
-# Boff Seat L[T]_483   → groups (side, code, None, my)
+# Boff Seat L[T+Plt]_483 → groups (side, code, spec, my)
+# Boff Seat L[T]_483     → groups (side, code, None, my)
 _SEAT_KEY_RE = re.compile(
-    r'^Boff Seat ([LR])(?:\[([TESU])(?:\+([OPYCL]))?\])?_(\d+)$'
+    r'^Boff Seat ([LR])(?:\[([TESU])(?:\+(Cmd|Int|Tem|Plt|MW))?\])?_(\d+)$'
 )
 
 
@@ -111,10 +114,10 @@ def is_seat_keyed(slot_name: str) -> bool:
 
 def pretty_slot(slot_name: str) -> str:
     """Convert a dynamic BOFF seat key into a user-friendly label:
-    - `Boff Seat L[E]_392`   → `Boff Engineering`
-    - `Boff Seat R[T+P]_510` → `Boff Tactical+Intelligence`
-    - `Boff Seat L[U]_478`   → `Boff Universal`
-    - `Boff Seat L_478`      → `Boff Universal` (legacy seat-keyed without code)
+    - `Boff Seat L[E]_392`     → `Boff Engineering`
+    - `Boff Seat R[T+Plt]_510` → `Boff Tactical+Pilot`
+    - `Boff Seat L[U]_478`     → `Boff Universal`
+    - `Boff Seat L_478`        → `Boff Universal` (legacy seat-keyed without code)
 
     Non-seat-keyed slot names (e.g. `Boff Tactical`, `Fore Weapons`,
     `Ship Name`) are returned unchanged.

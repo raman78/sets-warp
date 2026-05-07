@@ -63,11 +63,15 @@ MAIN_BANDS: list[tuple[str, int, int, int, int, int, int, str]] = [
 # its specialization.
 STRIPE_BANDS: list[tuple[str, int, int, int, int, int, int, str]] = [
     # name, H_lo, H_hi, S_lo, S_hi, V_lo, V_hi, spec_code
-    ('CMD',  12,  19,    80, 200, 130, 200, 'O'),  # Command — orange
-    ('INT', 120, 135,   130, 200, 150, 220, 'P'),  # Intelligence — purple
-    ('TMP',  25,  35,   140, 255, 215, 255, 'Y'),  # Temporal — bright gold
-    ('PIL',  86, 100,    80, 140, 215, 255, 'C'),  # Pilot — light cyan
-    ('MW',   32,  44,   220, 255, 195, 255, 'L'),  # Miracle Worker — lime
+    # Spec codes are human-readable abbreviations so seat keys like
+    # `Boff Seat L[U+Plt]_96` are intuitive in logs and review UIs
+    # (the single-letter codes O/P/Y/C/L did NOT match first letters
+    # and confused everyone).
+    ('CMD',  12,  19,    80, 200, 130, 200, 'Cmd'),  # Command — orange
+    ('INT', 120, 135,   130, 200, 150, 220, 'Int'),  # Intelligence — purple
+    ('TMP',  25,  35,   140, 255, 215, 255, 'Tem'),  # Temporal — bright gold
+    ('PIL',  86, 100,    80, 140, 215, 255, 'Plt'),  # Pilot — light cyan
+    ('MW',   32,  44,   220, 255, 195, 255, 'MW'),   # Miracle Worker — lime
 ]
 
 
@@ -97,11 +101,11 @@ SEAT_CODE_LABEL = {
     'U': 'Universal',
 }
 SPEC_CODE_LABEL = {
-    'O': 'Command',
-    'P': 'Intelligence',
-    'Y': 'Temporal',
-    'C': 'Pilot',
-    'L': 'Miracle Worker',
+    'Cmd': 'Command',
+    'Int': 'Intelligence',
+    'Tem': 'Temporal',
+    'Plt': 'Pilot',
+    'MW':  'Miracle Worker',
 }
 
 
@@ -554,7 +558,7 @@ def detect_panel(img: np.ndarray) -> Optional[dict]:
     Output dict:
       'col_a':   list[(x, y, w, h, code, spec_code | None)] — left column
                  markers (top→bottom). `spec_code` is the spec-stripe code
-                 ('O'/'P'/'Y'/'C'/'L') when detected, else None.
+                 ('Cmd'/'Int'/'Tem'/'Plt'/'MW') when detected, else None.
       'col_b':   list[(x, y, w, h, code, spec_code | None)] — right column
       'score':   float — RANSAC score of the chosen 2-column grid
       'seats':   list[(side, mx, my, mw, mh, seat_code, spec_code | None)]
