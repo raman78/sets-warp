@@ -890,6 +890,17 @@ class WarpImporter:
         if confirmed_layout:
             _slog.info(f'WarpImporter: merging confirmed layout ({build_type}) — '
                        f'{sum(len(v) for v in confirmed_layout.values())} bboxes from annotations')
+            # BOFF reconciliation: confirmed annotations are saved under
+            # canonical names (`Boff Tactical`, `Boff Engineering`, …) but
+            # the marker detector emits raw seat keys (`Boff Seat L[T]_NNN`).
+            # Without remapping, the per-slot IoU merge below cannot match
+            # them and the same physical bbox would be processed twice
+            # (once via canonical key, once via seat key) → duplicates after
+            # the post-loop profession remap. Move each confirmed canonical-
+            # Boff bbox onto whichever seat-keyed detector slot overlaps it,
+            # so the IoU merge can collapse them into a single entry.
+            confirmed_layout = self._reconcile_boff_confirmed_to_seats(
+                confirmed_layout, layout)
             # IoU-based merge: confirmed bboxes win when they overlap a detected one
             # (user drew the exact pixel-perfect rect), but unmatched detected bboxes
             # are KEPT so positions where the user deleted a confirmation get
@@ -1163,6 +1174,59 @@ class WarpImporter:
         )
         _slog.info(f'####### WARP: {Path(source).name} done #######')
         return result
+
+    def _reconcile_boff_confirmed_to_seats(
+        self,
+        confirmed_layout: dict[str, list],
+        detected_layout: dict[str, list],
+    ) -> dict[str, list]:
+        """Move confirmed BOFF bboxes from canonical-named slots
+        (`Boff Tactical`, `Boff Engineering`, …) to whichever seat-keyed
+        detector slot (`Boff Seat L[T]_NNN`, …) overlaps them.
+
+        Confirmed annotations are persisted under canonical profession
+        names (post per-ability remap). The marker detector emits raw
+        seat keys. The downstream IoU merge keys per slot, so without
+        this reconciliation the same physical bbox stays under two
+        different keys, gets matched twice, and produces duplicate
+        items after the post-loop profession remap.
+
+        Confirmed bboxes that don't overlap any seat-keyed detector
+        slot stay under their original canonical name (e.g. user drew
+        outside the detected grid).
+        """
+        from warp.recognition.boff_keys import is_seat_keyed
+        BOFF_CANONICAL = {
+            'Boff Tactical', 'Boff Engineering', 'Boff Science',
+            'Boff Universal', 'Boff Command', 'Boff Intelligence',
+            'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
+        }
+        seat_slots = {s: detected_layout[s] for s in detected_layout if is_seat_keyed(s)}
+        if not seat_slots:
+            return confirmed_layout
+
+        out: dict[str, list] = {}
+        moved = 0
+        for slot, bboxes in confirmed_layout.items():
+            if slot not in BOFF_CANONICAL:
+                out.setdefault(slot, []).extend(bboxes)
+                continue
+            for b in bboxes:
+                best_slot, best_iou = None, 0.0
+                for ss, sboxes in seat_slots.items():
+                    for sb in sboxes:
+                        iou = _bbox_iou(b, sb)
+                        if iou > best_iou:
+                            best_iou, best_slot = iou, ss
+                if best_slot and best_iou >= 0.3:
+                    out.setdefault(best_slot, []).append(b)
+                    moved += 1
+                else:
+                    out.setdefault(slot, []).append(b)
+        if moved:
+            _slog.info(f'WarpImporter: reconciled {moved} confirmed BOFF '
+                       f'bbox(es) onto seat-keyed slots')
+        return out
 
     def _lookup_boff_profession(self, ability_name: str) -> str | None:
         """Find the profession of a BOFF ability by scanning the rank-based
