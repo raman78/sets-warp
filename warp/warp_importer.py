@@ -29,6 +29,11 @@ except Exception:
 SCREENSHOT_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 TEMPLATE_CONF_THRESHOLD = 0.72
 
+# Virtual placeholders for empty/inactive slot positions. Mirrors
+# `warp.trainer.training_data.VIRTUAL_ITEM_NAMES`; defined locally so
+# warp_importer doesn't pull in the trainer package on the hot path.
+VIRTUAL_ITEM_NAMES = frozenset({'__empty__', '__inactive__'})
+
 
 def _bbox_iou(a, b) -> float:
     """IoU for two (x, y, w, h) bboxes."""
@@ -1517,11 +1522,6 @@ class WarpImporter:
                 result[slot_name] = pool
 
         # Add virtual items so ML and session examples can match empty/inactive slots
-        try:
-            from warp.trainer.training_data import VIRTUAL_ITEM_NAMES
-        except ImportError:
-            VIRTUAL_ITEM_NAMES = {'__empty__', '__inactive__'}
-            
         for names_set in result.values():
             names_set.update(VIRTUAL_ITEM_NAMES)
 
