@@ -836,14 +836,18 @@ class WarpImporter:
         _use_confirmed = _is_trainer_call
         confirmed_layout = self._load_confirmed_layout(source) if _use_confirmed else None
         
-        _use_full_scan = build_type in (
+        _needs_matcher = build_type in (
             'SPACE_MIXED', 'GROUND_MIXED',
             'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+            # Traits use the structure-driven trait_grid detector (Strategy 0)
+            # which probes icons through icon_matcher.classify_patch to label
+            # each row-group's section independently.
+            'SPACE_TRAITS', 'GROUND_TRAITS',
         )
         layout = self._get_layout().detect(
             img, build_type, profile,
-            icon_matcher=self._get_matcher() if _use_full_scan else None,
-            app_cache=self._app.cache if _use_full_scan else None,
+            icon_matcher=self._get_matcher() if _needs_matcher else None,
+            app_cache=self._app.cache if _needs_matcher else None,
         )
         _slog.info(
             f'WarpImporter: layout → {len(layout)} slot groups, '
