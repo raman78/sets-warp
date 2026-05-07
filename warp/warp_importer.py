@@ -1315,14 +1315,13 @@ class WarpImporter:
 
             for it in items:
                 if it.name in ('__empty__', '__inactive__'):
-                    # No own profession to remap from; fall back to seat
-                    # base prof, then sibling vote, then spec. If still
-                    # nothing (Universal seat with no classifications),
-                    # keep the seat key as the slot — 'Boff Universal' is
-                    # NOT a valid profession label, the seat key encodes
-                    # the actual seat identity for later disambiguation.
+                    # Resolve target profession in priority order: seat's
+                    # marker base prof → sibling-ability vote → seat's spec
+                    # stripe → 'Boff Universal' as label-only sentinel.
+                    # Seat keys NEVER survive into final slot values — the
+                    # user must always see a real profession label.
                     target = seat_prof or voted_prof or seat_spec
-                    new_slot = prof_to_slot.get(target, seat_key) if target else seat_key
+                    new_slot = prof_to_slot.get(target, 'Boff Universal') if target else 'Boff Universal'
                 else:
                     p = own_prof.get(it.name)
                     new_slot = prof_to_slot.get(p, it.slot) if p else it.slot
@@ -1331,13 +1330,30 @@ class WarpImporter:
                     it.seat_key = it.slot   # preserve original detector key
                     it.slot     = new_slot
 
-        # Rebuild per-slot 'ok' counts from final result.items; preserve
-        # 'skip' counts from loop-time keys so type/conf rejections aren't lost.
+        # Rebuild per-slot stats:
+        #  - 'ok' counts come from final result.items (post-remap slots)
+        #  - 'skip' counts from loop-time keys; seat-keyed skips are
+        #    re-attributed to the seat's resolved target so the report
+        #    aggregates by profession, not by raw seat key
+        #  - empty stat entries (ok=0 AND skip=0) are dropped to keep
+        #    the report clean
+        def _seat_to_target_slot(k: str) -> str:
+            if not is_seat_keyed(k):
+                return k
+            sp = parse_seat_profession(k)
+            ss = parse_seat_spec(k)
+            target = sp or ss
+            return prof_to_slot.get(target, 'Boff Universal') if target else 'Boff Universal'
+
         rebuilt: dict[str, dict] = {}
         for it in result.items:
             rebuilt.setdefault(it.slot, {'ok': 0, 'skip': 0})['ok'] += 1
         for k, v in per_slot_stats.items():
-            rebuilt.setdefault(k, {'ok': 0, 'skip': 0})['skip'] += v.get('skip', 0)
+            skip_n = v.get('skip', 0)
+            if skip_n <= 0:
+                continue
+            target = _seat_to_target_slot(k)
+            rebuilt.setdefault(target, {'ok': 0, 'skip': 0})['skip'] += skip_n
         per_slot_stats.clear()
         per_slot_stats.update(rebuilt)
 
@@ -1378,14 +1394,26 @@ class WarpImporter:
         if skip_type:
             _slog.info(f'│ Skipped (wrong type): {skip_type}')
 
-        # Per-slot breakdown
+        # Per-slot breakdown — convert seat-keyed names to pretty profession
+        # labels and drop empty 0/0 entries (stale stat keys after remap).
         if per_slot:
-            _slog.info(f'│ Per-slot:')
-            for slot_name in sorted(per_slot.keys()):
-                s = per_slot[slot_name]
-                ok, skip = s['ok'], s['skip']
-                bar = '█' * ok + '░' * skip
-                _slog.info(f'│   {slot_name:30s}  {ok:2d}/{ok+skip:2d}  {bar}')
+            from warp.recognition.boff_keys import pretty_slot
+            display: dict[str, dict] = {}
+            for raw_slot, s in per_slot.items():
+                ok, skip = s.get('ok', 0), s.get('skip', 0)
+                if ok == 0 and skip == 0:
+                    continue
+                pretty = pretty_slot(raw_slot)
+                tgt = display.setdefault(pretty, {'ok': 0, 'skip': 0})
+                tgt['ok']   += ok
+                tgt['skip'] += skip
+            if display:
+                _slog.info(f'│ Per-slot:')
+                for slot_name in sorted(display.keys()):
+                    s = display[slot_name]
+                    ok, skip = s['ok'], s['skip']
+                    bar = '█' * ok + '░' * skip
+                    _slog.info(f'│   {slot_name:30s}  {ok:2d}/{ok+skip:2d}  {bar}')
 
         # ── Persist + trend ───────────────────────────────────────────────
         stats_path = Path(__file__).resolve().parent.parent / '.config' / 'recognition_stats.json'

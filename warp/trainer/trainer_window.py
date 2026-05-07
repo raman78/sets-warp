@@ -1319,12 +1319,6 @@ class WarpCoreWindow(QMainWindow):
         for s in slots:
             if s not in confirmed_non_icon:
                 self._slot_combo.addItem(s)
-        # Inject keep_slot if it's a non-static slot key (e.g. dynamic BOFF
-        # seat key like `Boff Seat L[U]_478`) that isn't in SLOT_GROUPS — this
-        # lets canvas-click sync display the actual seat identity even though
-        # the user can't pick it from a fresh dropdown.
-        if keep_slot and self._slot_combo.findText(keep_slot) < 0:
-            self._slot_combo.addItem(keep_slot)
         idx = self._slot_combo.findText(current_slot)
         if idx >= 0:
             self._slot_combo.setCurrentIndex(idx)
@@ -1621,13 +1615,16 @@ class WarpCoreWindow(QMainWindow):
                 #     self._btn_edit_bbox.setChecked(False)
                 #     self._ann_widget.set_draw_mode(False)
                 slot = ri['slot']
+                # Map seat keys / 'Boff Universal' to a real profession label
+                # before touching the combo (dropdown only has static slots).
+                combo_slot = self._slot_for_combo(slot)
                 # Ensure this slot is visible in combo (confirmed NON_ICON_SLOTS
                 # are normally hidden, but must show when the item is selected)
                 if self._current_idx >= 0:
                     _stype = self._screen_types.get(
                         self._screenshots[self._current_idx].name, 'UNKNOWN')
-                    self._refresh_slot_combo(_stype, keep_slot=slot)
-                idx = self._slot_combo.findText(slot)
+                    self._refresh_slot_combo(_stype, keep_slot=combo_slot)
+                idx = self._slot_combo.findText(combo_slot)
                 if idx >= 0:
                     self._slot_combo.setCurrentIndex(idx)
                 # Populate completer for this slot without triggering clear on name_edit
@@ -1637,7 +1634,7 @@ class WarpCoreWindow(QMainWindow):
                 # Always configure name field explicitly — setCurrentIndex may not fire
                 # currentIndexChanged if the numerical index didn't change (e.g. after
                 # _refresh_slot_combo rebuilt the combo), leaving a stale label/state.
-                self._configure_name_field(slot)
+                self._configure_name_field(combo_slot)
                 # Set name field directly (slot already set above, skip _on_slot_changed clear)
                 self._name_edit.blockSignals(True)
                 self._name_edit.setText(ri['name'])
@@ -2492,6 +2489,31 @@ class WarpCoreWindow(QMainWindow):
 
         self._ann_widget.set_review_items(self._recognition_items)
 
+    def _slot_for_combo(self, slot: str) -> str:
+        """Map a stored slot value to a user-pickable combo entry.
+
+        Internal slot values may be dynamic seat keys (`Boff Seat L[U]_478`)
+        or the 'Boff Universal' sentinel — neither is in SLOT_GROUPS, so
+        `setCurrentText` would silently fail and leave the combo stale.
+        Resolve to a real profession label that exists in the dropdown.
+        """
+        from warp.recognition.boff_keys import (
+            parse_seat_profession, parse_seat_spec, is_seat_keyed,
+        )
+        if is_seat_keyed(slot):
+            prof = parse_seat_profession(slot)
+            if prof:
+                return f'Boff {prof}'
+            # Universal seat: vote from sibling abilities, then spec, then
+            # default to Tactical so combo always lands on a pickable label.
+            voted = self._vote_universal_profession(slot)
+            spec  = parse_seat_spec(slot)
+            return f'Boff {voted or spec or "Tactical"}'
+        if slot == 'Boff Universal':
+            # Legacy/sentinel — dropdown has no 'Universal' entry.
+            return 'Boff Tactical'
+        return slot
+
     def _on_item_selected(self, ann: dict):
         """Canvas bbox clicked → sync review list selection + fill slot/name fields."""
         slot = ann.get('slot', '')
@@ -2509,28 +2531,11 @@ class WarpCoreWindow(QMainWindow):
                     self._set_review_buttons_enabled(True)
                     break
 
-        # Map dynamic BOFF seat keys (`Boff Seat L[E]_392`) to a canonical
-        # combo entry. The slot combo is built from SLOT_GROUPS — only static
-        # names like 'Boff Engineering' are present, never seat keys, so
-        # setCurrentText would silently fail to match and leave the combo stale.
-        from warp.recognition.boff_keys import (
-            parse_seat_profession, is_seat_keyed,
-        )
-        combo_slot = slot
-        if is_seat_keyed(slot):
-            prof = parse_seat_profession(slot)
-            if prof:
-                # Base profession known from marker (T/E/S) — use as-is.
-                combo_slot = f'Boff {prof}'
-            else:
-                # Universal seat: profession is whatever the player seated
-                # there. Vote from the abilities recognized in this seat.
-                # If nothing voted, keep the seat key itself — 'Boff Universal'
-                # is NOT a valid profession label and was removed from
-                # SLOT_GROUPS. _refresh_slot_combo will inject the seat key
-                # dynamically so the combo can display it.
-                voted = self._vote_universal_profession(slot)
-                combo_slot = f'Boff {voted}' if voted else slot
+        # Map dynamic BOFF seat keys + 'Boff Universal' sentinel to a
+        # user-pickable combo entry. The combo only contains static
+        # SLOT_GROUPS names; seat keys / 'Boff Universal' must never
+        # leak into it.
+        combo_slot = self._slot_for_combo(slot)
 
         # Ensure slot is visible in combo (confirmed NON_ICON_SLOTS may be hidden)
         if self._current_idx >= 0:
