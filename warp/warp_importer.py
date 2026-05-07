@@ -821,24 +821,26 @@ class WarpImporter:
         # _use_confirmed = 'MIXED' in build_type or _is_trainer_call
         _use_confirmed = _is_trainer_call
         confirmed_layout = self._load_confirmed_layout(source) if _use_confirmed else None
+        
+        _use_full_scan = build_type in (
+            'SPACE_MIXED', 'GROUND_MIXED',
+            'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+        )
+        layout = self._get_layout().detect(
+            img, build_type, profile,
+            icon_matcher=self._get_matcher() if _use_full_scan else None,
+            app_cache=self._app.cache if _use_full_scan else None,
+        )
+        _slog.info(
+            f'WarpImporter: layout → {len(layout)} slot groups, '
+            f'{sum(len(v) for v in layout.values())} bboxes ({build_type})'
+        )
+
         if confirmed_layout:
-            _slog.info(f'WarpImporter: confirmed layout ({build_type}) — '
+            _slog.info(f'WarpImporter: merging confirmed layout ({build_type}) — '
                        f'{sum(len(v) for v in confirmed_layout.values())} bboxes from annotations')
-            layout = confirmed_layout
-        else:
-            _use_full_scan = build_type in (
-                'SPACE_MIXED', 'GROUND_MIXED',
-                'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
-            )
-            layout = self._get_layout().detect(
-                img, build_type, profile,
-                icon_matcher=self._get_matcher() if _use_full_scan else None,
-                app_cache=self._app.cache if _use_full_scan else None,
-            )
-            _slog.info(
-                f'WarpImporter: layout → {len(layout)} slot groups, '
-                f'{sum(len(v) for v in layout.values())} bboxes ({build_type})'
-            )
+            # Override detected layout with confirmed annotations for the slots that have them
+            layout.update(confirmed_layout)
 
         # If ShipDB gave generic fallback (ship_name empty), refine profile
         # using actual icon counts from layout + keyword profile matching.
@@ -877,15 +879,20 @@ class WarpImporter:
         else:
             slot_defs_to_process = list(SLOT_ORDER.get(build_type, []))
 
-        # Add dynamically detected BOFF seats to the processing list
-        if not confirmed_layout:
-            for key in layout.keys():
-                if key.startswith('Boff Seat'):
-                    slot_defs_to_process.append({
-                        'name': key, 'key': '', 'mandatory': False, 'max': 4, 'weapon': False, 'exp': False
-                    })
-                    # Add them to profile so they are not skipped by max_count limit
-                    profile[key] = 4
+        # Add dynamically detected BOFF seats to the processing list.
+        # Run regardless of confirmed_layout — `Boff Seat L[T]_<y>` keys are
+        # dynamic and never appear in `_ALL_SLOT_DEFS`, so the trainer-mode
+        # `slot_defs_to_process` filter would always drop them. In WARP CORE
+        # the user typically confirms equipment first and BOFFs later; without
+        # this branch, autodetect never proposes BOFF abilities.
+        seen_seat_keys = {sd['name'] for sd in slot_defs_to_process}
+        for key in layout.keys():
+            if key.startswith('Boff Seat') and key not in seen_seat_keys:
+                slot_defs_to_process.append({
+                    'name': key, 'key': '', 'mandatory': False, 'max': 4, 'weapon': False, 'exp': False
+                })
+                # Add them to profile so they are not skipped by max_count limit
+                profile[key] = 4
 
         # Build per-slot candidate sets restricted by SLOT_VALID_TYPES.
         # This prevents template matching from picking items of the wrong type
