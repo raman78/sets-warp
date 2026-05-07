@@ -1315,8 +1315,14 @@ class WarpImporter:
 
             for it in items:
                 if it.name in ('__empty__', '__inactive__'):
+                    # No own profession to remap from; fall back to seat
+                    # base prof, then sibling vote, then spec. If still
+                    # nothing (Universal seat with no classifications),
+                    # keep the seat key as the slot — 'Boff Universal' is
+                    # NOT a valid profession label, the seat key encodes
+                    # the actual seat identity for later disambiguation.
                     target = seat_prof or voted_prof or seat_spec
-                    new_slot = prof_to_slot.get(target, 'Boff Universal') if target else 'Boff Universal'
+                    new_slot = prof_to_slot.get(target, seat_key) if target else seat_key
                 else:
                     p = own_prof.get(it.name)
                     new_slot = prof_to_slot.get(p, it.slot) if p else it.slot

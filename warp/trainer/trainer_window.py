@@ -67,15 +67,15 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
     ],
     'BOFFS': [
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Universal',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
     'SPACE_BOFFS': [
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Universal',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
     'GROUND_BOFFS': [
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Universal',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
     ],
     'SPECIALIZATIONS': [],
@@ -86,7 +86,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
         'Engineering Consoles', 'Science Consoles', 'Tactical Consoles', 'Hangars',
         'Ship Name', 'Ship Type', 'Ship Tier',
         'Personal Space Traits', 'Starship Traits', 'Space Reputation', 'Active Space Rep',
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Universal',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
         'Primary Specialization', 'Secondary Specialization',
     ],
@@ -94,7 +94,7 @@ SLOT_GROUPS: dict[str, list[str]] = {
     'GROUND_MIXED': [
         'Body Armor', 'EV Suit', 'Personal Shield', 'Weapons', 'Kit', 'Kit Modules', 'Ground Devices',
         'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
-        'Boff Tactical', 'Boff Engineering', 'Boff Science', 'Boff Universal',
+        'Boff Tactical', 'Boff Engineering', 'Boff Science',
         'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
         'Primary Specialization', 'Secondary Specialization',
     ],
@@ -1319,6 +1319,12 @@ class WarpCoreWindow(QMainWindow):
         for s in slots:
             if s not in confirmed_non_icon:
                 self._slot_combo.addItem(s)
+        # Inject keep_slot if it's a non-static slot key (e.g. dynamic BOFF
+        # seat key like `Boff Seat L[U]_478`) that isn't in SLOT_GROUPS — this
+        # lets canvas-click sync display the actual seat identity even though
+        # the user can't pick it from a fresh dropdown.
+        if keep_slot and self._slot_combo.findText(keep_slot) < 0:
+            self._slot_combo.addItem(keep_slot)
         idx = self._slot_combo.findText(current_slot)
         if idx >= 0:
             self._slot_combo.setCurrentIndex(idx)
@@ -2519,8 +2525,12 @@ class WarpCoreWindow(QMainWindow):
             else:
                 # Universal seat: profession is whatever the player seated
                 # there. Vote from the abilities recognized in this seat.
+                # If nothing voted, keep the seat key itself — 'Boff Universal'
+                # is NOT a valid profession label and was removed from
+                # SLOT_GROUPS. _refresh_slot_combo will inject the seat key
+                # dynamically so the combo can display it.
                 voted = self._vote_universal_profession(slot)
-                combo_slot = f'Boff {voted}' if voted else 'Boff Universal'
+                combo_slot = f'Boff {voted}' if voted else slot
 
         # Ensure slot is visible in combo (confirmed NON_ICON_SLOTS may be hidden)
         if self._current_idx >= 0:
