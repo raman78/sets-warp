@@ -332,13 +332,44 @@ class LayoutDetector:
                 if tg and sum(len(v) for v in tg.values()) >= 5:
                     trait_grid_res = tg
 
+            # BOFF panel guard: trait_grid locks consistent-spacing icon rows,
+            # which BOFF abilities also produce — same icon size, same dx.
+            # If the marker panel anchored a BOFF region, any trait_grid bbox
+            # whose center falls inside it is a false positive and must drop.
+            boff_panel_box: tuple[int, int, int, int] | None = None
+            if marker_boffs:
+                _all = [b for bxs in marker_boffs.values() for b in bxs]
+                if _all:
+                    boff_panel_box = (
+                        min(b[0] for b in _all),
+                        min(b[1] for b in _all),
+                        max(b[0] + b[2] for b in _all),
+                        max(b[1] + b[3] for b in _all),
+                    )
+
+            def _in_boff_panel(bbox):
+                if not boff_panel_box:
+                    return False
+                cx = bbox[0] + bbox[2] // 2
+                cy = bbox[1] + bbox[3] // 2
+                x0, y0, x1, y1 = boff_panel_box
+                return x0 <= cx <= x1 and y0 <= cy <= y1
+
             def _merge_traits(result):
                 if not trait_grid_res:
                     return result
                 added = 0
+                dropped = 0
                 for slot, bxs in trait_grid_res.items():
-                    added += len(bxs) - len(result.get(slot, []))
-                    result[slot] = bxs  # trait_grid is more accurate per group
+                    clean = [b for b in bxs if not _in_boff_panel(b)]
+                    dropped += len(bxs) - len(clean)
+                    if not clean:
+                        continue
+                    added += len(clean) - len(result.get(slot, []))
+                    result[slot] = clean
+                if dropped:
+                    _slog.info(f'LayoutDetector: trait_grid dropped {dropped} '
+                               f'bboxes overlapping BOFF marker panel')
                 _slog.info(f'LayoutDetector: trait_grid merged → '
                            f'{list(trait_grid_res.keys())} (+{added} bboxes)')
                 return result
