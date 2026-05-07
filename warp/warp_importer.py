@@ -631,6 +631,12 @@ class RecognisedItem:
     thumbnail:   Any   = None
     source_file: str   = ''
     bbox:        tuple = field(default_factory=tuple)
+    # Original detector slot key — preserved when `slot` gets remapped to a
+    # canonical profession-named slot (e.g. seat key `Boff Seat L[T+P]_510`
+    # → ability slot `Boff Tactical`). Empty string when no remap occurred.
+    # Consumers that need seat-level info (warp_dialog cluster→seat matching)
+    # should prefer `seat_key` when non-empty.
+    seat_key:    str   = ''
 
 
 @dataclass
@@ -1108,21 +1114,6 @@ class WarpImporter:
                     _slog.info(f'  [{slot_name}][{idx}] SKIP — not experimental weapon: {name!r}')
                     continue
                 final_slot_name = slot_name
-                if slot_name.startswith('Boff Seat') and name and name not in ('__empty__', '__inactive__'):
-                    try:
-                        boff_cache = self._app.cache.boff_abilities.get('all', {})
-                        item_info = boff_cache.get(name)
-                        if item_info:
-                            prof = item_info.get('profession')
-                            if prof:
-                                prof_to_slot = {
-                                    'Tactical': 'Boff Tactical', 'Engineering': 'Boff Engineering', 'Science': 'Boff Science',
-                                    'Intelligence': 'Boff Intelligence', 'Command': 'Boff Command', 'Pilot': 'Boff Pilot',
-                                    'Miracle Worker': 'Boff Miracle Worker', 'Temporal Operative': 'Boff Temporal', 'Temporal': 'Boff Temporal'
-                                }
-                                final_slot_name = prof_to_slot.get(prof, final_slot_name)
-                    except Exception:
-                        pass
 
                 # Track recognition stats
                 _stat_per_slot.setdefault(final_slot_name, {'ok': 0, 'skip': 0})['ok'] += 1
@@ -1147,6 +1138,12 @@ class WarpImporter:
                     if sync is not None:
                         sync.contribute(crop, name, confirmed=False)
 
+        # Per-ability profession remap for BOFF seats (post-pass).
+        # Non-virtuals → slot of their own ability's profession.
+        # Virtuals (__empty__/__inactive__) → seat's profession (typed seats)
+        # or voted dominant from sibling abilities (Universal seats).
+        self._remap_boff_seat_slots(result, _stat_per_slot)
+
         self._log_recognition_stats(
             build_type  = build_type,
             auto_n      = _stat_auto_n,
@@ -1161,6 +1158,113 @@ class WarpImporter:
         )
         _slog.info(f'####### WARP: {Path(source).name} done #######')
         return result
+
+    def _lookup_boff_profession(self, ability_name: str) -> str | None:
+        """Find the profession of a BOFF ability by scanning the rank-based
+        cache. Returns the SETS category name (e.g. 'Tactical', 'Command')
+        or None if unknown.
+
+        Cache shape: `boff_abilities[env][category][rank_idx][ability_name]
+        = description`. There is no flat name→profession lookup, so we
+        scan all (env, category, rank) buckets until a hit.
+        """
+        if not ability_name:
+            return None
+        try:
+            cache = self._app.cache.boff_abilities
+        except Exception:
+            return None
+        for env in ('space', 'ground'):
+            env_dict = cache.get(env) or {}
+            for category, ranks in env_dict.items():
+                if not isinstance(ranks, (list, tuple)):
+                    continue
+                for rank_dict in ranks:
+                    if isinstance(rank_dict, dict) and ability_name in rank_dict:
+                        return category
+        return None
+
+    def _remap_boff_seat_slots(self, result, per_slot_stats: dict) -> None:
+        """Remap items currently keyed by raw BOFF seat keys (e.g.
+        `Boff Seat L[U+O]_616`) to canonical profession-named slots.
+
+        - Non-virtual abilities → the slot of their own ability's profession.
+        - Virtual items (`__empty__` / `__inactive__`):
+          * typed seats (T/E/S) → seat's base profession
+          * Universal seats → voted dominant profession from sibling
+            non-virtuals (weight 1 + conf); fall back to spec stripe if any,
+            otherwise `Boff Universal`.
+
+        Also rebuilds `per_slot_stats` 'ok' counts so the recognition
+        report shows the final, post-remap slot distribution. 'skip'
+        counts are preserved as-is from the loop-time keys.
+        """
+        from warp.recognition.boff_keys import (
+            parse_seat_profession, parse_seat_spec, is_seat_keyed,
+        )
+        prof_to_slot = {
+            'Tactical':           'Boff Tactical',
+            'Engineering':        'Boff Engineering',
+            'Science':            'Boff Science',
+            'Intelligence':       'Boff Intelligence',
+            'Command':            'Boff Command',
+            'Pilot':              'Boff Pilot',
+            'Miracle Worker':     'Boff Miracle Worker',
+            'Temporal Operative': 'Boff Temporal',
+            'Temporal':           'Boff Temporal',
+        }
+
+        # Group seat-keyed items
+        by_seat: dict[str, list] = {}
+        for it in result.items:
+            if is_seat_keyed(it.slot):
+                by_seat.setdefault(it.slot, []).append(it)
+        if not by_seat:
+            return
+
+        for seat_key, items in by_seat.items():
+            seat_prof = parse_seat_profession(seat_key)  # None for U
+            seat_spec = parse_seat_spec(seat_key)
+
+            # Cache per-ability profession lookups for this seat
+            own_prof: dict[str, str | None] = {}
+            for it in items:
+                if it.name in ('__empty__', '__inactive__'):
+                    continue
+                if it.name not in own_prof:
+                    own_prof[it.name] = self._lookup_boff_profession(it.name)
+
+            # Vote dominant profession from non-virtuals (count + conf)
+            votes: dict[str, float] = {}
+            for it in items:
+                if it.name in ('__empty__', '__inactive__'):
+                    continue
+                prof = own_prof.get(it.name)
+                if prof:
+                    votes[prof] = votes.get(prof, 0.0) + 1.0 + float(it.confidence or 0.0)
+            voted_prof = max(votes.items(), key=lambda kv: kv[1])[0] if votes else None
+
+            for it in items:
+                if it.name in ('__empty__', '__inactive__'):
+                    target = seat_prof or voted_prof or seat_spec
+                    new_slot = prof_to_slot.get(target, 'Boff Universal') if target else 'Boff Universal'
+                else:
+                    p = own_prof.get(it.name)
+                    new_slot = prof_to_slot.get(p, it.slot) if p else it.slot
+                if new_slot != it.slot:
+                    _slog.debug(f'  BOFF remap: [{it.slot}] {it.name!r} → [{new_slot}]')
+                    it.seat_key = it.slot   # preserve original detector key
+                    it.slot     = new_slot
+
+        # Rebuild per-slot 'ok' counts from final result.items; preserve
+        # 'skip' counts from loop-time keys so type/conf rejections aren't lost.
+        rebuilt: dict[str, dict] = {}
+        for it in result.items:
+            rebuilt.setdefault(it.slot, {'ok': 0, 'skip': 0})['ok'] += 1
+        for k, v in per_slot_stats.items():
+            rebuilt.setdefault(k, {'ok': 0, 'skip': 0})['skip'] += v.get('skip', 0)
+        per_slot_stats.clear()
+        per_slot_stats.update(rebuilt)
 
     def _log_recognition_stats(
         self,

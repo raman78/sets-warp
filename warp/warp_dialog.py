@@ -611,7 +611,11 @@ class WarpDialog(QDialog):
         ClusterInfo = list[tuple]   # (cluster_items, base_prof, prof_set, spec_prof)
         cluster_info: list = []
         for c in seat_clusters:
-            cluster_slot = c[0].slot
+            # Prefer original detector seat key (preserved on .seat_key) so
+            # the spec stripe info survives the per-ability profession remap
+            # done in warp_importer._remap_boff_seat_slots. Fall back to
+            # current .slot for back-compat with any non-remapped items.
+            cluster_slot = getattr(c[0], 'seat_key', '') or c[0].slot
             base_prof = parse_seat_profession(cluster_slot)
             spec_prof = parse_seat_spec(cluster_slot)
             
