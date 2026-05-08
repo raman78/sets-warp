@@ -26,6 +26,7 @@ except Exception:
     _slog = log
 
 from warp.recognition import boff_marker as _boff_marker
+from warp.recognition import trait_grid as _trait_grid
 
 OCR_CONF_THRESHOLD = 0.40
 LABEL_FUZZY_CUTOFF = 0.68
@@ -284,6 +285,19 @@ class LayoutDetector:
     def detect(self, img: np.ndarray, build_type: str, ship_profile: dict | None = None,
                icon_matcher=None, app_cache=None) -> dict[str, list[tuple[int, int, int, int]]]:
         if build_type in ('SPACE_TRAITS', 'GROUND_TRAITS'):
+            # Strategy 0: structure-driven trait grid detector with ML probe.
+            # Multi-panel grid lock + multi-chain row extraction + per-group
+            # ML classification (no canonical-order assumption). Prototype
+            # measured 91.5% slot IoU≥30 on 59 GT screens vs OCR-header
+            # baseline. Falls back to OCR-header strategy on failure.
+            if icon_matcher is not None and app_cache is not None:
+                grid = _trait_grid.detect_traits(img, icon_matcher, app_cache)
+                if grid and sum(len(v) for v in grid.values()) >= 5:
+                    _slog.info(
+                        f'LayoutDetector: Strategy 0 (trait_grid) → '
+                        f'{len(grid)} sections, '
+                        f'{sum(len(v) for v in grid.values())} bboxes')
+                    return grid
             return self._detect_traits(img, build_type)
         if build_type in ('BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS'):
             # Strategy 0: marker-panel detector (HSV badges + RANSAC grid +
@@ -310,16 +324,62 @@ class LayoutDetector:
         if build_type in ('SPACE_MIXED', 'GROUND_MIXED'):
             marker_boffs = self._detect_boffs_via_markers(img)
 
+            # Strategy 0 trait grid: structure-driven trait detector. Run once
+            # for MIXED screens; merged into whichever equipment chain wins.
+            trait_grid_res: dict | None = None
+            if icon_matcher is not None and app_cache is not None:
+                tg = _trait_grid.detect_traits(img, icon_matcher, app_cache)
+                if tg and sum(len(v) for v in tg.values()) >= 5:
+                    trait_grid_res = tg
+
+            # BOFF panel guard: trait_grid locks consistent-spacing icon rows,
+            # which BOFF abilities also produce — same icon size, same dx.
+            # If the marker panel anchored a BOFF region, any trait_grid bbox
+            # whose center falls inside it is a false positive and must drop.
+            boff_panel_box: tuple[int, int, int, int] | None = None
+            if marker_boffs:
+                _all = [b for bxs in marker_boffs.values() for b in bxs]
+                if _all:
+                    boff_panel_box = (
+                        min(b[0] for b in _all),
+                        min(b[1] for b in _all),
+                        max(b[0] + b[2] for b in _all),
+                        max(b[1] + b[3] for b in _all),
+                    )
+
+            def _in_boff_panel(bbox):
+                if not boff_panel_box:
+                    return False
+                cx = bbox[0] + bbox[2] // 2
+                cy = bbox[1] + bbox[3] // 2
+                x0, y0, x1, y1 = boff_panel_box
+                return x0 <= cx <= x1 and y0 <= cy <= y1
+
+            def _merge_traits(result):
+                if not trait_grid_res:
+                    return result
+                added = 0
+                dropped = 0
+                for slot, bxs in trait_grid_res.items():
+                    clean = [b for b in bxs if not _in_boff_panel(b)]
+                    dropped += len(bxs) - len(clean)
+                    if not clean:
+                        continue
+                    added += len(clean) - len(result.get(slot, []))
+                    result[slot] = clean
+                if dropped:
+                    _slog.info(f'LayoutDetector: trait_grid dropped {dropped} '
+                               f'bboxes overlapping BOFF marker panel')
+                _slog.info(f'LayoutDetector: trait_grid merged → '
+                           f'{list(trait_grid_res.keys())} (+{added} bboxes)')
+                return result
+
             learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
             if learned and len(learned) >= 5:
                 if marker_boffs:
                     learned.update(marker_boffs)
                 _slog.info(f'LayoutDetector: Strategy 1 (learned/MIXED) → {len(learned)} slot groups')
-                return learned
-
-            # Strategy 0 BOFF anchor for MIXED: marker-panel detector.
-            # Computed once and merged into whichever equipment chain wins.
-            # (already computed above)
+                return _merge_traits(learned)
 
             # OCR-anchored equipment detection (primary path for MIXED)
             ocr_anch = self._detect_via_ocr_anchored(img, build_type, slot_order, profile)
@@ -330,7 +390,7 @@ class LayoutDetector:
                 _slog.info(f'LayoutDetector: Strategy 1.5 (OCR-anchored) → '
                            f'{len(ocr_anch)} slot groups, '
                            f'{sum(len(v) for v in ocr_anch.values())} bboxes')
-                return ocr_anch
+                return _merge_traits(ocr_anch)
 
             if icon_matcher is not None and app_cache is not None:
                 full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
@@ -341,7 +401,7 @@ class LayoutDetector:
                         if boff_result:
                             full.update(boff_result)
                             _slog.info(f'LayoutDetector: MIXED merged → {len(full)} slot groups total')
-                    return full
+                    return _merge_traits(full)
             # Fall through to standard strategies if both OCR-anchored and full scan fail
 
         # Strategy 1: Learned Layouts — tried FIRST because they contain

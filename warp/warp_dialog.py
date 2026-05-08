@@ -611,7 +611,11 @@ class WarpDialog(QDialog):
         ClusterInfo = list[tuple]   # (cluster_items, base_prof, prof_set, spec_prof)
         cluster_info: list = []
         for c in seat_clusters:
-            cluster_slot = c[0].slot
+            # Prefer original detector seat key (preserved on .seat_key) so
+            # the spec stripe info survives the per-ability profession remap
+            # done in warp_importer._remap_boff_seat_slots. Fall back to
+            # current .slot for back-compat with any non-remapped items.
+            cluster_slot = getattr(c[0], 'seat_key', '') or c[0].slot
             base_prof = parse_seat_profession(cluster_slot)
             spec_prof = parse_seat_spec(cluster_slot)
             
@@ -768,7 +772,18 @@ class WarpDialog(QDialog):
                         _boff_specs[seat_id][0] = primary_prof  # fallback
                     _slog.info(f'WARP boff: seat[{seat_id}] Universal → set to {target_text!r}')
 
-            slot_indices = _slot_indices_from_x(cluster_items, rank)
+            # Prefer detector-preserved slot_index (0..rank-1) — the marker
+            # detector emits 4 ordered bboxes per seat, and slot_index is the
+            # authoritative within-seat position. This preserves empty
+            # positions when an ability was rejected (low conf / wrong type):
+            # surviving items keep their original slot, with gaps left empty
+            # rather than collapsing the row left.
+            direct = [ri.slot_index for ri in cluster_items]
+            if (all(0 <= si < rank for si in direct)
+                    and len(set(direct)) == len(direct)):
+                slot_indices = direct
+            else:
+                slot_indices = _slot_indices_from_x(cluster_items, rank)
             _slog.info(f'WARP boff: seat[{seat_id}] {profession}/{spec or "-"} rank={rank} '
                        f'← {[ri.name for ri in cluster_items]} slots={slot_indices}')
 

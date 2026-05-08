@@ -28,6 +28,25 @@ except Exception:
 
 SCREENSHOT_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 TEMPLATE_CONF_THRESHOLD = 0.72
+
+# Virtual placeholders for empty/inactive slot positions. Mirrors
+# `warp.trainer.training_data.VIRTUAL_ITEM_NAMES`; defined locally so
+# warp_importer doesn't pull in the trainer package on the hot path.
+VIRTUAL_ITEM_NAMES = frozenset({'__empty__', '__inactive__'})
+
+
+def _bbox_iou(a, b) -> float:
+    """IoU for two (x, y, w, h) bboxes."""
+    ax, ay, aw, ah = a[0], a[1], a[2], a[3]
+    bx, by, bw, bh = b[0], b[1], b[2], b[3]
+    ix1 = max(ax, bx); iy1 = max(ay, by)
+    ix2 = min(ax + aw, bx + bw); iy2 = min(ay + ah, by + bh)
+    iw = max(0, ix2 - ix1); ih = max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0: return 0.0
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
 # Minimum confidence to include a recognition result in output
 # Below this threshold the matcher is essentially guessing
 MIN_ACCEPT_CONF = 0.35
@@ -162,7 +181,9 @@ EXPERIMENTAL_TYPES = frozenset({'Experimental Weapon'})
 SLOT_VALID_TYPES: dict[str, frozenset] = {
     'Fore Weapons':          frozenset({'Ship Fore Weapon', 'Ship Weapon', 'Experimental Weapon'}),
     'Aft Weapons':           frozenset({'Ship Aft Weapon', 'Ship Weapon', 'Experimental Weapon'}),
-    'Deflector':             frozenset({'Ship Deflector Dish', 'Ship Secondary Deflector'}),
+    'Experimental':          frozenset({'Experimental Weapon'}),
+    'Deflector':             frozenset({'Ship Deflector Dish'}),
+    'Sec-Def':               frozenset({'Ship Secondary Deflector'}),
     'Impulse':               frozenset({'Impulse Engine'}),
     'Engines':               frozenset({'Impulse Engine'}),
     'Warp Core':             frozenset({'Warp Engine', 'Singularity Engine'}),
@@ -175,6 +196,26 @@ SLOT_VALID_TYPES: dict[str, frozenset] = {
     'Universal Consoles':    frozenset({'Universal Console', 'Ship Tactical Console',
                                         'Ship Engineering Console', 'Ship Science Console'}),
     'Hangar':                frozenset({'Hangar Bay'}),
+    'Hangars':               frozenset({'Hangar Bay'}),
+    # Ground equipment
+    'Body Armor':            frozenset({'Body Armor'}),
+    'EV Suit':               frozenset({'EV Suit'}),
+    'Personal Shield':       frozenset({'Personal Shield'}),
+    'Weapons':               frozenset({'Ground Weapon'}),
+    'Kit':                   frozenset({'Kit'}),
+    'Kit Modules':           frozenset({'Kit Module'}),
+    'Ground Devices':        frozenset({'Ground Device'}),
+}
+
+# Slot → trait category in cache.traits[env][cat] (or cache.starship_traits)
+TRAIT_SLOT_CATEGORY: dict[str, tuple[str, str]] = {
+    'Personal Space Traits':  ('space',  'personal'),
+    'Space Reputation':       ('space',  'rep'),
+    'Active Space Rep':       ('space',  'active_rep'),
+    'Personal Ground Traits': ('ground', 'personal'),
+    'Ground Reputation':      ('ground', 'rep'),
+    'Active Ground Rep':      ('ground', 'active_rep'),
+    # Starship Trait uses its own flat dict — handled separately
 }
 
 # OCR label → canonical slot name
@@ -595,6 +636,12 @@ class RecognisedItem:
     thumbnail:   Any   = None
     source_file: str   = ''
     bbox:        tuple = field(default_factory=tuple)
+    # Original detector slot key — preserved when `slot` gets remapped to a
+    # canonical profession-named slot (e.g. seat key `Boff Seat L[T+P]_510`
+    # → ability slot `Boff Tactical`). Empty string when no remap occurred.
+    # Consumers that need seat-level info (warp_dialog cluster→seat matching)
+    # should prefer `seat_key` when non-empty.
+    seat_key:    str   = ''
 
 
 @dataclass
@@ -821,24 +868,65 @@ class WarpImporter:
         # _use_confirmed = 'MIXED' in build_type or _is_trainer_call
         _use_confirmed = _is_trainer_call
         confirmed_layout = self._load_confirmed_layout(source) if _use_confirmed else None
+        
+        _needs_matcher = build_type in (
+            'SPACE_MIXED', 'GROUND_MIXED',
+            'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+            # Traits use the structure-driven trait_grid detector (Strategy 0)
+            # which probes icons through icon_matcher.classify_patch to label
+            # each row-group's section independently.
+            'SPACE_TRAITS', 'GROUND_TRAITS',
+        )
+        layout = self._get_layout().detect(
+            img, build_type, profile,
+            icon_matcher=self._get_matcher() if _needs_matcher else None,
+            app_cache=self._app.cache if _needs_matcher else None,
+        )
+        _slog.info(
+            f'WarpImporter: layout → {len(layout)} slot groups, '
+            f'{sum(len(v) for v in layout.values())} bboxes ({build_type})'
+        )
+
         if confirmed_layout:
-            _slog.info(f'WarpImporter: confirmed layout ({build_type}) — '
+            _slog.info(f'WarpImporter: merging confirmed layout ({build_type}) — '
                        f'{sum(len(v) for v in confirmed_layout.values())} bboxes from annotations')
-            layout = confirmed_layout
-        else:
-            _use_full_scan = build_type in (
-                'SPACE_MIXED', 'GROUND_MIXED',
-                'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
-            )
-            layout = self._get_layout().detect(
-                img, build_type, profile,
-                icon_matcher=self._get_matcher() if _use_full_scan else None,
-                app_cache=self._app.cache if _use_full_scan else None,
-            )
-            _slog.info(
-                f'WarpImporter: layout → {len(layout)} slot groups, '
-                f'{sum(len(v) for v in layout.values())} bboxes ({build_type})'
-            )
+            # BOFF reconciliation: confirmed annotations are saved under
+            # canonical names (`Boff Tactical`, `Boff Engineering`, …) but
+            # the marker detector emits raw seat keys (`Boff Seat L[T]_NNN`).
+            # Without remapping, the per-slot IoU merge below cannot match
+            # them and the same physical bbox would be processed twice
+            # (once via canonical key, once via seat key) → duplicates after
+            # the post-loop profession remap. Move each confirmed canonical-
+            # Boff bbox onto whichever seat-keyed detector slot overlaps it,
+            # so the IoU merge can collapse them into a single entry.
+            confirmed_layout = self._reconcile_boff_confirmed_to_seats(
+                confirmed_layout, layout)
+            # IoU-based merge: confirmed bboxes win when they overlap a detected one
+            # (user drew the exact pixel-perfect rect), but unmatched detected bboxes
+            # are KEPT so positions where the user deleted a confirmation get
+            # re-proposed by the detector instead of vanishing from the review list.
+            for slot, conf_boxes in confirmed_layout.items():
+                det_boxes = list(layout.get(slot, []))
+                used = [False] * len(conf_boxes)
+                merged: list = []
+                for d in det_boxes:
+                    best_i, best_iou = -1, 0.0
+                    for i, c in enumerate(conf_boxes):
+                        if used[i]: continue
+                        iou = _bbox_iou(d, c)
+                        if iou > best_iou:
+                            best_iou, best_i = iou, i
+                    if best_i >= 0 and best_iou >= 0.3:
+                        merged.append(conf_boxes[best_i])
+                        used[best_i] = True
+                    else:
+                        merged.append(d)
+                # Append confirmed bboxes that didn't match any detected bbox
+                # (user drew outside the detector grid).
+                for i, c in enumerate(conf_boxes):
+                    if not used[i]:
+                        merged.append(c)
+                layout[slot] = merged
 
         # If ShipDB gave generic fallback (ship_name empty), refine profile
         # using actual icon counts from layout + keyword profile matching.
@@ -868,24 +956,33 @@ class WarpImporter:
         matcher = self._get_matcher()
 
         # Step 4 — match icons per slot (in canonical order)
-        # When confirmed layout is available, process ALL slots present in it —
-        # a single screenshot may contain equipment + traits + boff abilities,
-        # which span multiple slot orders beyond the selected build_type.
+        # When confirmed layout is available, process every slot that has
+        # bboxes — confirmed by the user OR freshly detected. Filtering by
+        # confirmed_layout alone would skip slots the detector found but the
+        # user hasn't annotated yet (e.g. user confirms Fore Weapons but not
+        # Aft Weapons; without `layout.keys()` in the union, autodetect would
+        # never re-propose Aft Weapons positions).
         if confirmed_layout:
+            relevant_slots = set(confirmed_layout.keys()) | set(layout.keys())
             slot_defs_to_process = [sd for sd in _ALL_SLOT_DEFS.values()
-                                    if sd['name'] in confirmed_layout]
+                                    if sd['name'] in relevant_slots]
         else:
             slot_defs_to_process = list(SLOT_ORDER.get(build_type, []))
 
-        # Add dynamically detected BOFF seats to the processing list
-        if not confirmed_layout:
-            for key in layout.keys():
-                if key.startswith('Boff Seat'):
-                    slot_defs_to_process.append({
-                        'name': key, 'key': '', 'mandatory': False, 'max': 4, 'weapon': False, 'exp': False
-                    })
-                    # Add them to profile so they are not skipped by max_count limit
-                    profile[key] = 4
+        # Add dynamically detected BOFF seats to the processing list.
+        # Run regardless of confirmed_layout — `Boff Seat L[T]_<y>` keys are
+        # dynamic and never appear in `_ALL_SLOT_DEFS`, so the trainer-mode
+        # `slot_defs_to_process` filter would always drop them. In WARP CORE
+        # the user typically confirms equipment first and BOFFs later; without
+        # this branch, autodetect never proposes BOFF abilities.
+        seen_seat_keys = {sd['name'] for sd in slot_defs_to_process}
+        for key in layout.keys():
+            if key.startswith('Boff Seat') and key not in seen_seat_keys:
+                slot_defs_to_process.append({
+                    'name': key, 'key': '', 'mandatory': False, 'max': 4, 'weapon': False, 'exp': False
+                })
+                # Add them to profile so they are not skipped by max_count limit
+                profile[key] = 4
 
         # Build per-slot candidate sets restricted by SLOT_VALID_TYPES.
         # This prevents template matching from picking items of the wrong type
@@ -913,12 +1010,23 @@ class WarpImporter:
         _stat_skip_conf = 0   # skipped due to low confidence
         _stat_skip_type = 0   # skipped due to wrong type for slot
         _stat_per_slot: dict[str, dict] = {}  # per-slot hit/skip counters
+        # U-seat refinement buffer: (item_ref, crop_bgr, candidates_or_None)
+        # collected for items whose slot is a Universal-keyed BOFF seat
+        # (`Boff Seat L[U]_NNN` / `Boff Seat L[U+spec]_NNN`). Marker is gold
+        # for seat type, but for Universal seats the base profession is
+        # ambiguous — sibling-vote + spec prior can refine low-conf picks.
+        _u_refine_buf: list = []
 
         for slot_def in slot_defs_to_process:
             slot_name = slot_def['name']
-            # When confirmed_layout is available its bbox count IS the ground truth —
-            # do not let the profile (ShipDB estimate) silently cap or skip slots.
-            if confirmed_layout and slot_name in confirmed_layout:
+            # The merged layout is the authoritative truth (confirmed + freshly
+            # detected after IoU dedup). For BOFF seat keys especially, the
+            # detector emits the full 4-ability grid — capping by confirmed-only
+            # count would drop the re-proposed positions when the user deletes
+            # a previously-confirmed annotation.
+            if slot_name in layout:
+                max_count = len(layout[slot_name])
+            elif confirmed_layout and slot_name in confirmed_layout:
                 max_count = len(confirmed_layout[slot_name])
             else:
                 max_count = profile.get(slot_name, 0)
@@ -1028,21 +1136,6 @@ class WarpImporter:
                     _slog.info(f'  [{slot_name}][{idx}] SKIP — not experimental weapon: {name!r}')
                     continue
                 final_slot_name = slot_name
-                if slot_name.startswith('Boff Seat') and name and name not in ('__empty__', '__inactive__'):
-                    try:
-                        boff_cache = self._app.cache.boff_abilities.get('all', {})
-                        item_info = boff_cache.get(name)
-                        if item_info:
-                            prof = item_info.get('profession')
-                            if prof:
-                                prof_to_slot = {
-                                    'Tactical': 'Boff Tactical', 'Engineering': 'Boff Engineering', 'Science': 'Boff Science',
-                                    'Intelligence': 'Boff Intelligence', 'Command': 'Boff Command', 'Pilot': 'Boff Pilot',
-                                    'Miracle Worker': 'Boff Miracle Worker', 'Temporal Operative': 'Boff Temporal', 'Temporal': 'Boff Temporal'
-                                }
-                                final_slot_name = prof_to_slot.get(prof, final_slot_name)
-                    except Exception:
-                        pass
 
                 # Track recognition stats
                 _stat_per_slot.setdefault(final_slot_name, {'ok': 0, 'skip': 0})['ok'] += 1
@@ -1052,7 +1145,7 @@ class WarpImporter:
                 else:
                     _stat_auto_n    += 1
                     _stat_auto_conf += conf
-                result.items.append(RecognisedItem(
+                _new_item = RecognisedItem(
                     slot        = final_slot_name,
                     slot_index  = idx,
                     name        = name,
@@ -1060,12 +1153,33 @@ class WarpImporter:
                     thumbnail   = thumb,
                     source_file = source,
                     bbox        = bbox,
-                ))
+                )
+                result.items.append(_new_item)
+                # Capture U-seat items for post-pass refinement (skip virtuals).
+                if (final_slot_name.startswith('Boff Seat')
+                        and name not in ('__empty__', '__inactive__')):
+                    from warp.recognition.boff_keys import (
+                        is_seat_keyed as _is_sk, parse_seat_profession as _psp,
+                    )
+                    if _is_sk(final_slot_name) and _psp(final_slot_name) is None:
+                        _u_refine_buf.append((_new_item, crop, candidates))
                 # Contribute to community knowledge (non-blocking, only high-conf, skip virtual)
                 if conf >= TEMPLATE_CONF_THRESHOLD and name not in ('__empty__', '__inactive__'):
                     sync = self._get_sync_client()
                     if sync is not None:
                         sync.contribute(crop, name, confirmed=False)
+
+        # Universal-seat ability refinement (pre-remap): re-rank low-conf
+        # abilities in U seats using sibling-prof prior + spec stripe prior.
+        # Marker remains gold for seat type — refinement only touches
+        # ambiguous classifications, never overrides T/E/S typed seats.
+        self._refine_universal_seats(_u_refine_buf)
+
+        # Per-ability profession remap for BOFF seats (post-pass).
+        # Non-virtuals → slot of their own ability's profession.
+        # Virtuals (__empty__/__inactive__) → seat's profession (typed seats)
+        # or voted dominant from sibling abilities (Universal seats).
+        self._remap_boff_seat_slots(result, _stat_per_slot)
 
         self._log_recognition_stats(
             build_type  = build_type,
@@ -1081,6 +1195,331 @@ class WarpImporter:
         )
         _slog.info(f'####### WARP: {Path(source).name} done #######')
         return result
+
+    def _reconcile_boff_confirmed_to_seats(
+        self,
+        confirmed_layout: dict[str, list],
+        detected_layout: dict[str, list],
+    ) -> dict[str, list]:
+        """Move confirmed BOFF bboxes from canonical-named slots
+        (`Boff Tactical`, `Boff Engineering`, …) to whichever seat-keyed
+        detector slot (`Boff Seat L[T]_NNN`, …) overlaps them.
+
+        Confirmed annotations are persisted under canonical profession
+        names (post per-ability remap). The marker detector emits raw
+        seat keys. The downstream IoU merge keys per slot, so without
+        this reconciliation the same physical bbox stays under two
+        different keys, gets matched twice, and produces duplicate
+        items after the post-loop profession remap.
+
+        Confirmed bboxes that don't overlap any seat-keyed detector
+        slot stay under their original canonical name (e.g. user drew
+        outside the detected grid).
+        """
+        from warp.recognition.boff_keys import is_seat_keyed
+        BOFF_CANONICAL = {
+            'Boff Tactical', 'Boff Engineering', 'Boff Science',
+            'Boff Universal', 'Boff Command', 'Boff Intelligence',
+            'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
+        }
+        seat_slots = {s: detected_layout[s] for s in detected_layout if is_seat_keyed(s)}
+        if not seat_slots:
+            return confirmed_layout
+
+        out: dict[str, list] = {}
+        moved = 0
+        for slot, bboxes in confirmed_layout.items():
+            if slot not in BOFF_CANONICAL:
+                out.setdefault(slot, []).extend(bboxes)
+                continue
+            for b in bboxes:
+                best_slot, best_iou = None, 0.0
+                for ss, sboxes in seat_slots.items():
+                    for sb in sboxes:
+                        iou = _bbox_iou(b, sb)
+                        if iou > best_iou:
+                            best_iou, best_slot = iou, ss
+                if best_slot and best_iou >= 0.3:
+                    out.setdefault(best_slot, []).append(b)
+                    moved += 1
+                else:
+                    out.setdefault(slot, []).append(b)
+        if moved:
+            _slog.info(f'WarpImporter: reconciled {moved} confirmed BOFF '
+                       f'bbox(es) onto seat-keyed slots')
+        return out
+
+    def _lookup_boff_profession(self, ability_name: str) -> str | None:
+        """Find the profession of a BOFF ability by scanning the rank-based
+        cache. Returns the SETS category name (e.g. 'Tactical', 'Command')
+        or None if unknown.
+
+        Cache shape: `boff_abilities[env][category][rank_idx][ability_name]
+        = description`. There is no flat name→profession lookup, so we
+        scan all (env, category, rank) buckets until a hit.
+        """
+        if not ability_name:
+            return None
+        try:
+            cache = self._app.cache.boff_abilities
+        except Exception:
+            return None
+        for env in ('space', 'ground'):
+            env_dict = cache.get(env) or {}
+            for category, ranks in env_dict.items():
+                if not isinstance(ranks, (list, tuple)):
+                    continue
+                for rank_dict in ranks:
+                    if isinstance(rank_dict, dict) and ability_name in rank_dict:
+                        return category
+        return None
+
+    def _refine_universal_seats(self, pending: list) -> None:
+        """Refine low-confidence abilities in Universal BOFF seats.
+
+        Marker is the source of truth for SEAT TYPE — this method NEVER
+        re-runs on T/E/S typed seats (caller filters to U seats only).
+        For Universal seats the base profession is ambiguous; we use:
+
+          * sibling-prior: high-conf siblings' base professions vote on
+            the dominant base prof of the seat.
+          * spec-prior: if the seat carries a spec stripe (U+Cmd / U+Plt /
+            U+Tem / U+Int / U+MW), spec-profession abilities are valid.
+
+        For each item with conf < LOW_CONF_GATE we re-call the matcher
+        with candidates restricted to abilities of (dominant_base ∪ spec).
+        Swap the original pick only when the new match clears MIN_ACCEPT_CONF
+        AND beats the original by SWAP_MARGIN.
+
+        `pending`: list of (RecognisedItem, crop_bgr, candidates_or_None)
+        captured during the per-image match loop. Items here are
+        guaranteed seat-keyed Universal (`Boff Seat L[U]_NNN` /
+        `Boff Seat L[U+spec]_NNN`) and non-virtual.
+        """
+        if not pending:
+            return
+        from warp.recognition.boff_keys import parse_seat_spec
+
+        SIBLING_HIGH_CONF = 0.75    # confidence floor to vote
+        SIBLING_AGREE_MIN = 2.0     # weighted votes needed to declare a winner
+        LOW_CONF_GATE     = 0.75    # only re-rank picks below this conf
+        SWAP_MARGIN       = 0.03    # new must beat old by this margin to swap
+
+        SPEC_PROFS = {
+            'Command', 'Intelligence', 'Pilot',
+            'Miracle Worker', 'Temporal Operative', 'Temporal',
+        }
+
+        matcher = self._get_matcher()
+        if matcher is None:
+            return
+
+        # Group buf entries by seat key
+        by_seat: dict[str, list] = {}
+        for entry in pending:
+            it, _crop, _cands = entry
+            by_seat.setdefault(it.slot, []).append(entry)
+
+        # Cache: ability_name → profession (spans the whole call)
+        prof_cache: dict[str, str | None] = {}
+        def _own_prof(n: str) -> str | None:
+            if n not in prof_cache:
+                prof_cache[n] = self._lookup_boff_profession(n)
+            return prof_cache[n]
+
+        try:
+            boff_cache = self._app.cache.boff_abilities
+        except Exception:
+            return
+        if not boff_cache:
+            return
+
+        for seat_key, entries in by_seat.items():
+            seat_spec = parse_seat_spec(seat_key)  # human prof name or None
+
+            # Sibling vote on high-conf BASE professions only — spec
+            # abilities tell us about the spec lane, not the base lane.
+            base_votes: dict[str, float] = {}
+            for it, _crop, _cands in entries:
+                if (it.confidence or 0.0) < SIBLING_HIGH_CONF:
+                    continue
+                p = _own_prof(it.name)
+                if p and p not in SPEC_PROFS:
+                    base_votes[p] = base_votes.get(p, 0.0) + 1.0 + float(it.confidence or 0.0)
+
+            dominant_base = None
+            if base_votes:
+                top = max(base_votes.items(), key=lambda kv: kv[1])
+                if top[1] >= SIBLING_AGREE_MIN:
+                    dominant_base = top[0]
+
+            # No prior info available → nothing to refine in this seat.
+            if not dominant_base and not seat_spec:
+                continue
+
+            # Build allowed prof set for this seat
+            allowed_profs: set[str] = set()
+            if dominant_base:
+                allowed_profs.add(dominant_base)
+            if seat_spec:
+                allowed_profs.add(seat_spec)
+                # parse_seat_spec returns 'Temporal'; cache key is 'Temporal Operative'
+                if seat_spec == 'Temporal':
+                    allowed_profs.add('Temporal Operative')
+
+            # Build the restricted ability name pool (across both envs —
+            # ground BOFFs use a different code path but cheap to scan).
+            restricted_pool: set[str] = set()
+            for env in ('space', 'ground'):
+                env_dict = boff_cache.get(env) or {}
+                for category, ranks in env_dict.items():
+                    if category not in allowed_profs:
+                        continue
+                    if not isinstance(ranks, (list, tuple)):
+                        continue
+                    for rank_dict in ranks:
+                        if isinstance(rank_dict, dict):
+                            restricted_pool.update(rank_dict.keys())
+            if not restricted_pool:
+                continue
+
+            for it, crop, cands in entries:
+                if (it.confidence or 0.0) >= LOW_CONF_GATE:
+                    continue
+                cur_prof = _own_prof(it.name)
+                # If current pick already matches an allowed prof, leave it.
+                if cur_prof and cur_prof in allowed_profs:
+                    continue
+
+                pool = set(restricted_pool)
+                if cands:
+                    pool &= set(cands)
+                if not pool:
+                    continue
+
+                new_name, new_conf, new_thumb, _used = matcher.match(
+                    crop, candidate_names=pool)
+                if not new_name:
+                    continue
+                if new_conf < MIN_ACCEPT_CONF:
+                    continue
+                if new_conf < (it.confidence or 0.0) + SWAP_MARGIN:
+                    continue
+
+                _slog.info(
+                    f'  [U-refine] {seat_key}: '
+                    f'{it.name!r}({it.confidence:.2f},{cur_prof}) → '
+                    f'{new_name!r}({new_conf:.2f},{_own_prof(new_name)}) '
+                    f'— base={dominant_base}, spec={seat_spec}'
+                )
+                it.name       = new_name
+                it.confidence = new_conf
+                if new_thumb is not None:
+                    it.thumbnail = new_thumb
+
+    def _remap_boff_seat_slots(self, result, per_slot_stats: dict) -> None:
+        """Remap items currently keyed by raw BOFF seat keys (e.g.
+        `Boff Seat L[U+O]_616`) to canonical profession-named slots.
+
+        - Non-virtual abilities → the slot of their own ability's profession.
+        - Virtual items (`__empty__` / `__inactive__`):
+          * typed seats (T/E/S) → seat's base profession
+          * Universal seats → voted dominant profession from sibling
+            non-virtuals (weight 1 + conf); fall back to spec stripe if any,
+            otherwise `Boff Universal`.
+
+        Also rebuilds `per_slot_stats` 'ok' counts so the recognition
+        report shows the final, post-remap slot distribution. 'skip'
+        counts are preserved as-is from the loop-time keys.
+        """
+        from warp.recognition.boff_keys import (
+            parse_seat_profession, parse_seat_spec, is_seat_keyed,
+        )
+        prof_to_slot = {
+            'Tactical':           'Boff Tactical',
+            'Engineering':        'Boff Engineering',
+            'Science':            'Boff Science',
+            'Intelligence':       'Boff Intelligence',
+            'Command':            'Boff Command',
+            'Pilot':              'Boff Pilot',
+            'Miracle Worker':     'Boff Miracle Worker',
+            'Temporal Operative': 'Boff Temporal',
+            'Temporal':           'Boff Temporal',
+        }
+
+        # Group seat-keyed items
+        by_seat: dict[str, list] = {}
+        for it in result.items:
+            if is_seat_keyed(it.slot):
+                by_seat.setdefault(it.slot, []).append(it)
+        if not by_seat:
+            return
+
+        for seat_key, items in by_seat.items():
+            seat_prof = parse_seat_profession(seat_key)  # None for U
+            seat_spec = parse_seat_spec(seat_key)
+
+            # Cache per-ability profession lookups for this seat
+            own_prof: dict[str, str | None] = {}
+            for it in items:
+                if it.name in ('__empty__', '__inactive__'):
+                    continue
+                if it.name not in own_prof:
+                    own_prof[it.name] = self._lookup_boff_profession(it.name)
+
+            # Vote dominant profession from non-virtuals (count + conf)
+            votes: dict[str, float] = {}
+            for it in items:
+                if it.name in ('__empty__', '__inactive__'):
+                    continue
+                prof = own_prof.get(it.name)
+                if prof:
+                    votes[prof] = votes.get(prof, 0.0) + 1.0 + float(it.confidence or 0.0)
+            voted_prof = max(votes.items(), key=lambda kv: kv[1])[0] if votes else None
+
+            for it in items:
+                if it.name in ('__empty__', '__inactive__'):
+                    # Resolve target profession in priority order: seat's
+                    # marker base prof → sibling-ability vote → seat's spec
+                    # stripe → 'Boff Universal' as label-only sentinel.
+                    # Seat keys NEVER survive into final slot values — the
+                    # user must always see a real profession label.
+                    target = seat_prof or voted_prof or seat_spec
+                    new_slot = prof_to_slot.get(target, 'Boff Universal') if target else 'Boff Universal'
+                else:
+                    p = own_prof.get(it.name)
+                    new_slot = prof_to_slot.get(p, it.slot) if p else it.slot
+                if new_slot != it.slot:
+                    _slog.debug(f'  BOFF remap: [{it.slot}] {it.name!r} → [{new_slot}]')
+                    it.seat_key = it.slot   # preserve original detector key
+                    it.slot     = new_slot
+
+        # Rebuild per-slot stats:
+        #  - 'ok' counts come from final result.items (post-remap slots)
+        #  - 'skip' counts from loop-time keys; seat-keyed skips are
+        #    re-attributed to the seat's resolved target so the report
+        #    aggregates by profession, not by raw seat key
+        #  - empty stat entries (ok=0 AND skip=0) are dropped to keep
+        #    the report clean
+        def _seat_to_target_slot(k: str) -> str:
+            if not is_seat_keyed(k):
+                return k
+            sp = parse_seat_profession(k)
+            ss = parse_seat_spec(k)
+            target = sp or ss
+            return prof_to_slot.get(target, 'Boff Universal') if target else 'Boff Universal'
+
+        rebuilt: dict[str, dict] = {}
+        for it in result.items:
+            rebuilt.setdefault(it.slot, {'ok': 0, 'skip': 0})['ok'] += 1
+        for k, v in per_slot_stats.items():
+            skip_n = v.get('skip', 0)
+            if skip_n <= 0:
+                continue
+            target = _seat_to_target_slot(k)
+            rebuilt.setdefault(target, {'ok': 0, 'skip': 0})['skip'] += skip_n
+        per_slot_stats.clear()
+        per_slot_stats.update(rebuilt)
 
     def _log_recognition_stats(
         self,
@@ -1119,14 +1558,31 @@ class WarpImporter:
         if skip_type:
             _slog.info(f'│ Skipped (wrong type): {skip_type}')
 
-        # Per-slot breakdown
+        # Per-slot breakdown — convert seat-keyed names to pretty profession
+        # labels and drop empty 0/0 entries (stale stat keys after remap).
+        # 'Boff Universal' is also dropped: it's a sentinel for skipped
+        # abilities in pure-U seats where we have no profession info to
+        # attribute the skip to. The total still appears in 'Skipped'.
         if per_slot:
-            _slog.info(f'│ Per-slot:')
-            for slot_name in sorted(per_slot.keys()):
-                s = per_slot[slot_name]
-                ok, skip = s['ok'], s['skip']
-                bar = '█' * ok + '░' * skip
-                _slog.info(f'│   {slot_name:30s}  {ok:2d}/{ok+skip:2d}  {bar}')
+            from warp.recognition.boff_keys import pretty_slot
+            display: dict[str, dict] = {}
+            for raw_slot, s in per_slot.items():
+                ok, skip = s.get('ok', 0), s.get('skip', 0)
+                if ok == 0 and skip == 0:
+                    continue
+                pretty = pretty_slot(raw_slot)
+                if pretty == 'Boff Universal' and ok == 0:
+                    continue
+                tgt = display.setdefault(pretty, {'ok': 0, 'skip': 0})
+                tgt['ok']   += ok
+                tgt['skip'] += skip
+            if display:
+                _slog.info(f'│ Per-slot:')
+                for slot_name in sorted(display.keys()):
+                    s = display[slot_name]
+                    ok, skip = s['ok'], s['skip']
+                    bar = '█' * ok + '░' * skip
+                    _slog.info(f'│   {slot_name:30s}  {ok:2d}/{ok+skip:2d}  {bar}')
 
         # ── Persist + trend ───────────────────────────────────────────────
         stats_path = Path(__file__).resolve().parent.parent / '.config' / 'recognition_stats.json'
@@ -1333,19 +1789,85 @@ class WarpImporter:
                 result[slot_name] = pool
 
         # Add virtual items so ML and session examples can match empty/inactive slots
-        try:
-            from warp.trainer.training_data import VIRTUAL_ITEM_NAMES
-        except ImportError:
-            VIRTUAL_ITEM_NAMES = {'__empty__', '__inactive__'}
-            
         for names_set in result.values():
             names_set.update(VIRTUAL_ITEM_NAMES)
 
         return result
 
     def _item_valid_for_slot(self, item_name: str, slot_name: str) -> bool:
-        """Check that item type from cache matches what the slot expects.
-        Returns True if no type constraint exists for this slot (permissive)."""
+        """Check that the item belongs in the slot. Routes to the right
+        sub-cache by slot family: equipment (cache.equipment) → trait
+        (cache.traits / cache.starship_traits) → BOFF (cache.boff_abilities).
+        Returns True permissively when no constraint applies or when the
+        item is not in any cache (likely a new community item)."""
+        # Virtual placeholders pass through — they don't represent items.
+        if item_name in VIRTUAL_ITEM_NAMES:
+            return True
+
+        # ── Trait slots ──
+        if slot_name == 'Starship Traits':
+            try:
+                if item_name in (self._app.cache.starship_traits or {}):
+                    return True
+            except Exception:
+                return True
+            _slog.info(f'  _item_valid_for_slot: {item_name!r} not a Starship Trait')
+            return False
+        cat_tuple = TRAIT_SLOT_CATEGORY.get(slot_name)
+        if cat_tuple:
+            env, cat = cat_tuple
+            try:
+                pool = (self._app.cache.traits or {}).get(env, {}).get(cat, {})
+                if item_name in pool:
+                    return True
+            except Exception:
+                return True
+            _slog.info(f'  _item_valid_for_slot: {item_name!r} not in traits[{env}][{cat}]')
+            return False
+
+        # ── BOFF seat slots ──
+        # Marker-keyed seats encode profession (and optional spec) in the key.
+        # Universal seats accept any profession (player decides). Typed seats
+        # (T/E/S) accept their base profession; if a spec stripe is encoded
+        # (`[T+Cmd]`, `[S+Plt]`, …) abilities of the spec profession are also
+        # valid — that is exactly what the spec stripe means in-game.
+        if slot_name.startswith('Boff'):
+            from warp.recognition.boff_keys import (
+                parse_seat_profession, parse_seat_spec, is_seat_keyed,
+            )
+            if is_seat_keyed(slot_name):
+                seat_prof = parse_seat_profession(slot_name)
+                seat_spec = parse_seat_spec(slot_name)
+                if seat_prof is None:
+                    return True  # Universal seat — any profession allowed
+                accepted_profs = {seat_prof}
+                if seat_spec:
+                    accepted_profs.add(seat_spec)
+                    # parse_seat_spec returns 'Temporal'; cache key is 'Temporal Operative'.
+                    if seat_spec == 'Temporal':
+                        accepted_profs.add('Temporal Operative')
+            elif slot_name == 'Boff Universal':
+                return True
+            else:
+                legacy = slot_name.replace('Boff ', '').strip()
+                if not legacy:
+                    return True
+                accepted_profs = {legacy}
+            try:
+                for env in ('space', 'ground'):
+                    for prof in accepted_profs:
+                        rank_lists = (self._app.cache.boff_abilities
+                                      .get(env, {}).get(prof, []))
+                        for rank_dict in rank_lists:
+                            if isinstance(rank_dict, dict) and item_name in rank_dict:
+                                return True
+            except Exception:
+                return True
+            _slog.info(f'  _item_valid_for_slot: {item_name!r} not in '
+                       f'{sorted(accepted_profs)} (slot {slot_name!r})')
+            return False
+
+        # ── Equipment slots ──
         valid_types = SLOT_VALID_TYPES.get(slot_name)
         if not valid_types:
             return True  # no constraint defined — allow
@@ -1357,8 +1879,8 @@ class WarpImporter:
                 item_type = entry.get('type', '') if isinstance(entry, dict) else ''
                 if item_type in valid_types:
                     return True
-                # Item found in cache but wrong type
-                _slog.info(f'  _item_valid_for_slot: {item_name!r} type={item_type!r} not valid for {slot_name!r}')
+                _slog.info(f'  _item_valid_for_slot: {item_name!r} type={item_type!r} '
+                           f'not valid for {slot_name!r}')
                 return False
         except Exception:
             pass
