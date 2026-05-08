@@ -177,6 +177,14 @@ The **Screen Type** detected from a screenshot determines which slot types WARP 
 
 > **WARP:** Screen type classification uses a three-stage pipeline in `warp/recognition/screen_classifier.py`: (1) ONNX MobileNetV3-Small, (2) session k-NN on HSV histograms, (3) OCR keyword fallback. Recognised types: `SPACE_EQ`, `GROUND_EQ`, `TRAITS`, `BOFFS`, `SPECIALIZATIONS`, `SPACE_MIXED`, `GROUND_MIXED`. Slot filtering is applied immediately on type change via `_refresh_slot_combo()` in `trainer_window.py`.
 
+### Same panels, different framing — detection invariant
+
+The EQ panel rendered in `SPACE_EQ` is **the same in-game UI panel** as the EQ region of `SPACE_MIXED`. The only difference is that in MIXED the user has composed multiple game panels onto one screenshot in a layout of their choosing; in `SPACE_EQ` only that one panel is present (less surrounding noise).
+
+**Implication for detection:** any structure-driven detector for SPACE_EQ must be the same code path the MIXED chain uses for its EQ region. Concretely both should run, in order: marker_boffs (irrelevant for pure EQ but cheap to skip if absent) → trait_grid (also irrelevant but cheap) → Strategy 1 learned → **Strategy 1.5 OCR-anchored** → full_scan (ML) → pixel-analysis fallback. Today (2026-05-08) `LayoutDetector.detect()` for `SPACE_EQ` skips Strategy 1.5 entirely and goes straight from Strategy 1 to pixel-analysis — that is an inconsistency, not a design choice. SPACE_EQ should be **easier**, not harder: same panel, fewer distractors. The same OCR labels (`Fore Weapons`, `Aft Weapons`, `Deflector`, `Engines`, `Shields`, `Devices`, `Universal Consoles`, `Engineering Consoles`, `Science Consoles`, `Tactical Consoles`, `Hangars`) are visible and anchor-worthy in both screen types.
+
+**Hard rule:** never assume the EQ panel is anchored to a fixed image position (e.g. "right edge", "top-right"). Users compose screenshots arbitrarily — even in the supposedly "simple" SPACE_EQ case, the panel can sit anywhere. Detection must be panel-internal (OCR labels inside the panel, row pitch, single-slot-row signatures, icon frame style) — never image-edge-relative heuristics.
+
 ---
 
 ## Dropdown Filtering Logic (WARP)

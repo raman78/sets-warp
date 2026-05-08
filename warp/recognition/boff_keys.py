@@ -48,6 +48,19 @@ _SPEC_CODE_TO_PROF = {
     'MW':  'Miracle Worker',
 }
 
+# Backward-compat: old single-letter spec codes still appear in stale
+# learned-layout caches (anchors.json, community_anchors.json) and other
+# data files saved before the 2026-05-07 rename. Producers in the live
+# code path emit new codes only; this map exists solely so parsers can
+# read legacy data. Old keys naturally disappear as the cache regenerates.
+_LEGACY_SPEC_CODE_MAP = {
+    'O': 'Cmd',  # Command
+    'P': 'Int',  # Intelligence
+    'Y': 'Tem',  # Temporal
+    'C': 'Plt',  # Pilot
+    'L': 'MW',   # Miracle Worker
+}
+
 # Legacy profession-keyed names emitted by _detect_via_full_scan and
 # pre-marker detectors. `Universal` is omitted because a profession-keyed
 # Universal slot would itself be Unknown (caller goes content-based).
@@ -58,9 +71,22 @@ _LEGACY_SPEC_PROFESSIONS = frozenset(_SPEC_CODE_TO_PROF.values())
 
 # Boff Seat L[T+Plt]_483 → groups (side, code, spec, my)
 # Boff Seat L[T]_483     → groups (side, code, None, my)
+# Single-letter codes (O/P/Y/C/L) accepted for backward compatibility
+# with stale caches; normalized to canonical multi-char codes in the
+# parsing helpers below.
 _SEAT_KEY_RE = re.compile(
-    r'^Boff Seat ([LR])(?:\[([TESU])(?:\+(Cmd|Int|Tem|Plt|MW))?\])?_(\d+)$'
+    r'^Boff Seat ([LR])(?:\[([TESU])(?:\+(Cmd|Int|Tem|Plt|MW|O|P|Y|C|L))?\])?_(\d+)$'
 )
+
+
+def _canon_spec_code(spec_code: str | None) -> str | None:
+    """Normalize a spec code to its canonical multi-char form. Returns
+    None if input is None; passes new codes through unchanged; maps
+    legacy single-letter codes via _LEGACY_SPEC_CODE_MAP.
+    """
+    if not spec_code:
+        return None
+    return _LEGACY_SPEC_CODE_MAP.get(spec_code, spec_code)
 
 
 def parse_seat_profession(slot_name: str) -> str | None:
@@ -99,7 +125,7 @@ def parse_seat_spec(slot_name: str) -> str | None:
     # New marker-keyed: spec is the optional second bracket group.
     m = _SEAT_KEY_RE.match(slot_name)
     if m:
-        spec_code = m.group(3)
+        spec_code = _canon_spec_code(m.group(3))
         if spec_code:
             return _SPEC_CODE_TO_PROF.get(spec_code)
     return None

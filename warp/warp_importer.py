@@ -1010,6 +1010,12 @@ class WarpImporter:
         _stat_skip_conf = 0   # skipped due to low confidence
         _stat_skip_type = 0   # skipped due to wrong type for slot
         _stat_per_slot: dict[str, dict] = {}  # per-slot hit/skip counters
+        # U-seat refinement buffer: (item_ref, crop_bgr, candidates_or_None)
+        # collected for items whose slot is a Universal-keyed BOFF seat
+        # (`Boff Seat L[U]_NNN` / `Boff Seat L[U+spec]_NNN`). Marker is gold
+        # for seat type, but for Universal seats the base profession is
+        # ambiguous — sibling-vote + spec prior can refine low-conf picks.
+        _u_refine_buf: list = []
 
         for slot_def in slot_defs_to_process:
             slot_name = slot_def['name']
@@ -1139,7 +1145,7 @@ class WarpImporter:
                 else:
                     _stat_auto_n    += 1
                     _stat_auto_conf += conf
-                result.items.append(RecognisedItem(
+                _new_item = RecognisedItem(
                     slot        = final_slot_name,
                     slot_index  = idx,
                     name        = name,
@@ -1147,12 +1153,27 @@ class WarpImporter:
                     thumbnail   = thumb,
                     source_file = source,
                     bbox        = bbox,
-                ))
+                )
+                result.items.append(_new_item)
+                # Capture U-seat items for post-pass refinement (skip virtuals).
+                if (final_slot_name.startswith('Boff Seat')
+                        and name not in ('__empty__', '__inactive__')):
+                    from warp.recognition.boff_keys import (
+                        is_seat_keyed as _is_sk, parse_seat_profession as _psp,
+                    )
+                    if _is_sk(final_slot_name) and _psp(final_slot_name) is None:
+                        _u_refine_buf.append((_new_item, crop, candidates))
                 # Contribute to community knowledge (non-blocking, only high-conf, skip virtual)
                 if conf >= TEMPLATE_CONF_THRESHOLD and name not in ('__empty__', '__inactive__'):
                     sync = self._get_sync_client()
                     if sync is not None:
                         sync.contribute(crop, name, confirmed=False)
+
+        # Universal-seat ability refinement (pre-remap): re-rank low-conf
+        # abilities in U seats using sibling-prof prior + spec stripe prior.
+        # Marker remains gold for seat type — refinement only touches
+        # ambiguous classifications, never overrides T/E/S typed seats.
+        self._refine_universal_seats(_u_refine_buf)
 
         # Per-ability profession remap for BOFF seats (post-pass).
         # Non-virtuals → slot of their own ability's profession.
@@ -1252,6 +1273,149 @@ class WarpImporter:
                     if isinstance(rank_dict, dict) and ability_name in rank_dict:
                         return category
         return None
+
+    def _refine_universal_seats(self, pending: list) -> None:
+        """Refine low-confidence abilities in Universal BOFF seats.
+
+        Marker is the source of truth for SEAT TYPE — this method NEVER
+        re-runs on T/E/S typed seats (caller filters to U seats only).
+        For Universal seats the base profession is ambiguous; we use:
+
+          * sibling-prior: high-conf siblings' base professions vote on
+            the dominant base prof of the seat.
+          * spec-prior: if the seat carries a spec stripe (U+Cmd / U+Plt /
+            U+Tem / U+Int / U+MW), spec-profession abilities are valid.
+
+        For each item with conf < LOW_CONF_GATE we re-call the matcher
+        with candidates restricted to abilities of (dominant_base ∪ spec).
+        Swap the original pick only when the new match clears MIN_ACCEPT_CONF
+        AND beats the original by SWAP_MARGIN.
+
+        `pending`: list of (RecognisedItem, crop_bgr, candidates_or_None)
+        captured during the per-image match loop. Items here are
+        guaranteed seat-keyed Universal (`Boff Seat L[U]_NNN` /
+        `Boff Seat L[U+spec]_NNN`) and non-virtual.
+        """
+        if not pending:
+            return
+        from warp.recognition.boff_keys import parse_seat_spec
+
+        SIBLING_HIGH_CONF = 0.75    # confidence floor to vote
+        SIBLING_AGREE_MIN = 2.0     # weighted votes needed to declare a winner
+        LOW_CONF_GATE     = 0.75    # only re-rank picks below this conf
+        SWAP_MARGIN       = 0.03    # new must beat old by this margin to swap
+
+        SPEC_PROFS = {
+            'Command', 'Intelligence', 'Pilot',
+            'Miracle Worker', 'Temporal Operative', 'Temporal',
+        }
+
+        matcher = self._get_matcher()
+        if matcher is None:
+            return
+
+        # Group buf entries by seat key
+        by_seat: dict[str, list] = {}
+        for entry in pending:
+            it, _crop, _cands = entry
+            by_seat.setdefault(it.slot, []).append(entry)
+
+        # Cache: ability_name → profession (spans the whole call)
+        prof_cache: dict[str, str | None] = {}
+        def _own_prof(n: str) -> str | None:
+            if n not in prof_cache:
+                prof_cache[n] = self._lookup_boff_profession(n)
+            return prof_cache[n]
+
+        try:
+            boff_cache = self._app.cache.boff_abilities
+        except Exception:
+            return
+        if not boff_cache:
+            return
+
+        for seat_key, entries in by_seat.items():
+            seat_spec = parse_seat_spec(seat_key)  # human prof name or None
+
+            # Sibling vote on high-conf BASE professions only — spec
+            # abilities tell us about the spec lane, not the base lane.
+            base_votes: dict[str, float] = {}
+            for it, _crop, _cands in entries:
+                if (it.confidence or 0.0) < SIBLING_HIGH_CONF:
+                    continue
+                p = _own_prof(it.name)
+                if p and p not in SPEC_PROFS:
+                    base_votes[p] = base_votes.get(p, 0.0) + 1.0 + float(it.confidence or 0.0)
+
+            dominant_base = None
+            if base_votes:
+                top = max(base_votes.items(), key=lambda kv: kv[1])
+                if top[1] >= SIBLING_AGREE_MIN:
+                    dominant_base = top[0]
+
+            # No prior info available → nothing to refine in this seat.
+            if not dominant_base and not seat_spec:
+                continue
+
+            # Build allowed prof set for this seat
+            allowed_profs: set[str] = set()
+            if dominant_base:
+                allowed_profs.add(dominant_base)
+            if seat_spec:
+                allowed_profs.add(seat_spec)
+                # parse_seat_spec returns 'Temporal'; cache key is 'Temporal Operative'
+                if seat_spec == 'Temporal':
+                    allowed_profs.add('Temporal Operative')
+
+            # Build the restricted ability name pool (across both envs —
+            # ground BOFFs use a different code path but cheap to scan).
+            restricted_pool: set[str] = set()
+            for env in ('space', 'ground'):
+                env_dict = boff_cache.get(env) or {}
+                for category, ranks in env_dict.items():
+                    if category not in allowed_profs:
+                        continue
+                    if not isinstance(ranks, (list, tuple)):
+                        continue
+                    for rank_dict in ranks:
+                        if isinstance(rank_dict, dict):
+                            restricted_pool.update(rank_dict.keys())
+            if not restricted_pool:
+                continue
+
+            for it, crop, cands in entries:
+                if (it.confidence or 0.0) >= LOW_CONF_GATE:
+                    continue
+                cur_prof = _own_prof(it.name)
+                # If current pick already matches an allowed prof, leave it.
+                if cur_prof and cur_prof in allowed_profs:
+                    continue
+
+                pool = set(restricted_pool)
+                if cands:
+                    pool &= set(cands)
+                if not pool:
+                    continue
+
+                new_name, new_conf, new_thumb, _used = matcher.match(
+                    crop, candidate_names=pool)
+                if not new_name:
+                    continue
+                if new_conf < MIN_ACCEPT_CONF:
+                    continue
+                if new_conf < (it.confidence or 0.0) + SWAP_MARGIN:
+                    continue
+
+                _slog.info(
+                    f'  [U-refine] {seat_key}: '
+                    f'{it.name!r}({it.confidence:.2f},{cur_prof}) → '
+                    f'{new_name!r}({new_conf:.2f},{_own_prof(new_name)}) '
+                    f'— base={dominant_base}, spec={seat_spec}'
+                )
+                it.name       = new_name
+                it.confidence = new_conf
+                if new_thumb is not None:
+                    it.thumbnail = new_thumb
 
     def _remap_boff_seat_slots(self, result, per_slot_stats: dict) -> None:
         """Remap items currently keyed by raw BOFF seat keys (e.g.
@@ -1396,6 +1560,9 @@ class WarpImporter:
 
         # Per-slot breakdown — convert seat-keyed names to pretty profession
         # labels and drop empty 0/0 entries (stale stat keys after remap).
+        # 'Boff Universal' is also dropped: it's a sentinel for skipped
+        # abilities in pure-U seats where we have no profession info to
+        # attribute the skip to. The total still appears in 'Skipped'.
         if per_slot:
             from warp.recognition.boff_keys import pretty_slot
             display: dict[str, dict] = {}
@@ -1404,6 +1571,8 @@ class WarpImporter:
                 if ok == 0 and skip == 0:
                     continue
                 pretty = pretty_slot(raw_slot)
+                if pretty == 'Boff Universal' and ok == 0:
+                    continue
                 tgt = display.setdefault(pretty, {'ok': 0, 'skip': 0})
                 tgt['ok']   += ok
                 tgt['skip'] += skip
@@ -1657,30 +1826,45 @@ class WarpImporter:
             return False
 
         # ── BOFF seat slots ──
-        # Marker-keyed seats encode profession in the key. Universal seats
-        # accept any profession (player decides); typed seats (T/E/S) and
-        # legacy 'Boff <Profession>' keys must match the ability's profession.
+        # Marker-keyed seats encode profession (and optional spec) in the key.
+        # Universal seats accept any profession (player decides). Typed seats
+        # (T/E/S) accept their base profession; if a spec stripe is encoded
+        # (`[T+Cmd]`, `[S+Plt]`, …) abilities of the spec profession are also
+        # valid — that is exactly what the spec stripe means in-game.
         if slot_name.startswith('Boff'):
-            from warp.recognition.boff_keys import parse_seat_profession, is_seat_keyed
-            seat_prof = parse_seat_profession(slot_name)
-            if not seat_prof and (is_seat_keyed(slot_name) or slot_name == 'Boff Universal'):
-                return True  # Universal — any profession allowed
-            if not seat_prof:
-                # Legacy 'Boff Tactical' / 'Boff Engineering' / etc.
-                seat_prof = slot_name.replace('Boff ', '').strip() or None
-            if not seat_prof:
+            from warp.recognition.boff_keys import (
+                parse_seat_profession, parse_seat_spec, is_seat_keyed,
+            )
+            if is_seat_keyed(slot_name):
+                seat_prof = parse_seat_profession(slot_name)
+                seat_spec = parse_seat_spec(slot_name)
+                if seat_prof is None:
+                    return True  # Universal seat — any profession allowed
+                accepted_profs = {seat_prof}
+                if seat_spec:
+                    accepted_profs.add(seat_spec)
+                    # parse_seat_spec returns 'Temporal'; cache key is 'Temporal Operative'.
+                    if seat_spec == 'Temporal':
+                        accepted_profs.add('Temporal Operative')
+            elif slot_name == 'Boff Universal':
                 return True
+            else:
+                legacy = slot_name.replace('Boff ', '').strip()
+                if not legacy:
+                    return True
+                accepted_profs = {legacy}
             try:
                 for env in ('space', 'ground'):
-                    rank_lists = (self._app.cache.boff_abilities
-                                  .get(env, {}).get(seat_prof, []))
-                    for rank_dict in rank_lists:
-                        if isinstance(rank_dict, dict) and item_name in rank_dict:
-                            return True
+                    for prof in accepted_profs:
+                        rank_lists = (self._app.cache.boff_abilities
+                                      .get(env, {}).get(prof, []))
+                        for rank_dict in rank_lists:
+                            if isinstance(rank_dict, dict) and item_name in rank_dict:
+                                return True
             except Exception:
                 return True
-            _slog.info(f'  _item_valid_for_slot: {item_name!r} not a {seat_prof} ability '
-                       f'(slot {slot_name!r})')
+            _slog.info(f'  _item_valid_for_slot: {item_name!r} not in '
+                       f'{sorted(accepted_profs)} (slot {slot_name!r})')
             return False
 
         # ── Equipment slots ──
