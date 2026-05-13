@@ -27,6 +27,7 @@ except Exception:
 
 from warp.recognition import boff_marker as _boff_marker
 from warp.recognition import trait_grid as _trait_grid
+from warp.recognition.eq_geometry import detect_eq_geometry, EQGeometry
 
 OCR_CONF_THRESHOLD = 0.40
 LABEL_FUZZY_CUTOFF = 0.68
@@ -281,6 +282,29 @@ class LayoutDetector:
         self._ocr = None
         self._calibration = self._load_calibration()
         self._community_anchors: list | None = None  # instance cache for community_anchors.json (P11)
+        # Per-image cached EQ geometry result (keyed by id(img)).
+        # Populated lazily by _get_eq_geometry so multiple callers share one OCR run.
+        self._eq_geom_cache: dict[int, EQGeometry | None] = {}
+
+    def _get_eq_geometry(self, img: np.ndarray) -> EQGeometry | None:
+        """Cached wrapper around detect_eq_geometry. Returns None when OCR
+        yields no usable EQ labels (e.g. BOFF-only or trait-only screen)."""
+        key = id(img)
+        if key in self._eq_geom_cache:
+            return self._eq_geom_cache[key]
+        try:
+            geom = detect_eq_geometry(img)
+        except Exception as e:
+            _slog.warning(f'LayoutDetector: detect_eq_geometry crashed: {e}')
+            geom = None
+        self._eq_geom_cache[key] = geom
+        if geom is not None:
+            _slog.info(
+                f'LayoutDetector: eq_geometry mode={geom.mode} '
+                f'p_start={geom.panel_x_start} p_right={geom.panel_right} '
+                f'dx={geom.final_dx:.1f} pitch={geom.row_pitch} '
+                f'rows={len(geom.row_cys)}')
+        return geom
 
     def detect(self, img: np.ndarray, build_type: str, ship_profile: dict | None = None,
                icon_matcher=None, app_cache=None) -> dict[str, list[tuple[int, int, int, int]]]:
@@ -1806,8 +1830,67 @@ class LayoutDetector:
         return max(1, count), cell_states
 
     def _detect_via_pixel_analysis(self, img, slot_order, profile):
+        """Equipment layout detection.
+
+        Primary path uses OCR-anchored EQ geometry (eq_geometry.detect_eq_geometry):
+        OCR labels supply row anchors, single-slot icon right-edges supply
+        panel_right, and dx is computed as (panel_right - panel_x_start) / 6.
+        Cell width = final_dx, icon dims derived from row_pitch. Rows map
+        index-wise onto slot_order (top→bottom), capped at the number of
+        visible rows.
+
+        Fallback (no EQ labels found, OCR failure, etc.) is the legacy
+        brightness/row-separator scan retained as _detect_via_pixel_analysis_legacy.
+        """
         h, w = img.shape[:2]
-        panel_right = self._find_panel_right_edge(img)
+        geom = self._get_eq_geometry(img)
+        if geom is None or not geom.row_cys:
+            return self._detect_via_pixel_analysis_legacy(img, slot_order, profile)
+
+        panel_x_start = geom.panel_x_start
+        panel_right   = geom.panel_right
+        cell_w  = max(20, int(round(geom.final_dx)))
+        icon_w  = max(20, cell_w - 4)
+        icon_h  = max(20, int(round(geom.row_pitch * 0.85)))
+        # Cap iteration at visible rows; shorter slot_order (smaller ships)
+        # still works because index-wise mapping ignores extra rows.
+        n_rows = min(len(geom.row_cys), len(slot_order))
+        if n_rows == 0:
+            return self._detect_via_pixel_analysis_legacy(img, slot_order, profile)
+
+        result: dict = {}
+        for i in range(n_rows):
+            slot_name = slot_order[i]
+            cy = geom.row_cys[i]
+            y_top = max(0, cy - icon_h // 2)
+            y_bot = min(h, cy + icon_h // 2)
+            pixel_count, _ = self._count_icons_in_row(
+                img, y_top, y_bot, panel_right, cell_w, slot_name)
+            profile_count = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
+            if profile_count <= 1:
+                # Single mandatory slot — pixel count unreliable, trust profile.
+                n_icons = profile_count
+            else:
+                # Multi-slot row: ShipDB profile is the floor, allow +1 for T6-X.
+                n_icons = min(max(pixel_count, profile_count), profile_count + 1)
+            if n_icons == 0:
+                continue
+            _slog.info(
+                f'LayoutDetector: row {i} [{slot_name}] '
+                f'pixel_count={pixel_count} profile={profile_count} → using {n_icons}')
+            bboxes = []
+            for j in range(n_icons):
+                bx = max(0, panel_right - (j + 1) * cell_w + 2)
+                bboxes.append((bx, cy - icon_h // 2, icon_w, icon_h))
+            bboxes.reverse()
+            result[slot_name] = bboxes
+        return result
+
+    def _detect_via_pixel_analysis_legacy(self, img, slot_order, profile):
+        """Brightness/row-separator fallback used when OCR-anchored geometry
+        cannot lock onto EQ labels (no usable text, BOFF-only screen, etc.)."""
+        h, w = img.shape[:2]
+        panel_right = self._find_panel_right_edge_brightness(img)
         if panel_right < w * 0.3: return {}
         row_seps = self._find_row_separators(img, max(0, panel_right - int(w * 0.25)), panel_right)
         if len(row_seps) < 3: return {}
@@ -1819,20 +1902,14 @@ class LayoutDetector:
         for i, (y_top, y_bot) in enumerate(row_bounds):
             if i >= len(slot_order): break
             slot_name = slot_order[i]
-            # Count icons by pixel brightness — more reliable than profile for unknown ships
             pixel_count, _ = self._count_icons_in_row(img, y_top, y_bot, panel_right, cell_w, slot_name)
             profile_count = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
             if profile_count <= 1:
-                # Single mandatory slot (Deflector, Engines, Warp Core, Shield)
-                # Pixel count unreliable here — use profile exactly
                 n_icons = profile_count
             else:
-                # Multi-slot row: pixel analysis can undercount (empty slots, misalignment)
-                # Use max of pixel count and profile count so ShipDB is the floor,
-                # but allow pixel count to exceed profile by 1 (T6-X tier upgrades)
                 n_icons = min(max(pixel_count, profile_count), profile_count + 1)
             if n_icons == 0: continue
-            _slog.info(f'LayoutDetector: row {i} [{slot_name}] pixel_count={pixel_count} profile={profile_count} → using {n_icons}')
+            _slog.info(f'LayoutDetector: row {i} [{slot_name}] pixel_count={pixel_count} profile={profile_count} → using {n_icons} (legacy)')
             iy, bboxes = (y_top + y_bot) // 2 - icon_h // 2, []
             for j in range(n_icons): bboxes.append((max(0, panel_right - (j + 1) * cell_w + 2), iy, icon_w, icon_h))
             bboxes.reverse()
@@ -1840,6 +1917,21 @@ class LayoutDetector:
         return result
 
     def _find_panel_right_edge(self, img: np.ndarray) -> int:
+        """Right edge of the equipment matrix in pixels.
+
+        Primary: OCR-anchored EQ geometry detector — uses single-slot icon
+        right-edges (Deflector/Engines/Warp Core/Shields) for pixel-accurate
+        anchoring. Falls back to a brightness-histogram scan when no EQ labels
+        are detected (e.g. BOFF-only or trait-only screens reaching deep
+        fallback paths)."""
+        geom = self._get_eq_geometry(img)
+        if geom is not None:
+            return geom.panel_right
+        return self._find_panel_right_edge_brightness(img)
+
+    def _find_panel_right_edge_brightness(self, img: np.ndarray) -> int:
+        """Legacy brightness-histogram fallback. Walks columns right→left and
+        returns the first x whose 10 horizontal bands are ≥7/10 bright."""
         h, w = img.shape[:2]
         y_bands = [(int(h * 0.03 + i * int(h * 0.87 / 10)), int(h * 0.03 + (i + 1) * int(h * 0.87 / 10))) for i in range(10)]
         for x in range(w - 2, max(w // 5, 50), -1):

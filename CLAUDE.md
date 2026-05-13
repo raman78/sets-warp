@@ -125,10 +125,58 @@ Replaced with `torch.save(model.state_dict(), 'model.pt')`.
 
 4. **Layout detection** (`layout_detector.py`):
    - Strategy 1: confirmed annotations as direct bboxes (most accurate)
-   - Strategy 2: pixel analysis (counts bright cells right-to-left)
+   - Strategy 2: pixel analysis — OCR-anchored EQ geometry (see below)
      - Single-slot rows (Deflector=1, Engines=1, etc.) always use profile count exactly
    - Strategy 3: learned layouts (anchors.json)
    - Strategy 4: default calibration anchors
+
+### EQ panel geometry detector (`eq_geometry.py`)
+
+Single source of truth for the 6-cell × N-row equipment matrix used by
+SPACE/GROUND/MIXED equipment pipelines. Pure detection — no annotations.json
+access, no GT look-up.
+
+`detect_eq_geometry(img) → EQGeometry | None` returns:
+- `panel_x_start`, `panel_right`, `final_dx`, `row_pitch`, `row_cys`, `mode`
+
+Pipeline:
+1. EasyOCR full image → label tokens
+2. Classify tokens (fore/aft/weapons/consoles/...) + 2-line composite pairing
+3. **X-cluster canonical-named hits** by x1; keep the LARGEST group as the EQ
+   column. Discards off-panel labels (HUD "Shields", specialization
+   "Miracle Worker", etc.)
+4. `detect_stripe_start` (HSV gradient) per label → `panel_x_start` (median)
+5. `row_pitch` = median of cy-gaps / canonical-step-count between EQ-column hits
+6. `est_dx = row_pitch × 0.725`
+7. `_detect_right_edge_adaptive_bg` (RTL adaptive-bg scan, requires 2
+   consecutive bright columns above `min(col_means) + 12`) on canonical
+   single-slot rows (Deflector / Engines / Warp Core / Shields) → `panel_right`
+8. Math fallback when no single-slot row scan succeeds:
+   `panel_right = panel_x_start + 6 × est_dx`
+9. `final_dx = (panel_right − panel_x_start) / 6`
+10. `row_cys` from EQ-column OCR hits + linear interpolation between
+    consecutive cys (no extrapolation beyond first/last anchor)
+
+**`DX_RATIO = 0.725`** — derived from statistical measurement across 38
+GT-annotated screens (median ratio of GT dx to OCR-derived row_pitch).
+Stdev ~0.03. Used only as default multiplier for `est_dx` — `final_dx`
+is recomputed from the pixel-detected `panel_right` whenever possible.
+Replaces an older `row_pitch / 1.5 + 3` formula which underestimated
+dx by ~1.3 px/cell on big-icon panels.
+
+Wired into `LayoutDetector`:
+- `_get_eq_geometry(img)` — per-image cache keyed by `id(img)`, shares one
+  OCR run across all callers
+- `_find_panel_right_edge(img)` — uses `geom.panel_right` when EQ labels
+  found, falls back to brightness-histogram (`_find_panel_right_edge_brightness`)
+- `_detect_via_pixel_analysis(img, slot_order, profile)` — uses
+  `geom.row_cys` (one per slot, top→bottom), `geom.final_dx` as cell width,
+  `geom.row_pitch × 0.85` as icon height. Falls back to
+  `_detect_via_pixel_analysis_legacy` (row-separator brightness scan) when
+  geometry detection fails
+
+BOFF and trait detection paths (Strategy 0 marker/grid detectors) do NOT
+go through `_detect_via_pixel_analysis` and are unaffected.
 
 5. **Icon matching** (`icon_matcher.py`):
    - Template matching (session examples) → HSV histogram k-NN → local PyTorch EfficientNet → HF ONNX fallback
