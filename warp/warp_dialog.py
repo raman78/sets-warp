@@ -93,6 +93,12 @@ _SETTINGS_KEY_LAST_DIR = 'warp/last_import_dir'
 
 SCREENSHOT_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 
+# ── Configuration Constants ───────────────────────────────────────────────────
+_BOFF_Y_THRESHOLD_PX = 30
+_BOFF_X_THRESHOLD_PX = 50
+_FUZZY_MATCH_CUTOFF = 0.68
+_MIN_CONFIDENCE_PROFESSION = 0.40
+
 
 # ── Background worker ──────────────────────────────────────────────────────────
 
@@ -327,174 +333,20 @@ class WarpDialog(QDialog):
         Writes all recognised items directly into the SETS build (no review step).
         Only items with a non-empty name are imported.
         """
-        from src.buildupdater import slot_equipment_item, slot_trait_item
-
         r = self._import_result
         if r is None:
             return
 
-        _ship_data = None  # captured for boff seat mapping after ship selection
+        ship_data = self._resolve_and_apply_ship(r.ship_type, r.ship_tier)
 
-        # Set ship info if recognised
-        # Set ship name, ship selection and tier from recognised result
-        _slog.info(f'WARP: _apply_to_sets ship_name={r.ship_name!r} ship_type={r.ship_type!r} ship_tier={r.ship_tier!r}')
-        try:
-            from src.buildupdater import clear_ship
-            build   = self._sets.build['space']
-            widgets = self._sets.widgets
-            # ship_name is privacy-sensitive (player-given name) — not written to SETS
-            # Always select ship class from detection; clear if not recognized
-            if r.ship_type:
-                from difflib import get_close_matches
-                ships = getattr(self._sets.cache, 'ships', {})
-                candidates = list(ships.keys())
-                # Try exact then fuzzy match
-                match = None
-                if r.ship_type in ships:
-                    match = r.ship_type
-                else:
-                    # Word-subset: OCR may omit subtype words (e.g. 'Nautilus')
-                    ocr_words = set(r.ship_type.lower().split())
-                    subset_hits = [c for c in candidates
-                                   if ocr_words.issubset(set(c.lower().split()))]
-                    if len(subset_hits) == 1:
-                        match = subset_hits[0]
-                    elif len(subset_hits) > 1:
-                        # Pick fewest extra words
-                        match = min(subset_hits,
-                                    key=lambda c: len(set(c.lower().split()) - ocr_words))
-                    else:
-                        hits = get_close_matches(r.ship_type, candidates, n=1, cutoff=0.68)
-                        if hits:
-                            match = hits[0]
-                if match:
-                    _slog.info(f'WARP: auto-selecting ship {match!r} from {r.ship_type!r}')
-                    # Use select_ship logic directly — handles image, tier, slots
-                    try:
-                        from src.callbacks import (
-                            _save_session_slots, _restore_session_slots,
-                            align_space_frame)
-                        from src.widgets import exec_in_thread
-                        sets = self._sets
-                        ship_data = ships[match]
-                        _ship_data = ship_data  # capture for boff writing below
-                        sets.building = True
-                        widgets.ship['button'].setText(match)
-                        # Load image
-                        image_filename = ship_data['image'][5:]
-                        def _on_ship_image(img, _w=widgets):
-                            ship_img = img[0]
-                            _w.ship['image'].set_image(ship_img)
-                        exec_in_thread(sets, sets.images.get_ship_image,
-                                       image_filename, result=_on_ship_image)
-                        # Tier combo
-                        tier = ship_data['tier']
-                        widgets.ship['tier'].clear()
-                        if tier == 6:
-                            widgets.ship['tier'].addItems(('T6', 'T6-X', 'T6-X2'))
-                        elif tier == 5:
-                            widgets.ship['tier'].addItems(('T5', 'T5-U', 'T5-X', 'T5-X2'))
-                        else:
-                            widgets.ship['tier'].addItem(f'T{tier}')
-                        # Set tier from recognised result (e.g. T6-X2)
-                        ship_tier = r.ship_tier or f'T{tier}'
-                        idx = widgets.ship['tier'].findText(ship_tier)
-                        if idx >= 0:
-                            widgets.ship['tier'].setCurrentIndex(idx)
-                        sets.build['space']['ship'] = match
-                        sets.build['space']['tier'] = ship_tier
-                        if ship_data.get('equipcannons') == 'yes':
-                            widgets.ship['dc'].show()
-                        else:
-                            widgets.ship['dc'].hide()
-                        _save_session_slots(sets)
-                        align_space_frame(sets, ship_data, clear=False)
-                        _restore_session_slots(sets)
-                        sets.building = False
-                    except Exception as _se:
-                        _slog.warning(f'WARP: ship select failed: {_se}')
-                else:
-                    _slog.info(f'WARP: ship {r.ship_type!r} not found in cache — clearing ship')
-                    clear_ship(self._sets)
-            else:
-                # No ship type detected — clear ship selection
-                _slog.info('WARP: no ship type detected — clearing ship selection')
-                clear_ship(self._sets)
-        except Exception as _e:
-            _slog.warning(f'WARP: ship info widget update failed: {_e}')
+        boff_items, overflow_consoles, written_indices = self._import_equipment_and_traits(r.items)
 
-        boff_items = []
-        # Console overflow: uni_consoles items that exceed the build's slot count are
-        # redistributed to eng/sci/tac after the main loop (sorted by Y position).
-        _overflow_console: list = []
-        _written_to: dict[str, int] = {}  # build_key → next available write index
-
-        for ri in r.items:
-            if not ri.name:
-                continue
-            if ri.name in VIRTUAL_ITEM_NAMES:
-                continue  # empty/inactive slot — position recorded for layout learning, nothing to write
-            # Boff abilities are handled separately after equipment/traits
-            if ri.slot.startswith('Boff '):
-                boff_items.append(ri)
-                continue
-            slot_info = SLOT_MAP.get(ri.slot)
-            if not slot_info:
-                log.warning(f'WARP: Unknown slot "{ri.slot}" — skipping')
-                continue
-
-            build_key, env, is_equipment = slot_info
-            idx = ri.slot_index
-
-            try:
-                if is_equipment:
-                    item_data = self._make_equipment_item(ri, build_key, env)
-                    if item_data:
-                        build_list = self._sets.build[env].get(build_key, [])
-                        if idx >= len(build_list):
-                            if build_key == 'uni_consoles':
-                                # Queue for redistribution to eng/sci/tac after main loop
-                                _overflow_console.append((ri, item_data, env))
-                            else:
-                                log.warning(
-                                    f'WARP: slot {ri.slot}[{idx}] out of range '
-                                    f'(build has {len(build_list)} slots) — skipping "{ri.name}"'
-                                )
-                        else:
-                            slot_equipment_item(self._sets, item_data, env, build_key, idx)
-                            if 'console' in build_key:
-                                _written_to[build_key] = max(
-                                    _written_to.get(build_key, 0), idx + 1)
-                else:
-                    item_data = {'item': ri.name}
-                    slot_trait_item(self._sets, item_data, env, build_key, idx)
-            except Exception as e:
-                log.warning(f'WARP: Failed to import "{ri.name}" into {ri.slot}[{idx}]: {e}')
-
-        # Redistribute overflow uni_consoles items into available eng/sci/tac slots,
-        # sorted by Y position so screen order is preserved.
-        if _overflow_console:
-            _overflow_console.sort(key=lambda x: x[0].bbox[1] if x[0].bbox else 0)
-            for ri, item_data, env in _overflow_console:
-                placed = False
-                for ck in ('eng_consoles', 'sci_consoles', 'tac_consoles'):
-                    next_idx = _written_to.get(ck, 0)
-                    bl = self._sets.build[env].get(ck, [])
-                    if next_idx < len(bl):
-                        slot_equipment_item(self._sets, item_data, env, ck, next_idx)
-                        _written_to[ck] = next_idx + 1
-                        log.info(
-                            f'WARP: {ri.slot}[{ri.slot_index}] overflow → {ck}[{next_idx}] "{ri.name}"')
-                        placed = True
-                        break
-                if not placed:
-                    log.warning(
-                        f'WARP: {ri.slot}[{ri.slot_index}] overflow — no console slot available '
-                        f'for "{ri.name}"')
+        if overflow_consoles:
+            self._handle_console_overflow(overflow_consoles, written_indices)
 
         if boff_items:
-            _is_ground_boffs = getattr(self.result, 'build_type', '') == 'GROUND_BOFFS'
-            self._write_boffs_to_build(boff_items, _ship_data, is_ground=_is_ground_boffs)
+            is_ground = (getattr(r, 'build_type', '') == 'GROUND_BOFFS')
+            self._write_boffs_to_build(boff_items, ship_data, is_ground=is_ground)
 
         # Switch to the correct build tab
         tab_map = {
@@ -507,98 +359,263 @@ class WarpDialog(QDialog):
         self._sets.switch_main_tab(tab_idx)
         self._sets.autosave()
 
-    def _write_boffs_to_build(self, boff_items: list, ship_data: dict | None,
-                               is_ground: bool = False) -> None:
-        """Write recognized boff abilities to the SETS build.
-
-        Two-phase approach:
-        1. Y/X clustering: group boff items by position into per-seat clusters.
-           STO's BOFFS screen can show 2 seats on the same visual row (same Y band)
-           separated by a large X gap — handled by pass-2 X splitting.
-        2. Profession matching: each cluster is matched to the correct ship seat by
-           comparing the dominant ability profession against seat definitions.
-           This is robust regardless of ship_data['boffs'] ordering.
-
-        is_ground=True: write to build['ground']['boffs'] using the current ground
-        build's seat configuration (4 fixed seats, no ship_data needed).
+    def _resolve_and_apply_ship(self, ship_type: str | None, ship_tier: str | None) -> dict | None:
         """
-        from collections import Counter
-        from src.buildupdater import get_boff_spec, load_boff_stations
+        Matches ship type against SETS cache and applies it to the UI and build.
+        Returns the matched ship_data dict if successful, otherwise None.
+        """
+        _slog.info(f'WARP: resolving ship_type={ship_type!r} ship_tier={ship_tier!r}')
+        try:
+            from src.buildupdater import clear_ship
+            widgets = self._sets.widgets
+            
+            if not ship_type:
+                _slog.info('WARP: no ship type detected — clearing ship selection')
+                clear_ship(self._sets)
+                return None
 
-        if is_ground:
-            # Ground boffs: 4 fixed seats defined by the current build, not ship_data
-            boffs_build  = self._sets.build['ground']['boffs']
-            _boff_profs  = self._sets.build['ground'].get('boff_profs', {})
-            _boff_specs  = self._sets.build['ground'].get('boff_specs', {})
-            n_seats      = len(boffs_build)
-            seats_visual = [(4, _boff_profs.get(i, 'Universal'), _boff_specs.get(i))
-                            for i in range(n_seats)]
-            visual_to_seat_id = {i: i for i in range(n_seats)}
-        else:
-            if not ship_data:
-                _slog.debug(f'WARP boff: no ship_data — {len(boff_items)} items ignored')
-                return
-            ship_seats_raw = ship_data.get('boffs', [])
-            if not ship_seats_raw:
-                _slog.warning('WARP boff: ship_data has no boffs field')
-                return
-            # Parse all seats; build SETS seat_id mapping (rank-descending sort,
-            # same as align_space_frame).
+            from difflib import get_close_matches
+            ships = getattr(self._sets.cache, 'ships', {})
+            candidates = list(ships.keys())
+            
+            match = None
+            if ship_type in ships:
+                match = ship_type
+            else:
+                ocr_words = set(ship_type.lower().split())
+                subset_hits = [c for c in candidates if ocr_words.issubset(set(c.lower().split()))]
+                if len(subset_hits) == 1:
+                    match = subset_hits[0]
+                elif len(subset_hits) > 1:
+                    match = min(subset_hits, key=lambda c: len(set(c.lower().split()) - ocr_words))
+                else:
+                    hits = get_close_matches(ship_type, candidates, n=1, cutoff=_FUZZY_MATCH_CUTOFF)
+                    if hits:
+                        match = hits[0]
+
+            if not match:
+                _slog.info(f'WARP: ship {ship_type!r} not found in cache — clearing ship')
+                clear_ship(self._sets)
+                return None
+
+            _slog.info(f'WARP: auto-selecting ship {match!r} from {ship_type!r}')
             try:
-                seats_visual = [get_boff_spec(self._sets, s) for s in ship_seats_raw]
+                from src.callbacks import _save_session_slots, _restore_session_slots, align_space_frame
+                from src.widgets import exec_in_thread
+                sets = self._sets
+                ship_data = ships[match]
+                
+                sets.building = True
+                widgets.ship['button'].setText(match)
+                
+                image_filename = ship_data['image'][5:]
+                def _on_ship_image(img, _w=widgets):
+                    _w.ship['image'].set_image(img[0])
+                exec_in_thread(sets, sets.images.get_ship_image, image_filename, result=_on_ship_image)
+                
+                tier = ship_data['tier']
+                widgets.ship['tier'].clear()
+                if tier == 6:
+                    widgets.ship['tier'].addItems(('T6', 'T6-X', 'T6-X2'))
+                elif tier == 5:
+                    widgets.ship['tier'].addItems(('T5', 'T5-U', 'T5-X', 'T5-X2'))
+                else:
+                    widgets.ship['tier'].addItem(f'T{tier}')
+                    
+                target_tier = ship_tier or f'T{tier}'
+                idx = widgets.ship['tier'].findText(target_tier)
+                if idx >= 0:
+                    widgets.ship['tier'].setCurrentIndex(idx)
+                    
+                sets.build['space']['ship'] = match
+                sets.build['space']['tier'] = target_tier
+                if ship_data.get('equipcannons') == 'yes':
+                    widgets.ship['dc'].show()
+                else:
+                    widgets.ship['dc'].hide()
+                    
+                _save_session_slots(sets)
+                align_space_frame(sets, ship_data, clear=False)
+                _restore_session_slots(sets)
+                sets.building = False
+                
+                return ship_data
+                
+            except Exception as _se:
+                _slog.warning(f'WARP: ship select failed: {_se}')
+                return None
+                
+        except Exception as _e:
+            _slog.warning(f'WARP: ship info widget update failed: {_e}')
+            return None
+
+    def _import_equipment_and_traits(self, items: list[RecognisedItem]) -> tuple[list, list, dict]:
+        """
+        Iterates over recognised items, sorting BOFF abilities and processing equipment/traits.
+        Returns (boff_items, overflow_consoles, written_indices).
+        """
+        from src.buildupdater import slot_equipment_item, slot_trait_item
+        boff_items = []
+        overflow_consoles = []
+        written_indices = {}
+
+        for ri in items:
+            if not ri.name or ri.name in VIRTUAL_ITEM_NAMES:
+                continue
+
+            if ri.slot.startswith('Boff '):
+                boff_items.append(ri)
+                continue
+
+            slot_info = SLOT_MAP.get(ri.slot)
+            if not slot_info:
+                log.warning(f'WARP: Unknown slot "{ri.slot}" — skipping')
+                continue
+
+            build_key, env, is_equipment = slot_info
+            idx = ri.slot_index
+
+            try:
+                if not is_equipment:
+                    item_data = {'item': ri.name}
+                    slot_trait_item(self._sets, item_data, env, build_key, idx)
+                    continue
+
+                item_data = self._make_equipment_item(ri, build_key, env)
+                if not item_data:
+                    continue
+
+                build_list = self._sets.build[env].get(build_key, [])
+                if idx >= len(build_list):
+                    if build_key == 'uni_consoles':
+                        overflow_consoles.append((ri, item_data, env))
+                    else:
+                        log.warning(f'WARP: slot {ri.slot}[{idx}] out of range — skipping "{ri.name}"')
+                    continue
+
+                slot_equipment_item(self._sets, item_data, env, build_key, idx)
+                if 'console' in build_key:
+                    written_indices[build_key] = max(written_indices.get(build_key, 0), idx + 1)
+
             except Exception as e:
-                _slog.warning(f'WARP boff: could not parse seat specs: {e}')
-                return
-            # visual_to_seat_id[ship_data_idx] = SETS seat_id (rank-desc position)
-            sorted_ix = sorted(enumerate(seats_visual), key=lambda p: p[1], reverse=True)
-            visual_to_seat_id = {vis_i: seat_id for seat_id, (vis_i, _) in enumerate(sorted_ix)}
-            boffs_build  = self._sets.build['space']['boffs']
-            _boff_profs  = None   # not used for space
-            _boff_specs  = self._sets.build['space']['boff_specs']
+                log.warning(f'WARP: Failed to import "{ri.name}" into {ri.slot}[{idx}]: {e}')
 
-        # ── Phase 1: cluster boff items into per-seat groups ─────────────────
-        # Pass A: Y-bands (new band if Y gap > threshold)
-        # Pass B: within each Y-band, split on large X gaps between item edges
-        Y_THRESHOLD = 30   # px
-        X_THRESHOLD = 50   # px — within-seat gap ~2-5px, between-seat ~100px+
+        return boff_items, overflow_consoles, written_indices
 
+    def _handle_console_overflow(self, overflow_items: list, written_indices: dict):
+        """
+        Redistributes overflow uni_consoles items into available eng/sci/tac slots.
+        """
+        from src.buildupdater import slot_equipment_item
+        overflow_items.sort(key=lambda x: x[0].bbox[1] if x[0].bbox else 0)
+        
+        for ri, item_data, env in overflow_items:
+            placed = False
+            for ck in ('eng_consoles', 'sci_consoles', 'tac_consoles'):
+                next_idx = written_indices.get(ck, 0)
+                bl = self._sets.build[env].get(ck, [])
+                if next_idx < len(bl):
+                    slot_equipment_item(self._sets, item_data, env, ck, next_idx)
+                    written_indices[ck] = next_idx + 1
+                    log.info(f'WARP: {ri.slot}[{ri.slot_index}] overflow → {ck}[{next_idx}] "{ri.name}"')
+                    placed = True
+                    break
+            if not placed:
+                log.warning(f'WARP: {ri.slot}[{ri.slot_index}] overflow — no console slot available for "{ri.name}"')
+
+    def _write_boffs_to_build(self, boff_items: list, ship_data: dict | None, is_ground: bool = False) -> None:
+        """
+        Orchestrates writing recognized BOFF abilities to the SETS build.
+        Divides the process into preparation, clustering, matching, and UI updating.
+        """
+        seats_visual, visual_to_seat_id, boffs_build = self._prepare_boff_seats(ship_data, is_ground)
+        if not seats_visual:
+            return
+
+        seat_clusters = self._cluster_boff_items(boff_items)
+        if not seat_clusters:
+            return
+
+        assigned, cluster_info = self._match_clusters_to_seats(seat_clusters, seats_visual)
+        if not assigned:
+            _slog.warning('WARP boff: No BOFF clusters matched to seats.')
+            return
+
+        self._write_abilities_to_ui(assigned, cluster_info, seats_visual, visual_to_seat_id, boffs_build, is_ground)
+
+    def _prepare_boff_seats(self, ship_data: dict | None, is_ground: bool) -> tuple[list, dict, list]:
+        """
+        Extracts BOFF seat configuration based on build type (ground or space).
+        Returns (seats_visual, visual_to_seat_id, boffs_build).
+        """
+        from src.buildupdater import get_boff_spec
+        
+        if is_ground:
+            boffs_build = self._sets.build['ground']['boffs']
+            _boff_profs = self._sets.build['ground'].get('boff_profs', {})
+            _boff_specs = self._sets.build['ground'].get('boff_specs', {})
+            n_seats = len(boffs_build)
+            seats_visual = [(4, _boff_profs.get(i, 'Universal'), _boff_specs.get(i)) for i in range(n_seats)]
+            visual_to_seat_id = {i: i for i in range(n_seats)}
+            return seats_visual, visual_to_seat_id, boffs_build
+
+        if not ship_data or not ship_data.get('boffs'):
+            _slog.warning('WARP boff: space build requested but ship_data has no boffs field.')
+            return [], {}, []
+            
+        try:
+            seats_visual = [get_boff_spec(self._sets, s) for s in ship_data['boffs']]
+        except Exception as e:
+            _slog.warning(f'WARP boff: could not parse seat specs: {e}')
+            return [], {}, []
+            
+        sorted_ix = sorted(enumerate(seats_visual), key=lambda p: p[1], reverse=True)
+        visual_to_seat_id = {vis_i: seat_id for seat_id, (vis_i, _) in enumerate(sorted_ix)}
+        boffs_build = self._sets.build['space']['boffs']
+        return seats_visual, visual_to_seat_id, boffs_build
+
+    def _cluster_boff_items(self, boff_items: list) -> list[list]:
+        """
+        Groups recognized BOFF items by Y-position, then splits by large X gaps.
+        Returns a list of item clusters, one per detected seat.
+        """
         items_with_bbox = [ri for ri in boff_items if ri.bbox]
         if not items_with_bbox:
             _slog.warning('WARP boff: no boff items with bbox — cannot route')
-            return
+            return []
 
         items_sorted_y = sorted(items_with_bbox, key=lambda ri: ri.bbox[1])
-
-        y_bands: list[list] = []
+        y_bands = []
         for ri in items_sorted_y:
-            y = ri.bbox[1]
-            if not y_bands or y - y_bands[-1][-1].bbox[1] > Y_THRESHOLD:
+            if not y_bands or ri.bbox[1] - y_bands[-1][-1].bbox[1] > _BOFF_Y_THRESHOLD_PX:
                 y_bands.append([ri])
             else:
                 y_bands[-1].append(ri)
 
-        seat_clusters: list[list] = []
+        seat_clusters = []
         for band in y_bands:
             x_sorted = sorted(band, key=lambda ri: ri.bbox[0])
             cluster = [x_sorted[0]]
             for ri in x_sorted[1:]:
                 prev_right = cluster[-1].bbox[0] + cluster[-1].bbox[2]
-                if ri.bbox[0] - prev_right > X_THRESHOLD:
+                if ri.bbox[0] - prev_right > _BOFF_X_THRESHOLD_PX:
                     seat_clusters.append(cluster)
                     cluster = [ri]
                 else:
                     cluster.append(ri)
             seat_clusters.append(cluster)
+            
+        _slog.info(f'WARP boff: {len(items_with_bbox)} items → {len(y_bands)} Y-bands → {len(seat_clusters)} clusters')
+        return seat_clusters
 
-        _slog.info(f'WARP boff: {len(items_with_bbox)} items → '
-                   f'{len(y_bands)} Y-bands → {len(seat_clusters)} seat clusters '
-                   f'(ship has {len(ship_seats_raw)} seats)')
-
-        # ── Phase 2: match each cluster to a ship seat by profession ─────────
+    def _match_clusters_to_seats(self, seat_clusters: list[list], seats_visual: list) -> tuple[dict, list]:
+        """
+        Matches BOFF item clusters to available UI seats based on profession alignment.
+        Returns (assigned_dict, cluster_info_list).
+        """
         from warp.recognition.boff_keys import parse_seat_profession, parse_seat_spec
         from collections import Counter
-
-        # Map spec name → profession name (for Universal-spec seats and spec-prof seats)
+        
         _SPEC_TO_PROF = {
             'Temporal Operative': 'Temporal',
             'Command':            'Command',
@@ -607,21 +624,15 @@ class WarpDialog(QDialog):
             'Pilot':              'Pilot',
         }
 
-        # For each cluster, compute the profession distribution from slot annotations.
-        ClusterInfo = list[tuple]   # (cluster_items, base_prof, prof_set, spec_prof)
-        cluster_info: list = []
+        cluster_info = []
         for c in seat_clusters:
-            # Prefer original detector seat key (preserved on .seat_key) so
-            # the spec stripe info survives the per-ability profession remap
-            # done in warp_importer._remap_boff_seat_slots. Fall back to
-            # current .slot for back-compat with any non-remapped items.
             cluster_slot = getattr(c[0], 'seat_key', '') or c[0].slot
             base_prof = parse_seat_profession(cluster_slot)
             spec_prof = parse_seat_spec(cluster_slot)
             
             content_profs = []
             for ri in c:
-                if ri.confidence >= 0.40 and ri.name:
+                if ri.confidence >= _MIN_CONFIDENCE_PROFESSION and ri.name:
                     found = False
                     for domain in ['space', 'ground']:
                         for career, ranks in self._sets.cache.boff_abilities.get(domain, {}).items():
@@ -635,20 +646,11 @@ class WarpDialog(QDialog):
             
             prof_set = set(content_profs)
             if base_prof is None:
-                if content_profs:
-                    base_prof = Counter(content_profs).most_common(1)[0][0]
-                else:
-                    base_prof = 'Unknown'
-                    
+                base_prof = Counter(content_profs).most_common(1)[0][0] if content_profs else 'Unknown'
             cluster_info.append([c, base_prof, prof_set, spec_prof])
 
-        # Match clusters to seats in three passes:
-        # 1. Named profession seats (non-Universal) with specialization
-        # 2. Named profession seats (non-Universal) without specialization
-        # 3. Universal seats with specialization (match by spec-profession)
-        # 4. Universal seats without specialization (leftover clusters)
-        unmatched = list(range(len(cluster_info)))      # indices into cluster_info
-        assigned: dict[int, int] = {}                   # ship_data_idx → cluster_info_idx
+        unmatched = list(range(len(cluster_info)))
+        assigned = {}
 
         def _find_cluster(primary_prof: str, target_spec: str | None) -> int | None:
             for ci in unmatched:
@@ -671,8 +673,6 @@ class WarpDialog(QDialog):
             spec_prof = _SPEC_TO_PROF.get(spec) if spec else None
             ci = _find_cluster(prof, spec_prof)
             if ci is None and spec_prof:
-                # Fallback: combined seat (e.g. Engineering-Temporal) where all
-                # recognised abilities are from the spec profession cluster.
                 ci = _find_cluster(spec_prof, None)
             if ci is not None:
                 assigned[vis_i] = ci
@@ -688,7 +688,7 @@ class WarpDialog(QDialog):
                 assigned[vis_i] = ci
                 unmatched.remove(ci)
 
-        # Pass 4: Universal seats without spec — assign remaining clusters in order
+        # Pass 4: Universal seats without spec
         for vis_i, (rank, prof, spec) in enumerate(seats_visual):
             if prof != 'Universal' or spec or vis_i in assigned:
                 continue
@@ -696,34 +696,22 @@ class WarpDialog(QDialog):
                 ci = unmatched.pop(0)
                 assigned[vis_i] = ci
 
-        # ── Phase 3: write abilities to build ────────────────────────────────
-        def _slot_indices_from_x(items: list, rank: int) -> list[int]:
-            """Map abilities to slot indices using X-position gaps.
+        return assigned, cluster_info
 
-            Abilities in a BOFF seat row are evenly spaced. A gap that is
-            ~2× the minimum step means one empty slot sits between them.
-            With only one item we default to slot 0.
-            """
-            xs = [ri.bbox[0] for ri in items]
-            if len(xs) <= 1:
-                return [0]
-            gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
-            step = min(gaps)
-            if step <= 0:
-                return list(range(len(xs)))
-            indices = [0]
-            for gap in gaps:
-                jump = max(1, round(gap / step))
-                indices.append(min(indices[-1] + jump, rank - 1))
-            return indices
-
-        # Base professions a Universal seat can be set to (same options as the
-        # dropdown the user sees in the SETS UI).
+    def _write_abilities_to_ui(self, assigned: dict, cluster_info: list, seats_visual: list,
+                               visual_to_seat_id: dict, boffs_build: list, is_ground: bool) -> None:
+        """
+        Updates the UI elements for matched BOFF seats and writes the abilities into the SETS build structure.
+        """
+        from src.buildupdater import load_boff_stations
+        
         _BASE_PROFS = {'Tactical', 'Engineering', 'Science'}
-
-        env_key        = 'ground' if is_ground else 'space'
+        env_key = 'ground' if is_ground else 'space'
         all_boff_cache = self._sets.cache.boff_abilities.get('all', {})
-        written        = 0
+        written = 0
+
+        _boff_profs = self._sets.build['ground'].get('boff_profs', {}) if is_ground else None
+        _boff_specs = self._sets.build['space'].get('boff_specs', {}) if not is_ground else None
 
         for vis_i, ci in assigned.items():
             seat_id = visual_to_seat_id.get(vis_i)
@@ -734,66 +722,35 @@ class WarpDialog(QDialog):
             primary_prof = cluster_info[ci][1]
             cluster_items = sorted(cluster_info[ci][0], key=lambda ri: ri.bbox[0])
 
-            # For Universal seats: set the profession dropdown to match what was
-            # recognised — exactly as the user would do manually before picking
-            # abilities. Switch the dropdown BEFORE writing abilities so the
-            # profession-changed callback (which clears stale abilities of the
-            # old profession) only wipes the empty defaults from align_space_frame
-            # — our new abilities are written below into already-correct seat.
-            # Only applies to base professions (Tactical/Engineering/Science);
-            # spec-based professions (Temporal, Command, …) keep the seat base.
             if profession == 'Universal' and primary_prof in _BASE_PROFS:
                 if is_ground:
                     _boff_profs[seat_id] = primary_prof
                     try:
-                        ground_label = self._sets.widgets.build['ground']['boff_profs'][seat_id]
-                        ground_label.setCurrentText(primary_prof)
+                        self._sets.widgets.build['ground']['boff_profs'][seat_id].setCurrentText(primary_prof)
                     except Exception as _e:
                         _slog.warning(f'WARP boff: ground seat[{seat_id}] dropdown switch failed: {_e}')
-                    _slog.info(f'WARP boff: ground seat[{seat_id}] Universal → set to {primary_prof}')
-                elif seat_id < len(_boff_specs) and isinstance(_boff_specs[seat_id], list):
-                    # Take spec from the ship's seat config (`seats_visual`) — same
-                    # source `update_boff_seat` uses to build the combo options.
-                    # `_boff_specs[seat_id][1]` carries stale spec from the previous
-                    # build (preserved by align_space_frame(clear=False)) and may
-                    # not match any combo option → setCurrentText silently no-ops.
+                elif _boff_specs is not None and seat_id < len(_boff_specs) and isinstance(_boff_specs[seat_id], list):
                     seat_spec = spec or ''
-                    target_text = (f'{primary_prof} / {seat_spec}'
-                                   if seat_spec else primary_prof)
+                    target_text = f'{primary_prof} / {seat_spec}' if seat_spec else primary_prof
                     try:
-                        # setCurrentText fires currentTextChanged → callback
-                        # boff_profession_callback_space which clears stale
-                        # abilities AND sets _boff_specs[seat_id]. Order matters:
-                        # this MUST run before the ability-write loop below.
-                        space_label = self._sets.widgets.build['space']['boff_labels'][seat_id]
-                        space_label.setCurrentText(target_text)
+                        self._sets.widgets.build['space']['boff_labels'][seat_id].setCurrentText(target_text)
                     except Exception as _e:
                         _slog.warning(f'WARP boff: seat[{seat_id}] dropdown switch failed: {_e}')
-                        _boff_specs[seat_id][0] = primary_prof  # fallback
-                    _slog.info(f'WARP boff: seat[{seat_id}] Universal → set to {target_text!r}')
+                        _boff_specs[seat_id][0] = primary_prof
 
-            # Prefer detector-preserved slot_index (0..rank-1) — the marker
-            # detector emits 4 ordered bboxes per seat, and slot_index is the
-            # authoritative within-seat position. This preserves empty
-            # positions when an ability was rejected (low conf / wrong type):
-            # surviving items keep their original slot, with gaps left empty
-            # rather than collapsing the row left.
             direct = [ri.slot_index for ri in cluster_items]
-            if (all(0 <= si < rank for si in direct)
-                    and len(set(direct)) == len(direct)):
+            if all(0 <= si < rank for si in direct) and len(set(direct)) == len(direct):
                 slot_indices = direct
             else:
-                slot_indices = _slot_indices_from_x(cluster_items, rank)
+                slot_indices = self._slot_indices_from_x(cluster_items, rank)
+                
             _slog.info(f'WARP boff: seat[{seat_id}] {profession}/{spec or "-"} rank={rank} '
                        f'← {[ri.name for ri in cluster_items]} slots={slot_indices}')
 
             for ri, slot_idx in zip(cluster_items, slot_indices):
-                if slot_idx >= rank:
+                if slot_idx >= rank or ri.name in VIRTUAL_ITEM_NAMES:
                     continue
-                if ri.name in VIRTUAL_ITEM_NAMES:
-                    continue  # empty/inactive placeholder — position used for gap detection only
                 if ri.name not in all_boff_cache:
-                    _slog.info(f'WARP boff: {ri.name!r} not in boff cache — skip')
                     continue
                 boffs_build[seat_id][slot_idx] = {'item': ri.name}
                 written += 1
@@ -803,6 +760,23 @@ class WarpDialog(QDialog):
             _slog.info(f'WARP: wrote {written} boff abilities to build')
         else:
             _slog.warning('WARP boff: 0 abilities written — check cache or cluster matching')
+
+    def _slot_indices_from_x(self, items: list, rank: int) -> list[int]:
+        """
+        Maps abilities to slot indices using X-position gaps for cases where definitive slot_index is unreliable.
+        """
+        xs = [ri.bbox[0] for ri in items]
+        if len(xs) <= 1:
+            return [0]
+        gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+        step = min(gaps)
+        if step <= 0:
+            return list(range(len(xs)))
+        indices = [0]
+        for gap in gaps:
+            jump = max(1, round(gap / step))
+            indices.append(min(indices[-1] + jump, rank - 1))
+        return indices
 
     def _make_equipment_item(
         self, ri: RecognisedItem, build_key: str, env: str
