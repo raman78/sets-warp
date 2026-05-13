@@ -1832,10 +1832,15 @@ class LayoutDetector:
                         break
                 # else: empty/inactive slot within grid — keep scanning
         if slot_name and any(s in ('empty', 'inactive') for s in cell_states):
-            non_active = [(i, s) for i, s in enumerate(cell_states) if s != 'active']
+            # cell_states is indexed 0 = rightmost; report 1-based positions
+            # counted from the LEFT for human readability (pos 1 = leftmost slot).
+            n_cells = len(cell_states)
+            non_active = [(n_cells - i, s) for i, s in enumerate(cell_states)
+                          if s != 'active']
+            non_active.sort()
             _slog.info(
                 f'LayoutDetector: [{slot_name}] {count} active + '
-                + ', '.join(f'{s} at pos {i}' for i, s in non_active)
+                + ', '.join(f'{s} at pos {p}' for p, s in non_active)
             )
         return max(1, count), cell_states
 
