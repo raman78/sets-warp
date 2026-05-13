@@ -1776,7 +1776,8 @@ class LayoutDetector:
         return 'empty'
 
     def _count_icons_in_row(self, img, y_top, y_bot, panel_right, cell_w,
-                            slot_name: str = '') -> tuple[int, list[str]]:
+                            slot_name: str = '',
+                            panel_x_start: int | None = None) -> tuple[int, list[str]]:
         """
         Count active icons in a row, scanning right-to-left.
 
@@ -1789,19 +1790,28 @@ class LayoutDetector:
         A background cell is any dark cell that lies outside the known
         slot grid (distinguished from empty/inactive by context: once
         we exit the grid there is no more slot structure).
+
+        When `panel_x_start` is given the scan is hard-capped to the
+        6-cell matrix width — we stop as soon as the next sample would
+        cross the panel's left edge. This avoids classifying off-panel
+        content (ship image, BOFF tray) as inactive/empty grid cells.
         """
         import cv2
         row_h = y_bot - y_top
         y1 = max(0, y_top + row_h // 4)
         y2 = min(img.shape[0], y_bot - row_h // 4)
         count = 0
-        max_icons = 8
+        # Matrix is 6 cells wide when panel_x_start is known; otherwise
+        # the legacy buffered scan (8) is retained for backwards compat.
+        max_icons = 6 if panel_x_start is not None else 8
         consecutive_bg = 0   # counts cells that look like plain background (not a slot)
         cell_states: list[str] = []
         for j in range(max_icons):
             x2 = panel_right - j * cell_w
             x1 = max(0, x2 - int(cell_w * 0.85))
             if x1 >= x2 or x1 < 0:
+                break
+            if panel_x_start is not None and x1 < panel_x_start - 2:
                 break
             crop = img[y1:y2, x1:x2]
             if crop.size == 0:
@@ -1865,7 +1875,8 @@ class LayoutDetector:
             y_top = max(0, cy - icon_h // 2)
             y_bot = min(h, cy + icon_h // 2)
             pixel_count, _ = self._count_icons_in_row(
-                img, y_top, y_bot, panel_right, cell_w, slot_name)
+                img, y_top, y_bot, panel_right, cell_w, slot_name,
+                panel_x_start=panel_x_start)
             profile_count = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
             if profile_count <= 1:
                 # Single mandatory slot — pixel count unreliable, trust profile.
