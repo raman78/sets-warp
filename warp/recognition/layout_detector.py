@@ -2368,7 +2368,12 @@ class LayoutDetector:
             _slog.info('LayoutDetector OCRAnchored: no right_edge candidates')
             return {}
 
-        # Pass 2: generate bboxes using the global right edge for every row
+        # Pass 2: generate bboxes using the global right edge for every row.
+        # Borrow panel_x_start from the EQ geometry detector (cached) so the
+        # diagnostic count scan stops at the 6-cell matrix's left edge instead
+        # of bleeding into adjacent panels.
+        geom = self._get_eq_geometry(img)
+        diag_panel_x_start = geom.panel_x_start if geom is not None else None
         result: dict[str, list] = {}
         for slot_name, cx, cy, y_top, y_bot, _row_re in row_info:
             n_default = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
@@ -2381,7 +2386,9 @@ class LayoutDetector:
             # T6-X tier bonuses are already applied to profile upstream.
             n_icons = n_default
             if n_default > 1:
-                self._count_icons_in_row(img, y_top, y_bot, global_right, cell_w, slot_name)  # log only
+                self._count_icons_in_row(img, y_top, y_bot, global_right, cell_w,
+                                          slot_name,
+                                          panel_x_start=diag_panel_x_start)  # log only
 
             bboxes = []
             for j in range(n_icons):
