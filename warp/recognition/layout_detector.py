@@ -398,23 +398,28 @@ class LayoutDetector:
                            f'{list(trait_grid_res.keys())} (+{added} bboxes)')
                 return result
 
-            learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
-            if learned and len(learned) >= 5:
-                if marker_boffs:
-                    learned.update(marker_boffs)
-                _slog.info(f'LayoutDetector: Strategy 1 (learned/MIXED) → {len(learned)} slot groups')
-                return _merge_traits(learned)
-
-            # OCR-anchored equipment detection (primary path for MIXED)
+            # Strategy 1: OCR-anchored (eq_geometry). Pixel-precise on 38 GT
+            # screens (max panel_right Δ=7 px, max dx Δ=2 px). Promoted ahead
+            # of learned layouts which had 32 px mean panel_right error and
+            # 4× returned None entirely on the same benchmark.
             ocr_anch = self._detect_via_ocr_anchored(img, build_type, slot_order, profile)
             if ocr_anch and len(ocr_anch) >= 3:
                 boff_result = marker_boffs or self._detect_boffs_in_mixed(img)
                 if boff_result:
                     ocr_anch.update(boff_result)
-                _slog.info(f'LayoutDetector: Strategy 1.5 (OCR-anchored) → '
+                _slog.info(f'LayoutDetector: Strategy 1 (geom/OCR-anchored) → '
                            f'{len(ocr_anch)} slot groups, '
                            f'{sum(len(v) for v in ocr_anch.values())} bboxes')
                 return _merge_traits(ocr_anch)
+
+            # Strategy 1b: learned layouts — fallback only when geom failed.
+            learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
+            if learned and len(learned) >= 5:
+                if marker_boffs:
+                    learned.update(marker_boffs)
+                _slog.info(f'LayoutDetector: Strategy 1b (learned/MIXED fallback) → '
+                           f'{len(learned)} slot groups')
+                return _merge_traits(learned)
 
             if icon_matcher is not None and app_cache is not None:
                 full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
@@ -428,31 +433,63 @@ class LayoutDetector:
                     return _merge_traits(full)
             # Fall through to standard strategies if both OCR-anchored and full scan fail
 
-        # Strategy 1: Learned Layouts — tried FIRST because they contain
-        # user-confirmed slot counts, more reliable than ShipDB generic fallback
+        # Strategy 1: pixel analysis backed by eq_geometry. On 38 GT screens
+        # geom delivers pixel-perfect grid (max panel_right Δ=7 px, max dx
+        # Δ=2 px, 100 % slot coverage). Promoted ahead of learned layouts
+        # which had 32 px mean panel_right error and returned None for 4
+        # screens on the same benchmark. Learned moves to Strategy 1b as a
+        # safety net when geometry produces no usable result.
+        geom_available = self._get_eq_geometry(img) is not None
+        if geom_available:
+            result = self._detect_via_pixel_analysis(img, slot_order, profile)
+            if result and len(result) >= max(3, int(len(slot_order) * 0.7)):
+                # Supplement missing optional slots (Hangars, Universal
+                # Consoles, Sec-Def, Experimental) from learned layout.
+                missing = [s for s in slot_order
+                           if s not in result and profile.get(s, 0) > 0]
+                if missing:
+                    learned = self._detect_via_learned_layouts(
+                        img, build_type, slot_order, profile)
+                    if learned:
+                        for slot in missing:
+                            if learned.get(slot):
+                                result[slot] = learned[slot]
+                                _slog.info(f'LayoutDetector: Strategy 1 supplement '
+                                           f'[{slot}] from learned ({len(learned[slot])} bboxes)')
+                _slog.info(f'LayoutDetector: Strategy 1 (geom/pixel) → '
+                           f'{len(result)} slot groups, '
+                           f'{sum(len(v) for v in result.values())} bboxes')
+                for slot, boxes in result.items():
+                    for b in boxes:
+                        _slog.info(f'  [{slot}] bbox={b}')
+                return result
+
+        # Strategy 1b: learned layouts — fallback when geometry unavailable
+        # or under-covered the screen.
         learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
         if learned:
-            # Supplement with pixel analysis for any profile slots missing from learned layout.
-            # This handles optional slots (Hangars, Universal Consoles, Sec-Def, Experimental)
-            # that may not have been annotated when the layout template was created.
             missing = [s for s in slot_order if s not in learned and profile.get(s, 0) > 0]
             if missing:
                 pixel = self._detect_via_pixel_analysis(img, slot_order, profile)
                 for slot in missing:
                     if pixel.get(slot):
                         learned[slot] = pixel[slot]
-                        _slog.info(f'LayoutDetector: Strategy 1 supplement [{slot}] '
+                        _slog.info(f'LayoutDetector: Strategy 1b supplement [{slot}] '
                                    f'from pixel analysis ({len(pixel[slot])} bboxes)')
-            _slog.info(f'LayoutDetector: Strategy 1 (learned) → {len(learned)} slot groups, {sum(len(v) for v in learned.values())} bboxes')
+            _slog.info(f'LayoutDetector: Strategy 1b (learned fallback) → '
+                       f'{len(learned)} slot groups, '
+                       f'{sum(len(v) for v in learned.values())} bboxes')
             for slot, boxes in learned.items():
                 for b in boxes:
                     _slog.info(f'  [{slot}] bbox={b}')
             return learned
 
-        # Strategy 2: Pixel analysis (fallback — uses ShipDB profile counts)
+        # Strategy 2: pixel analysis without geometry (legacy brightness path).
         result = self._detect_via_pixel_analysis(img, slot_order, profile)
         if result and len(result) >= len(slot_order) * 0.7:
-            _slog.info(f'LayoutDetector: Strategy 2 (pixel) → {len(result)} slot groups, {sum(len(v) for v in result.values())} bboxes')
+            _slog.info(f'LayoutDetector: Strategy 2 (pixel legacy) → '
+                       f'{len(result)} slot groups, '
+                       f'{sum(len(v) for v in result.values())} bboxes')
             for slot, boxes in result.items():
                 for b in boxes:
                     _slog.info(f'  [{slot}] bbox={b}')
