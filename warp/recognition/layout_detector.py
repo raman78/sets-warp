@@ -2116,12 +2116,21 @@ class LayoutDetector:
             avg_cy = sum(g[1] for g in group) / len(group)
             merged.append((avg_cx, avg_cy, joined))
 
-        # Match joined texts to slot aliases
+        # Match joined texts to slot aliases. Track the longest text per slot:
+        # a single word like "Starship" aliases to "Starship Traits" and would
+        # overwrite the real "Starship Traits" hit if it came later in the
+        # iteration (e.g. fragment from "Starship Mastery" text near the BOFF
+        # panel). Prefer the longest matching text — more specific = correct label.
         labels: dict[str, tuple[float, float]] = {}
+        best_text_len: dict[str, int] = {}
         for cx, cy, text in merged:
             slot = self._match_label(text.lower())
-            if slot:
+            if not slot:
+                continue
+            tlen = len(text)
+            if tlen > best_text_len.get(slot, -1):
                 labels[slot] = (cx, cy)
+                best_text_len[slot] = tlen
         return labels
 
     def _detect_via_full_scan(self, img: np.ndarray, build_type: str,
