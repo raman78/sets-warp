@@ -1902,8 +1902,8 @@ class LayoutDetector:
         panel_x_start = geom.panel_x_start
         panel_right   = geom.panel_right
         cell_w  = max(20, int(round(geom.final_dx)))
-        icon_w  = max(20, cell_w - 4)
-        icon_h  = max(20, int(round(geom.row_pitch * 0.85)))
+        icon_w  = max(20, cell_w - 2)
+        icon_h  = max(20, int(round(geom.row_pitch * 0.85)) + 2)
         # Cap iteration at visible rows; shorter slot_order (smaller ships)
         # still works because index-wise mapping ignores extra rows.
         n_rows = min(len(geom.row_cys), len(slot_order))
@@ -1933,7 +1933,11 @@ class LayoutDetector:
                 f'pixel_count={pixel_count} profile={profile_count} → using {n_icons}')
             bboxes = []
             for j in range(n_icons):
-                bx = max(0, panel_right - (j + 1) * cell_w + 2)
+                # Float-domain positioning per cell — avoids 1-2 px overshoot
+                # past panel_x_start when round(final_dx) is just above the
+                # true float (e.g. final_dx=36.67 → cell_w=37 → 6×37=222 vs
+                # true panel width 220).
+                bx = max(0, int(round(panel_right - (j + 1) * geom.final_dx)) + 1)
                 bboxes.append((bx, cy - icon_h // 2, icon_w, icon_h))
             bboxes.reverse()
             result[slot_name] = bboxes

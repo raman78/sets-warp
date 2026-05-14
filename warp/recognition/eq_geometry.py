@@ -438,7 +438,11 @@ def _detect_right_edge_adaptive_bg(img_hsv: np.ndarray, y0: int, y1: int,
         if col_means[x] > threshold:
             consecutive += 1
             if consecutive >= 2:
-                return x_from + x + 1
+                # +3 = off-by-one (return one PAST rightmost bright column)
+                # + 2 px to absorb antialiased icon edge that falls below
+                # the brightness threshold. Empirically aligns scan result
+                # with GT bbox right-edge to within ±2 px on 38 GT screens.
+                return x_from + x + 3
         else:
             consecutive = 0
     return None
