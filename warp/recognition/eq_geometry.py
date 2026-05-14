@@ -540,24 +540,51 @@ def detect_eq_geometry(img: np.ndarray) -> Optional[EQGeometry]:
     # Visible rows
     row_cys = _rows_from_filtered_hits(list(eq_by_idx.values()), row_pitch)
 
-    # panel_right via single-slot rows
+    # panel_right via right-edge scan. Primary: single-slot rows (guaranteed
+    # 1 icon at the right edge). Secondary: any other OCR-anchored row. STO
+    # is right-justified — every populated row's rightmost cell sits at
+    # panel_right, so multi-cell rows are equally valid anchors when the
+    # canonical single-slot rows weren't OCR-resolved.
+    # Narrow search range for primary (single-slot rows): tight margin
+    # avoids catching adjacent UI elements when the canonical anchors
+    # are present. STO right-justifies, so single-slot icons sit exactly
+    # at panel_right.
     x_search_start = int(panel_x_start + 4.5 * est_dx)
-    x_search_end   = min(W - 1, int(panel_x_start + 6.05 * est_dx))
-    rights: list[int] = []
-    for slot_name in TARGET_SINGLE_SLOTS:
-        idx = STD_ORDER.get(slot_name)
-        if idx is None or idx not in eq_by_idx:
-            continue
-        cy = eq_by_idx[idx]['cy']
-        r = _detect_right_edge_adaptive_bg(img_hsv, cy - 8, cy + 8,
-                                           x_search_start, x_search_end)
-        if r is not None:
-            rights.append(r)
+    x_search_end_tight = min(W - 1, int(panel_x_start + 6.05 * est_dx))
+    # Wider range for the multi-cell fallback: est_dx can underestimate
+    # true dx by up to ~1.5 px/cell (DX_RATIO stdev ≈ 0.03), so by
+    # 6 cells the tight bound may sit ~6-9 px short of the real right
+    # edge. +0.5× row_pitch gives v8 enough headroom while still stopping
+    # well before any adjacent panel.
+    x_search_end_wide = min(W - 1,
+                            int(panel_x_start + 6 * est_dx + 0.5 * row_pitch))
+
+    def _scan_rows(slot_indices, x_end):
+        out = []
+        for idx in slot_indices:
+            if idx not in eq_by_idx:
+                continue
+            cy = eq_by_idx[idx]['cy']
+            r = _detect_right_edge_adaptive_bg(img_hsv, cy - 8, cy + 8,
+                                               x_search_start, x_end)
+            if r is not None:
+                out.append(r)
+        return out
+
+    primary_idx = [STD_ORDER[s] for s in TARGET_SINGLE_SLOTS if s in STD_ORDER]
+    rights = _scan_rows(primary_idx, x_search_end_tight)
+    mode = 'v8' if rights else None
+
+    if not rights:
+        # Fallback: scan any remaining OCR-anchored rows (multi-cell).
+        secondary_idx = [i for i in eq_by_idx.keys() if i not in primary_idx]
+        rights = _scan_rows(secondary_idx, x_search_end_wide)
+        if rights:
+            mode = 'v8_multicell'
 
     if rights:
         panel_right = int(median(rights))
         final_dx = (panel_right - panel_x_start) / 6.0
-        mode = 'v8'
     else:
         panel_right = int(panel_x_start + 6 * est_dx)
         final_dx = float(est_dx)
