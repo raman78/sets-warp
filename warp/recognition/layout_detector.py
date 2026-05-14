@@ -27,7 +27,14 @@ except Exception:
 
 from warp.recognition import boff_marker as _boff_marker
 from warp.recognition import trait_grid as _trait_grid
-from warp.recognition.eq_geometry import detect_eq_geometry, EQGeometry
+from warp.recognition.eq_geometry import detect_eq_geometry, EQGeometry, STD_ORDER
+
+# STD_ORDER (eq_geometry) uses 'Shields' (plural); production uses 'Shield'.
+# All other names match 1:1.
+_STD_IDX_TO_PROD_SLOT: dict[int, str] = {
+    idx: ('Shield' if name == 'Shields' else name)
+    for name, idx in STD_ORDER.items()
+}
 
 OCR_CONF_THRESHOLD = 0.40
 LABEL_FUZZY_CUTOFF = 0.68
@@ -1910,10 +1917,21 @@ class LayoutDetector:
         if n_rows == 0:
             return self._detect_via_pixel_analysis_legacy(img, slot_order, profile)
 
+        # OCR-anchored slot identity per row. Carriers / non-standard ships
+        # may skip rows (e.g. T6 carrier has no Universal Consoles but does
+        # have Hangars) — positional slot_order[i] mislabels rows below the
+        # skip point. eq_label_cys maps cy → STD_ORDER index from OCR'd
+        # canonical labels; use it as authoritative when present.
+        cy_to_slot: dict[int, str] = {
+            cy: _STD_IDX_TO_PROD_SLOT[std_idx]
+            for std_idx, cy in geom.eq_label_cys.items()
+            if std_idx in _STD_IDX_TO_PROD_SLOT
+        }
+
         result: dict = {}
         for i in range(n_rows):
-            slot_name = slot_order[i]
             cy = geom.row_cys[i]
+            slot_name = cy_to_slot.get(cy) or slot_order[i]
             y_top = max(0, cy - icon_h // 2)
             y_bot = min(h, cy + icon_h // 2)
             pixel_count, _ = self._count_icons_in_row(

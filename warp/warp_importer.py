@@ -748,52 +748,51 @@ class WarpImporter:
     def _process_image(self, img: np.ndarray, source: str, profile_override: dict | None = None,
                        _base_pct: int = 0, _end_pct: int = 90) -> ImportResult:
         _slog.info(f'####### WARP: {Path(source).name} | {self._build_type} #######')
-        # Step 1 — extract ship info via OCR.
-        # build_type from caller sets the import mode but we always try OCR
-        # for ship name/type — unless called from trainer (has _data_mgr attr).
+        # Step 1 — extract ship info via OCR (single mechanism for WARP and WARP CORE).
+        # Trainer-mode legitimate overlay: user's screen-type combo wins over
+        # OCR build_type upgrades — but ship_name/type/tier from OCR still feed
+        # ShipDB so profile matches the actual ship (carrier vs standard, etc.).
         _is_trainer_call = self._from_trainer
+        text_info  = self._get_text().extract_ship_info(img)
+        ship_name  = text_info.get('ship_name', '')
+        ship_type  = text_info.get('ship_type', '')
+        _ocr_bt = text_info.get('build_type', '')
+
         if _is_trainer_call:
-            # Trainer always has build_type set and uses confirmed annotations
+            # WARP CORE: user explicitly selected screen type in dropdown — that
+            # is a stronger signal than OCR build_type. Skip the OCR upgrade step.
             build_type = self._build_type
-            ship_name  = ''
-            ship_type  = ''
-            text_info  = {}
-        else:
-            # WARP dialog — run OCR to get ship info regardless of build_type
-            text_info  = self._get_text().extract_ship_info(img)
-            ship_name  = text_info.get('ship_name', '')
-            ship_type  = text_info.get('ship_type', '')
+        elif self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
+                                  'GROUND_TRAITS', 'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+                                  'SPEC', 'SPACE_MIXED', 'GROUND_MIXED'):
             # Use caller's build_type as primary, OCR as confirmation.
             # Upgrade SPACE→SPACE_MIXED / GROUND→GROUND_MIXED when OCR signals
             # a richer screen type (broadside screenshots contain equipment +
             # traits + boffs simultaneously).  Never downgrade.
-            _ocr_bt = text_info.get('build_type', '')
-            if self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
-                                    'GROUND_TRAITS', 'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
-                                    'SPEC', 'SPACE_MIXED', 'GROUND_MIXED'):
-                build_type = self._build_type
-                if build_type == 'SPACE' and _ocr_bt in ('SPACE_TRAITS', 'SPACE_MIXED'):
-                    build_type = 'SPACE_MIXED'
-                    _slog.info('WarpImporter: upgraded SPACE → SPACE_MIXED (OCR detected richer screen)')
-                elif build_type == 'SPACE' and _ocr_bt in ('BOFFS', 'SPACE_BOFFS') and text_info.get('scan_scope') == 'full':
-                    build_type = _ocr_bt  # SPACE_BOFFS preferred over generic BOFFS
-                    _slog.info(f'WarpImporter: upgraded SPACE → {build_type} (dedicated BOFFS screen, full scan only)')
-                elif build_type == 'SPACE' and _ocr_bt == 'GROUND_BOFFS':
-                    build_type = 'GROUND_BOFFS'
-                    _slog.info('WarpImporter: upgraded SPACE → GROUND_BOFFS (OCR detected ground boff screen)')
-                elif build_type == 'SPACE' and _ocr_bt == 'SPEC':
-                    build_type = 'SPEC'
-                    _slog.info('WarpImporter: upgraded SPACE → SPEC (OCR detected specialization screen)')
-                elif build_type == 'GROUND' and _ocr_bt in ('GROUND_TRAITS', 'GROUND_MIXED'):
-                    build_type = 'GROUND_MIXED'
-                    _slog.info('WarpImporter: upgraded GROUND → GROUND_MIXED (OCR detected richer screen)')
-                elif build_type == 'GROUND' and _ocr_bt == 'GROUND_BOFFS':
-                    build_type = 'GROUND_BOFFS'
-                    _slog.info('WarpImporter: upgraded GROUND → GROUND_BOFFS (OCR detected ground boff screen)')
-            else:
-                build_type = 'GROUND' if _ocr_bt == 'GROUND' else 'SPACE'
-            _slog.info(f'WarpImporter: OCR result: name={ship_name!r} type={ship_type!r} '
-                       f'ocr_build={text_info.get("build_type")!r} → using build_type={build_type!r}')
+            build_type = self._build_type
+            if build_type == 'SPACE' and _ocr_bt in ('SPACE_TRAITS', 'SPACE_MIXED'):
+                build_type = 'SPACE_MIXED'
+                _slog.info('WarpImporter: upgraded SPACE → SPACE_MIXED (OCR detected richer screen)')
+            elif build_type == 'SPACE' and _ocr_bt in ('BOFFS', 'SPACE_BOFFS') and text_info.get('scan_scope') == 'full':
+                build_type = _ocr_bt  # SPACE_BOFFS preferred over generic BOFFS
+                _slog.info(f'WarpImporter: upgraded SPACE → {build_type} (dedicated BOFFS screen, full scan only)')
+            elif build_type == 'SPACE' and _ocr_bt == 'GROUND_BOFFS':
+                build_type = 'GROUND_BOFFS'
+                _slog.info('WarpImporter: upgraded SPACE → GROUND_BOFFS (OCR detected ground boff screen)')
+            elif build_type == 'SPACE' and _ocr_bt == 'SPEC':
+                build_type = 'SPEC'
+                _slog.info('WarpImporter: upgraded SPACE → SPEC (OCR detected specialization screen)')
+            elif build_type == 'GROUND' and _ocr_bt in ('GROUND_TRAITS', 'GROUND_MIXED'):
+                build_type = 'GROUND_MIXED'
+                _slog.info('WarpImporter: upgraded GROUND → GROUND_MIXED (OCR detected richer screen)')
+            elif build_type == 'GROUND' and _ocr_bt == 'GROUND_BOFFS':
+                build_type = 'GROUND_BOFFS'
+                _slog.info('WarpImporter: upgraded GROUND → GROUND_BOFFS (OCR detected ground boff screen)')
+        else:
+            build_type = 'GROUND' if _ocr_bt == 'GROUND' else 'SPACE'
+        _slog.info(f'WarpImporter: OCR result: name={ship_name!r} type={ship_type!r} '
+                   f'ocr_build={_ocr_bt!r} → using build_type={build_type!r}'
+                   f'{" (trainer override)" if _is_trainer_call else ""}')
 
         # Step 2 — get exact slot profile from ship_list.json
         # Skip for GROUND/GROUND_MIXED — ShipDB contains space ship data only
@@ -807,43 +806,40 @@ class WarpImporter:
         else:
             profile = self._get_shipdb().get_profile(ship_name, ship_type, ship_tier)
             _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}/{ship_tier!r}: {dict((k,v) for k,v in profile.items() if v)}')
+
+        # Trainer-mode overlay: user-confirmed annotation counts are a FLOOR for
+        # the profile — they can only raise counts above ShipDB, never lower them.
+        # This handles partial annotations and custom builds without diverging
+        # from the WARP detection path.
         if _is_trainer_call:
-            # Trainer (WARP CORE): annotation counts are authoritative for equipment —
-            # the user has confirmed every bbox, so the profile must match exactly.
             if not profile_override:
                 profile_override = self._load_confirmed_profile(source)
             for slot, count in (profile_override or {}).items():
                 if count > profile.get(slot, 0):
                     profile[slot] = count
-                    _slog.info(f'WarpImporter: trainer profile {slot}={count} (confirmed)')
-            # Trait/rep/boff slots: confirmed count reflects partial annotation —
-            # user may not have confirmed all visible items. Apply game caps so the
-            # layout detector's full detection isn't artificially capped.
-            for slot, max_val in _GAME_SLOT_MAXES.items():
-                if max_val > profile.get(slot, 0):
-                    profile[slot] = max_val
-        else:
-            # WARP dialog import: coded game rules only — annotations are training data.
-            # Traits / Rep / Active Rep: fixed STO game caps.
-            # BOFF slots: already set by _boff_profile_from_shipdb via _entry_to_profile;
-            #   _GAME_SLOT_MAXES fallbacks apply only when ShipDB lookup failed (no boffs data).
-            for slot, max_val in _GAME_SLOT_MAXES.items():
-                if max_val > profile.get(slot, 0):
-                    profile[slot] = max_val
-            # T6-X / T6-X2 tier upgrades (cumulative per level):
-            #   T6-X  (level 1): +1 Universal Console, +1 Starship Trait, +1 Device
-            #   T6-X2 (level 2): additional +1 each → total +2 vs base T6
-            if '-X' in ship_tier:
-                _x_bonus = 2 if 'X2' in ship_tier else 1
-                if profile.get('Devices', 0) > 0:
-                    profile['Devices'] += _x_bonus
-                    _slog.info(f'WarpImporter: {ship_tier} — Devices +{_x_bonus} → {profile["Devices"]}')
-                profile['Universal Consoles'] = profile.get('Universal Consoles', 0) + _x_bonus
-                _slog.info(f'WarpImporter: {ship_tier} — Universal Consoles +{_x_bonus} → {profile["Universal Consoles"]}')
-                profile['Starship Traits'] = profile.get('Starship Traits', 5) + _x_bonus
-                _slog.info(f'WarpImporter: {ship_tier} — Starship Traits +{_x_bonus} → {profile["Starship Traits"]}')
-            _slog.debug(f'WarpImporter: game-rule profile (traits/rep/boff): '
-                        f'{dict((k,v) for k,v in profile.items() if "Boff" in k or "Trait" in k or "Rep" in k)}')
+                    _slog.info(f'WarpImporter: trainer profile {slot}={count} (confirmed floor)')
+
+        # Game caps for Traits / Rep / Active Rep / BOFF fallbacks (both paths).
+        # BOFF counts from _boff_profile_from_shipdb already set above; these
+        # apply only when ShipDB had nothing.
+        for slot, max_val in _GAME_SLOT_MAXES.items():
+            if max_val > profile.get(slot, 0):
+                profile[slot] = max_val
+
+        # T6-X / T6-X2 tier upgrades (cumulative per level), both paths:
+        #   T6-X  (level 1): +1 Universal Console, +1 Starship Trait, +1 Device
+        #   T6-X2 (level 2): additional +1 each → total +2 vs base T6
+        if '-X' in ship_tier:
+            _x_bonus = 2 if 'X2' in ship_tier else 1
+            if profile.get('Devices', 0) > 0:
+                profile['Devices'] += _x_bonus
+                _slog.info(f'WarpImporter: {ship_tier} — Devices +{_x_bonus} → {profile["Devices"]}')
+            profile['Universal Consoles'] = profile.get('Universal Consoles', 0) + _x_bonus
+            _slog.info(f'WarpImporter: {ship_tier} — Universal Consoles +{_x_bonus} → {profile["Universal Consoles"]}')
+            profile['Starship Traits'] = profile.get('Starship Traits', 5) + _x_bonus
+            _slog.info(f'WarpImporter: {ship_tier} — Starship Traits +{_x_bonus} → {profile["Starship Traits"]}')
+        _slog.debug(f'WarpImporter: final profile (traits/rep/boff): '
+                    f'{dict((k,v) for k,v in profile.items() if "Boff" in k or "Trait" in k or "Rep" in k)}')
 
 
         result = ImportResult(
