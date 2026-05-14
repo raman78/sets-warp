@@ -431,6 +431,8 @@ class RecognitionWorker(QThread):
         self._path = path
         self._stype = stype
         self._sets_app = sets_app
+        # EQ panel geometry captured during detection; consumed by _on_recognition_done
+        self.eq_geom = None
     def run(self):
         import cv2
         from src.setsdebug import log as _slog
@@ -484,6 +486,12 @@ class RecognitionWorker(QThread):
             importer = WarpImporter(sets_app=self._sets_app, build_type=importer_type, from_trainer=True)
             result = importer._process_image(img, str(self._path), profile_override=profile_override or None)
             _slog.info(f'RecognitionWorker: pipeline done — {len(result.items)} items found')
+            # Capture EQ geometry from the layout detector's per-image cache so
+            # the canvas can overlay the 6×N grid that detection actually used.
+            try:
+                self.eq_geom = importer._get_layout()._eq_geom_cache.get(id(img))
+            except Exception:
+                self.eq_geom = None
             for e in result.errors:
                 _slog.warning(f'RecognitionWorker: pipeline error: {e}')
 
@@ -1423,6 +1431,9 @@ class WarpCoreWindow(QMainWindow):
         self._recognition_cache[filename] = merged
         if self._current_idx >= 0 and self._screenshots[self._current_idx].name == filename:
             self._populate_review_panel(merged, stype)
+            # Overlay the EQ geometry grid captured during detection (cleared on next image load)
+            geom = getattr(self._recog_worker, 'eq_geom', None) if self._recog_worker else None
+            self._ann_widget.set_eq_geom(geom)
             # Run auto-accept after panel is populated
             self._run_auto_accept()
 

@@ -174,6 +174,13 @@ Wired into `LayoutDetector`:
   `geom.row_pitch × 0.85` as icon height. Falls back to
   `_detect_via_pixel_analysis_legacy` (row-separator brightness scan) when
   geometry detection fails
+- **SPACE_MIXED / GROUND_MIXED Strategy 1**: `_detect_via_pixel_analysis`
+  (EQ grid) + `_detect_traits_via_ocr` (5-column trait grid using
+  `geom.final_dx`/`geom.row_pitch`) + BOFF marker/in_mixed merge.
+  Single EQ source of truth shared with SPACE_EQ/GROUND_EQ — eliminates
+  the older divergent cluster-vote `panel_right` in
+  `_detect_via_ocr_anchored`, which is retained as Strategy 1a fallback
+  for cases where `geom` is unavailable.
 
 BOFF and trait detection paths (Strategy 0 marker/grid detectors) do NOT
 go through `_detect_via_pixel_analysis` and are unaffected.

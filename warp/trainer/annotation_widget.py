@@ -100,6 +100,9 @@ class AnnotationWidget(QWidget):
         # Handle size in screen pixels
         self._HANDLE = 9
 
+        # EQ panel geometry overlay (set after auto-detect; cleared on image change)
+        self._eq_geom = None
+
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -122,9 +125,50 @@ class AnnotationWidget(QWidget):
         self._zoom_ox = 0.0
         self._zoom_oy = 0.0
         self._user_scale  = None   # reset to fit-to-window on every image load
+        self._eq_geom     = None   # invalidate geom overlay until next auto-detect
         self._compute_transform()
         self.adjustSize()
         self.setFocus()
+        self.update()
+
+    def set_eq_geom(self, geom) -> None:
+        """Attach EQ panel geometry for grid overlay; pass None to clear."""
+        self._eq_geom = geom
+        # Diagnostic dump: log each review item's bbox alongside expected geom
+        # cell so a shifted/wrong-size canvas display can be traced back to its
+        # source (detection / confirmed merge / preserve_confirmed).
+        if geom is not None and getattr(geom, 'row_cys', None):
+            try:
+                from src.setsdebug import log as _slog
+                dx_f = float(geom.final_dx)
+                ph = int(round(geom.row_pitch * 0.85))
+                cys = list(geom.row_cys)
+                _slog.info(
+                    f'AnnotationWidget: geom panel_x={geom.panel_x_start} '
+                    f'panel_right={geom.panel_right} dx={dx_f:.2f} '
+                    f'cell={int(round(dx_f))}x{ph} rows={len(cys)} cys={cys}')
+                for i, ri in enumerate(self._review_items):
+                    bb = ri.get('bbox')
+                    if not bb: continue
+                    bx, by, bw, bh = bb
+                    if bx < geom.panel_x_start - 5 or bx > geom.panel_right + 5:
+                        continue  # outside EQ panel — boff/trait/etc.
+                    # Closest row cy
+                    row_cy = min(cys, key=lambda c: abs(c - (by + bh // 2)))
+                    row_y = row_cy - ph // 2
+                    # Closest column j (0=rightmost in panel)
+                    rel = geom.panel_right - bx
+                    j = max(0, int(round(rel / dx_f)) - 1)
+                    cell_x = int(round(geom.panel_right - (j + 1) * dx_f)) + 1
+                    dx_off = bx - cell_x
+                    dy_off = by - row_y
+                    _slog.info(
+                        f'  [{i:2d}] {ri.get("slot","?"):25s} bbox=({bx},{by},{bw},{bh}) '
+                        f'state={ri.get("state","?")} '
+                        f'cell=({cell_x},{row_y},{int(round(dx_f))},{ph}) '
+                        f'Δ=({dx_off:+},{dy_off:+}) Δsize=({bw-int(round(dx_f)):+},{bh-ph:+})')
+            except Exception as _e:
+                pass
         self.update()
 
     def refresh_annotations(self, path: Path):
@@ -198,6 +242,21 @@ class AnnotationWidget(QWidget):
         else:
             painter.fillRect(self.rect(), QColor("#1a1a1a")); painter.setPen(QColor("#888888")); painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No image loaded\nOpen a folder to start")
             return
+
+        # EQ geometry overlay — 6×N grid in faint blue, drawn below bboxes.
+        # Disabled by default; re-enable for visual diagnostics of detector grid alignment.
+        # if self._eq_geom is not None and getattr(self._eq_geom, 'row_cys', None):
+        #     geom = self._eq_geom
+        #     dx_f = float(geom.final_dx)
+        #     cell_w = max(1, int(round(dx_f)))
+        #     ph = max(1, int(round(geom.row_pitch * 0.85)))
+        #     pen = QPen(QColor(80, 160, 255, 180), 1, Qt.PenStyle.SolidLine)
+        #     painter.setPen(pen); painter.setBrush(Qt.BrushStyle.NoBrush)
+        #     for cy in geom.row_cys:
+        #         y_top = cy - ph // 2
+        #         for j in range(6):
+        #             bx = int(round(geom.panel_right - (j + 1) * dx_f)) + 1
+        #             painter.drawRect(self._img_to_screen_rect((bx, y_top, cell_w, ph)))
 
         # Z-ORDER DRAWING:
         # 1. Background (unselected) items

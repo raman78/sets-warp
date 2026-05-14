@@ -405,16 +405,41 @@ class LayoutDetector:
                            f'{list(trait_grid_res.keys())} (+{added} bboxes)')
                 return result
 
-            # Strategy 1: OCR-anchored (eq_geometry). Pixel-precise on 38 GT
-            # screens (max panel_right Δ=7 px, max dx Δ=2 px). Promoted ahead
-            # of learned layouts which had 32 px mean panel_right error and
-            # 4× returned None entirely on the same benchmark.
+            # Strategy 1: EQ via geom-based pixel_analysis + traits via OCR
+            # + BOFFs via marker/in_mixed. One EQ source of truth shared with
+            # SPACE_EQ/GROUND_EQ (no divergent _detect_via_ocr_anchored grid).
+            geom = self._get_eq_geometry(img)
+            if geom is not None and geom.row_cys:
+                eq_result = self._detect_via_pixel_analysis(img, slot_order, profile)
+                if eq_result and len(eq_result) >= 3:
+                    # Traits: OCR section labels → 5-column grid via
+                    # _detect_traits_via_ocr. Cell geometry mirrors the
+                    # eq_geometry values used for EQ above.
+                    labels = self._ocr_section_labels(img)
+                    trait_labels = {s: v for s, v in labels.items()
+                                    if s in _TRAIT_SLOT_MARKER}
+                    cell_w = max(20, int(round(geom.final_dx)))
+                    icon_h = max(20, int(round(geom.row_pitch * 0.85)) + 2)
+                    eq_result.update(
+                        self._detect_traits_via_ocr(img, trait_labels, cell_w, icon_h))
+
+                    boff_result = marker_boffs or self._detect_boffs_in_mixed(img)
+                    if boff_result:
+                        eq_result.update(boff_result)
+                    _slog.info(f'LayoutDetector: Strategy 1 (geom/pixel + OCR traits) → '
+                               f'{len(eq_result)} slot groups, '
+                               f'{sum(len(v) for v in eq_result.values())} bboxes')
+                    return _merge_traits(eq_result)
+
+            # Strategy 1a fallback: legacy OCR-anchored path (geom unavailable
+            # or pixel_analysis produced too few rows). Retains independent
+            # cluster-based right-edge logic.
             ocr_anch = self._detect_via_ocr_anchored(img, build_type, slot_order, profile)
             if ocr_anch and len(ocr_anch) >= 3:
                 boff_result = marker_boffs or self._detect_boffs_in_mixed(img)
                 if boff_result:
                     ocr_anch.update(boff_result)
-                _slog.info(f'LayoutDetector: Strategy 1 (geom/OCR-anchored) → '
+                _slog.info(f'LayoutDetector: Strategy 1a (OCR-anchored fallback) → '
                            f'{len(ocr_anch)} slot groups, '
                            f'{sum(len(v) for v in ocr_anch.values())} bboxes')
                 return _merge_traits(ocr_anch)
