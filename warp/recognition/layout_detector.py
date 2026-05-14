@@ -2629,13 +2629,36 @@ class LayoutDetector:
             'Active Ground Rep':       5,
         }
 
-        # Geometry: offsets and steps derived from cell_w/icon_h computed upstream.
-        # These scale with image size since cell_w is row_h-based.
-        x_off = -int(cell_w * 2.35)
-        y_off = int(icon_h * 0.80)
-        col_step = max(int(cell_w * 1.17), cell_w + 2)
-        row_step = max(int(icon_h * 1.10), icon_h + 2)
-        bbox_w = max(1, cell_w - 4)
+        # Geometry: bbox SIZE matches EQ icons (cell_w − 2 × icon_h) per
+        # game rule — trait and EQ icons are rendered at identical pixel
+        # dimensions. Positioning multipliers (x_off / y_off / col_step /
+        # row_step) are calibrated 2026-05-14 on 61 GT-annotated MIXED
+        # screens. Space and ground groups diverge in label→icon spacing,
+        # so split per group:
+        #   Space (n=35, σ≤0.04): tight calibration, ~100% IoU≥0.5 post-fix
+        #   Ground (n=14, σ≤0.11): looser; eq_geometry reference is less
+        #     reliable on ground screens (designed primarily for space EQ).
+        is_ground = group_slots is ground_slots
+        if is_ground:
+            # Ground screens: eq_geometry locks onto kit-module column
+            # (cell_w ~140 px at typical resolutions) which is much larger
+            # than trait icons (~35 px). Empirical multipliers from
+            # calibration set the trait bbox/positioning to ~0.25 × cell_w.
+            x_off    = -int(cell_w * 0.58)
+            y_off    =  int(icon_h * 0.23)
+            col_step = max(int(cell_w * 0.29), 30)
+            row_step = max(int(icon_h * 0.32), icon_h + 2)
+            bbox_w   = max(1, int(cell_w * 0.25))
+            bbox_h   = max(1, int(icon_h * 0.29))
+        else:
+            # Space screens: trait icons and EQ icons render at identical
+            # pixel size → bbox dims = EQ icon dims (no scaling).
+            x_off    = -int(cell_w * 2.27)
+            y_off    =  int(icon_h * 0.88)
+            col_step = max(int(cell_w * 1.135), cell_w + 2)
+            row_step = max(int(icon_h * 1.21), icon_h + 2)
+            bbox_w   = max(1, cell_w - 2)
+            bbox_h   = icon_h
         N_COLS = 5
 
         result: dict[str, list] = {}
@@ -2648,13 +2671,14 @@ class LayoutDetector:
                 col = i % N_COLS
                 row = i // N_COLS
                 bx = top_cx - bbox_w // 2 + col * col_step
-                by = top_cy - icon_h // 2 + row * row_step
-                if 0 <= bx <= w - bbox_w and 0 <= by <= h - icon_h:
-                    bboxes.append((bx, by, bbox_w, icon_h))
+                by = top_cy - bbox_h // 2 + row * row_step
+                if 0 <= bx <= w - bbox_w and 0 <= by <= h - bbox_h:
+                    bboxes.append((bx, by, bbox_w, bbox_h))
             if bboxes:
                 result[slot] = bboxes
                 _slog.info(f'  [{slot}] n={len(bboxes)} anchor=({lcx:.0f},{lcy:.0f}) '
-                           f'top=({top_cx},{top_cy})')
+                           f'top=({top_cx},{top_cy}) bbox={bbox_w}x{bbox_h} '
+                           f'step=({col_step},{row_step}) group={"ground" if is_ground else "space"}')
         return result
 
     def _detect_via_ocr(self, img, slot_order, profile):
