@@ -554,10 +554,10 @@ def detect_eq_geometry(img: np.ndarray) -> Optional[EQGeometry]:
     # Wider range for the multi-cell fallback: est_dx can underestimate
     # true dx by up to ~1.5 px/cell (DX_RATIO stdev ≈ 0.03), so by
     # 6 cells the tight bound may sit ~6-9 px short of the real right
-    # edge. +0.5× row_pitch gives v8 enough headroom while still stopping
-    # well before any adjacent panel.
+    # edge. +0.15× row_pitch (~7-8 px) gives enough headroom while
+    # stopping well before UI glow / adjacent panel edges.
     x_search_end_wide = min(W - 1,
-                            int(panel_x_start + 6 * est_dx + 0.5 * row_pitch))
+                            int(panel_x_start + 6 * est_dx + 0.15 * row_pitch))
 
     def _scan_rows(slot_indices, x_end):
         out = []
