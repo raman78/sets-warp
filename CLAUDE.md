@@ -185,6 +185,52 @@ Wired into `LayoutDetector`:
 BOFF and trait detection paths (Strategy 0 marker/grid detectors) do NOT
 go through `_detect_via_pixel_analysis` and are unaffected.
 
+### Ground EQ geometry detector (`ground_eq_geometry.py`)
+
+OCR-anchored prototype for the GROUND EQ panel (separate topology from
+the 6×N space matrix). Pure detection — no annotations.json access.
+
+Slots (top→bottom): Kit Modules (1 row, ≤7 cells, left-shifted from the
+main block), Kit, Body Armor + EV Suit (side by side), Personal Shield,
+Weapons (2 cells stacked at col_left), Ground Devices (2 cols × N rows,
+inset ±cell_w×0.05 horizontally and −cell_h×0.025 vertically vs. the
+Body/EV Suit axis).
+
+OCR anchors: 7 labels above the icon blocks ("Kit Modules", "Kit",
+"Body", "EV Suit", "Shields", "Weapons", "Devices"). "Shields:" with
+trailing colon (HUD stat) is rejected by suffix + x-position filter.
+
+Empirical calibration (12 GT screens):
+- `CELL_H_RATIO = 0.615` — icon_h / row_pitch
+- `CELL_W_RATIO = 0.78`  — icon_w / icon_h (ground icons are tall)
+- `LABEL_TO_ROW_RATIO = 0.46` — label_cy + 0.46×row_pitch = icon_cy
+- `SLOT_X_NUDGE_RATIO = 0.025` — all non-Devices slots shifted +1 px
+  right relative to OCR label (cell_w×0.025)
+- `DEVICES_INSET_X_RATIO = 0.05`, `DEVICES_INSET_Y_RATIO = 0.025` —
+  Devices column inset from Body/EV Suit axis + lift up
+- `KM_PITCH_OFFSET = 3`, `WEAPONS_STACK_OFFSET = 7`
+
+Benchmark (`tests/diag_ground_eq_proto.py`, IoU≥0.30):
+- Overall recall **94.4%**, precision **91.2%**, mean IoU **0.814**.
+- 100% recall on Body Armor / Personal Shield / Weapons.
+- KM recall **90.3%** — lost cells correlate with OCR failure on small
+  res (Screenshot_2025-03-19, 572×477) and one 7-cell KM row (dyson).
+
+Wired into `LayoutDetector`:
+- `_get_ground_eq_geometry(img)` — per-image cache (parallel to
+  `_get_eq_geometry`).
+- `_detect_via_ground_geometry(img, profile)` — calls
+  `detect_ground_eq_geometry` + `project_cells`, trims `Kit Modules` /
+  `Ground Devices` lists to profile counts.
+- `detect()` routes `build_type == 'GROUND'` through ground geometry as
+  Strategy 1; falls through to learned/pixel-legacy on failure.
+- `GROUND_MIXED` block tries ground geometry first inside the MIXED
+  Strategy 1; on success merges OCR-driven trait detection (cell_w /
+  icon_h derived from `ground_geom.cell_w/cell_h`) + marker BOFFs.
+
+Visualization + regression benchmark live in
+`tests/diag_ground_eq_proto.py` / `tests/_diag_out/ground_eq_proto/`.
+
 5. **Icon matching** (`icon_matcher.py`):
    - Template matching (session examples) → HSV histogram k-NN → local PyTorch EfficientNet → HF ONNX fallback
    - `MIN_ACCEPT_CONF = 0.40`
