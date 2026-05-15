@@ -84,7 +84,7 @@ DEVICES_INSET_Y_RATIO   = 0.025  # ≈ 1 px at cell_h ~44
 # above the icon center.
 LABEL_TO_ROW_RATIO      = 0.46
 
-KM_MAX_CELLS            = 7      # observed up to 7 on dyson-ground
+KM_MAX_CELLS            = 6      # STO max kit modules
 COL_LEFT_MIN_X          = 200    # filter stat-bar "Shields:" (x near 30-100)
 
 # Slot key on the SETS side ↔ canonical row index ↔ OCR keyword(s)

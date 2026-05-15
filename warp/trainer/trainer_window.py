@@ -467,24 +467,9 @@ class RecognitionWorker(QThread):
 
         _slog.info(f'RecognitionWorker: start {self._path.name} stype={self._stype} → importer={importer_type}')
 
-        # Build profile_override from confirmed annotations for this file
-        profile_override = {}
-        try:
-            data_mgr = getattr(self._sets_app, '_warp_core_window', None)
-            data_mgr = getattr(data_mgr, '_data_mgr', None)
-            if data_mgr:
-                anns = data_mgr.get_annotations(self._path)
-                for a in anns:
-                    if a.state.value == 'confirmed' and a.slot:
-                        profile_override[a.slot] = profile_override.get(a.slot, 0) + 1
-                if profile_override:
-                    _slog.info(f'RecognitionWorker: profile_override from confirmed: {profile_override}')
-        except Exception as _pe:
-            _slog.debug(f'RecognitionWorker: profile_override failed: {_pe}')
-
         try:
             importer = WarpImporter(sets_app=self._sets_app, build_type=importer_type, from_trainer=True)
-            result = importer._process_image(img, str(self._path), profile_override=profile_override or None)
+            result = importer._process_image(img, str(self._path))
             _slog.info(f'RecognitionWorker: pipeline done — {len(result.items)} items found')
             # Capture EQ geometry from the layout detector's per-image cache so
             # the canvas can overlay the 6×N grid that detection actually used.

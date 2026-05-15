@@ -831,16 +831,6 @@ class WarpImporter:
             profile['Starship Traits'] = profile.get('Starship Traits', 5) + _x_bonus
             _slog.info(f'WarpImporter: {ship_tier} — Starship Traits +{_x_bonus} → {profile["Starship Traits"]}')
 
-        # Trainer-mode overlay: user-confirmed annotation counts are a FLOOR for
-        # the profile — they can only raise counts above ShipDB+tier bonus,
-        # never lower them. Applied LAST so confirmed counts are authoritative.
-        if _is_trainer_call:
-            if not profile_override:
-                profile_override = self._load_confirmed_profile(source)
-            for slot, count in (profile_override or {}).items():
-                if count > profile.get(slot, 0):
-                    profile[slot] = count
-                    _slog.info(f'WarpImporter: trainer profile {slot}={count} (confirmed floor)')
         _slog.debug(f'WarpImporter: final profile (traits/rep/boff): '
                     f'{dict((k,v) for k,v in profile.items() if "Boff" in k or "Trait" in k or "Rep" in k)}')
 
@@ -939,8 +929,8 @@ class WarpImporter:
                 refined = _profile_from_pixel_counts(pixel_counts)
                 changed = False
                 for slot, count in refined.items():
-                    # Never override confirmed annotation counts
-                    if slot in profile_override:
+                    # Respect caller-supplied profile_override when present
+                    if profile_override and slot in profile_override:
                         continue
                     if count > profile.get(slot, 0):
                         profile[slot] = count
