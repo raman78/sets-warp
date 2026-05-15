@@ -2057,16 +2057,31 @@ class LayoutDetector:
             if std_idx in _STD_IDX_TO_PROD_SLOT
         }
 
+        # Positional fallback: extend slot_order with optional slots present
+        # in profile (Sec-Def after Deflector, Experimental/Hangars after
+        # Aft Weapons). Mirrors _detect_via_ocr_anchored extended_order logic
+        # so ships with Secondary Deflector or Experimental Weapons don't
+        # shift rows when OCR misses the label for those rows.
+        extended_order: list[str] = []
+        for s in slot_order:
+            extended_order.append(s)
+            if s == 'Deflector' and profile.get('Sec-Def', 0) > 0 and 'Sec-Def' not in extended_order:
+                extended_order.append('Sec-Def')
+            if s == 'Aft Weapons':
+                for opt in ('Experimental', 'Hangars'):
+                    if profile.get(opt, 0) > 0 and opt not in extended_order:
+                        extended_order.append(opt)
+
         result: dict = {}
         for i, cy in enumerate(geom.row_cys):
             # cy_to_slot is authoritative (OCR-anchored). Fall back to
-            # positional slot_order only when no OCR mapping exists AND
-            # the row index fits within slot_order.
+            # positional extended_order only when no OCR mapping exists AND
+            # the row index fits within extended_order.
             slot_name = cy_to_slot.get(cy)
             if slot_name is None:
-                if i >= len(slot_order):
+                if i >= len(extended_order):
                     continue
-                slot_name = slot_order[i]
+                slot_name = extended_order[i]
             y_top = max(0, cy - icon_h // 2)
             y_bot = min(h, cy + icon_h // 2)
             pixel_count, _ = self._count_icons_in_row(
