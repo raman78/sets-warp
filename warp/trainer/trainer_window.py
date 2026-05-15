@@ -718,13 +718,6 @@ class WarpCoreWindow(QMainWindow):
             if last and Path(last).is_dir():
                 QTimer.singleShot(0, lambda: self._load_folder(Path(last)))
 
-    def _set_popup_transient(self, popup) -> None:
-        """Wayland fix: attach completer popup QWindow to main window so xdg_popup works."""
-        wh = popup.windowHandle()
-        mwh = self.windowHandle()
-        if wh and mwh and wh is not mwh:
-            wh.setTransientParent(mwh)
-
     def _build_ui(self):
         c = QWidget()
         self.setCentralWidget(c)
@@ -1728,12 +1721,6 @@ class WarpCoreWindow(QMainWindow):
             if sa.rect().contains(sa_pos) and not aw.rect().contains(aw_pos):
                 aw.wheelEvent(event)
                 return True
-        # Wayland: set transient parent on any popup window (QComboBox, QMenu, QCompleter, …)
-        from PySide6.QtWidgets import QWidget as _QW
-        if (event.type() == QEvent.Type.Show
-                and isinstance(obj, _QW)
-                and (obj.windowFlags() & Qt.WindowType.Popup)):
-            QTimer.singleShot(0, lambda o=obj: self._set_popup_transient(o))
         return super().eventFilter(obj, event)
 
     def _on_add_bbox_toggle(self, checked: bool):

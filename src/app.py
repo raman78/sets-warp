@@ -29,6 +29,49 @@ from signal import signal, SIGINT, SIG_DFL
 signal(SIGINT, SIG_DFL)
 
 
+def _install_wayland_popup_fix(app: QApplication):
+    """Set transient parent on every popup window so xdg_popup creation succeeds.
+
+    Wayland refuses to create xdg_popup surfaces (QCompleter dropdowns,
+    QComboBox views, QMenu, QToolTip) without a parent QWindow. Qt does not
+    set this automatically for popups created without an explicit parent
+    window, so we hook every Show event app-wide and attach the active
+    top-level window's QWindow as transientParent. No-op on non-Wayland.
+    """
+    from PySide6.QtCore import QObject, QEvent
+    from PySide6.QtWidgets import QApplication as _QApp, QWidget as _QW
+
+    if not app.platformName().startswith('wayland'):
+        return None
+
+    # Qt.WindowType values are NOT single-bit flags — the low bits encode
+    # the window type as a compound enum (Window=0x1, Popup=0x9, ToolTip=0xd).
+    # A naive bitwise AND would match QMainWindow / QDialog as "popup" because
+    # they share the Window bit, which would wrongly attach them as transient
+    # children of the active window (KDE then groups them under one taskbar
+    # icon and stacks them parent-on-top). Mask with WindowType_Mask and
+    # compare exactly.
+    POPUP_TYPES = (Qt.WindowType.Popup, Qt.WindowType.ToolTip)
+
+    class _PopupFixer(QObject):
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.Type.Show and isinstance(obj, _QW):
+                wtype = obj.windowFlags() & Qt.WindowType.WindowType_Mask
+                if wtype in POPUP_TYPES:
+                    wh = obj.windowHandle()
+                    if wh is not None and wh.transientParent() is None:
+                        active = _QApp.activeWindow()
+                        if active is not None and active is not obj:
+                            ah = active.windowHandle()
+                            if ah is not None:
+                                wh.setTransientParent(ah)
+            return False
+
+    fixer = _PopupFixer(app)
+    app.installEventFilter(fixer)
+    return fixer
+
+
 class SETS():
 
     from .callbacks import (
@@ -288,6 +331,7 @@ class SETS():
         :return: QApplication, QWidget
         """
         app = QApplication(argv)
+        self._wayland_popup_fixer = _install_wayland_popup_fix(app)
         font_database = QFontDatabase()
         font_database.addApplicationFont(
                 get_asset_path('Overpass-VariableFont_wght.ttf', self.app_dir))

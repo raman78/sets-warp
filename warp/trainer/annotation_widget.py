@@ -372,10 +372,6 @@ class AnnotationWidget(QWidget):
             return
         self._alt_draw = False
         if self._draw_mode_forced:
-            if self._selected_idx >= 0:
-                handle = self._handle_hit_test(pos, self._selected_idx)
-                if handle:
-                    self._drag_mode = handle; self._drag_start = pos; self._drag_orig = self._annotations[self._selected_idx].bbox; self.setCursor(self._cursor_for_handle(handle)); self.update(); return
             self._drawing = True
             self._draw_start = pos
             self._draw_current = pos
@@ -383,9 +379,6 @@ class AnnotationWidget(QWidget):
             self.setCursor(self._make_draw_cursor())
             self.update()
             return
-        if self._selected_idx >= 0:
-            handle = self._handle_hit_test(pos, self._selected_idx)
-            if handle: self._drag_mode = handle; self._drag_start = pos; self._drag_orig = self._annotations[self._selected_idx].bbox; self.setCursor(self._cursor_for_handle(handle)); self.update(); return
         clicked = self._hit_test(pos)
         if clicked >= 0:
             self._selected_idx = clicked; self._pending_bbox = None; ann = self._annotations[clicked]
@@ -425,21 +418,6 @@ class AnnotationWidget(QWidget):
             self.update()
             return
 
-        if self._drag_mode and self._drag_start and self._drag_orig:
-            dx = int((pos.x() - self._drag_start.x()) / self._scale); dy = int((pos.y() - self._drag_start.y()) / self._scale); ox, oy, ow, oh = self._drag_orig; m = self._drag_mode
-            if m == 'move': nx, ny, nw, nh = ox + dx, oy + dy, ow, oh
-            elif m == 'resize_NW': nx, ny, nw, nh = ox+dx, oy+dy, ow-dx, oh-dy
-            elif m == 'resize_NE': nx, ny, nw, nh = ox,    oy+dy, ow+dx, oh-dy
-            elif m == 'resize_SW': nx, ny, nw, nh = ox+dx, oy,    ow-dx, oh+dy
-            elif m == 'resize_SE': nx, ny, nw, nh = ox,    oy,    ow+dx, oh+dy
-            elif m == 'resize_N':  nx, ny, nw, nh = ox,    oy+dy, ow,    oh-dy
-            elif m == 'resize_S':  nx, ny, nw, nh = ox,    oy,    ow,    oh+dy
-            elif m == 'resize_W':  nx, ny, nw, nh = ox+dx, oy,    ow-dx, oh
-            elif m == 'resize_E':  nx, ny, nw, nh = ox,    oy,    ow+dx, oh
-            else: nx, ny, nw, nh = ox, oy, ow, oh
-            if nw > 8 and nh > 8:
-                ann = self._annotations[self._selected_idx]; self._data_mgr.update_annotation(self._img_path, ann, bbox=(nx, ny, nw, nh)); self._annotations = self._data_mgr.get_annotations(self._img_path)
-            self.update(); return
         from PySide6.QtWidgets import QApplication as _QApp
         mods = _QApp.queryKeyboardModifiers()
 
@@ -523,9 +501,6 @@ class AnnotationWidget(QWidget):
             self.unsetCursor()
             self.update()
             return
-        if self._drag_mode:
-            self._drag_mode = None; self._drag_start = None
-            self._drag_orig = None; self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -613,20 +588,6 @@ class AnnotationWidget(QWidget):
             h = self._handle_hit_test_review(pos, idx)
             if h: return h, idx
         return None, -1
-
-    def _handle_hit_test(self, pos: QPoint, ann_idx: int) -> str | None:
-        if ann_idx < 0 or ann_idx >= len(self._annotations): return None
-        try:
-            from warp.trainer.training_data import NON_ICON_SLOTS
-            if self._annotations[ann_idx].slot in NON_ICON_SLOTS: return None
-        except Exception:
-            pass
-        rect = self._img_to_screen_rect(self._annotations[ann_idx].bbox); h = self._HANDLE + 2; l, t, r, b = rect.left(), rect.top(), rect.right(), rect.bottom(); mx, my = (l + r) // 2, (t + b) // 2
-        handles = [('resize_NW', l, t), ('resize_N', mx, t), ('resize_NE', r, t), ('resize_W', l, my), ('resize_E', r, my), ('resize_SW', l, b), ('resize_S', mx, b), ('resize_SE', r, b), ('move', mx, my)]
-        x, y = pos.x(), pos.y()
-        for name, hx, hy in handles:
-            if abs(x - hx) <= h and abs(y - hy) <= h: return name
-        return None
 
     @staticmethod
     def _make_draw_cursor() -> QCursor:
