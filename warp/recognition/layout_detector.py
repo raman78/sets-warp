@@ -2028,9 +2028,9 @@ class LayoutDetector:
         Primary path uses OCR-anchored EQ geometry (eq_geometry.detect_eq_geometry):
         OCR labels supply row anchors, single-slot icon right-edges supply
         panel_right, and dx is computed as (panel_right - panel_x_start) / 6.
-        Cell width = final_dx, icon dims derived from row_pitch. Rows map
-        index-wise onto slot_order (top→bottom), capped at the number of
-        visible rows.
+        Cell width = final_dx, icon dims derived from row_pitch. Row identity
+        is taken from geom.eq_label_cys (OCR-anchored STD_ORDER mapping) when
+        present; slot_order[i] is a positional fallback for unmapped rows.
 
         Fallback (no EQ labels found, OCR failure, etc.) is the legacy
         brightness/row-separator scan retained as _detect_via_pixel_analysis_legacy.
@@ -2045,11 +2045,6 @@ class LayoutDetector:
         cell_w  = max(20, int(round(geom.final_dx)))
         icon_w  = max(20, cell_w - 2)
         icon_h  = max(20, int(round(geom.row_pitch * 0.85)) + 2)
-        # Cap iteration at visible rows; shorter slot_order (smaller ships)
-        # still works because index-wise mapping ignores extra rows.
-        n_rows = min(len(geom.row_cys), len(slot_order))
-        if n_rows == 0:
-            return self._detect_via_pixel_analysis_legacy(img, slot_order, profile)
 
         # OCR-anchored slot identity per row. Carriers / non-standard ships
         # may skip rows (e.g. T6 carrier has no Universal Consoles but does
@@ -2063,21 +2058,28 @@ class LayoutDetector:
         }
 
         result: dict = {}
-        for i in range(n_rows):
-            cy = geom.row_cys[i]
-            slot_name = cy_to_slot.get(cy) or slot_order[i]
+        for i, cy in enumerate(geom.row_cys):
+            # cy_to_slot is authoritative (OCR-anchored). Fall back to
+            # positional slot_order only when no OCR mapping exists AND
+            # the row index fits within slot_order.
+            slot_name = cy_to_slot.get(cy)
+            if slot_name is None:
+                if i >= len(slot_order):
+                    continue
+                slot_name = slot_order[i]
             y_top = max(0, cy - icon_h // 2)
             y_bot = min(h, cy + icon_h // 2)
             pixel_count, _ = self._count_icons_in_row(
                 img, y_top, y_bot, panel_right, cell_w, slot_name,
                 panel_x_start=panel_x_start)
             profile_count = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
-            if profile_count <= 1:
-                # Single mandatory slot — pixel count unreliable, trust profile.
-                n_icons = profile_count
-            else:
-                # Multi-slot row: ShipDB profile is the floor, allow +1 for T6-X.
-                n_icons = min(max(pixel_count, profile_count), profile_count + 1)
+            # ShipDB profile already includes tier bonuses (T6-X +1 Universal,
+            # T6-X2 +1 Device, etc.) via warp_importer. Trust profile_count;
+            # pixel_count is logged only for sanity-check / regression diag.
+            # Older code added +1 tolerance, which double-counted tier bonuses
+            # and dragged the decorative left-side sash into the grid as a
+            # phantom __empty__ slot on short rows (e.g. 3-slot Eng Cons).
+            n_icons = profile_count
             if n_icons == 0:
                 continue
             # Project cells right→left from panel_right. The grid itself is
@@ -2121,10 +2123,7 @@ class LayoutDetector:
             slot_name = slot_order[i]
             pixel_count, _ = self._count_icons_in_row(img, y_top, y_bot, panel_right, cell_w, slot_name)
             profile_count = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
-            if profile_count <= 1:
-                n_icons = profile_count
-            else:
-                n_icons = min(max(pixel_count, profile_count), profile_count + 1)
+            n_icons = profile_count
             if n_icons == 0: continue
             _slog.info(f'LayoutDetector: row {i} [{slot_name}] pixel_count={pixel_count} profile={profile_count} → using {n_icons} (legacy)')
             iy, bboxes = (y_top + y_bot) // 2 - icon_h // 2, []
