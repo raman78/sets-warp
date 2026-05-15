@@ -43,8 +43,12 @@ MATCH_SIZE          = 64     # resize crop + template to this before matching
 TEMPLATE_THRESHOLD  = 0.55   # min TM_CCOEFF_NORMED score to accept a match
 HIST_WEIGHT         = 0.20   # weight of histogram score when blending with template
 HIST_THRESHOLD      = 0.50   # min histogram correlation to contribute
-ML_TRIGGER_THRESHOLD= 0.50   # if combined conf below this, try ML stage
-FUSION_THRESHOLD    = 0.75   # P8: run ML and fuse scores when template < this
+ML_PRIMARY_THRESHOLD= 0.50   # ML conf >= this → ML is the source of truth
+VIRTUAL_OVERRIDE_CONF = 0.40 # when ML returns a real icon with conf >= this,
+                             # suppress virtual (__empty__/__inactive__)
+                             # session/template candidates
+ML_TRIGGER_THRESHOLD= 0.50   # if combined conf below this, try ML stage (legacy)
+FUSION_THRESHOLD    = 0.75   # P8: run ML and fuse scores when template < this (legacy)
 HIST_BINS           = [18, 16] # H×S bins for _hist_hsv — must match everywhere
 
 HF_REPO_ID          = 'sets-sto/icon-classifier'
@@ -97,21 +101,29 @@ class SETSIconMatcher:
         candidate_names: optional set of allowed item names.
           When provided, only entries in this set are considered.
 
-        Two-phase design — autonomous recognition first, confirmed data as fallback:
-
-          Phase A (autonomous):
-            Stage 0 — community pHash knowledge override
-            Stage 1 — template matching + histogram (SETS wiki-icon cache)
-            Stage 2 — ML classifier (local PyTorch / HF ONNX)
-
-          Phase B (fallback — only when Phase A confidence < TEMPLATE_THRESHOLD):
+        ML-primary design (2026-05-15):
+          Stage 0 — community pHash knowledge override (hard override, trust=1.0)
+          Stage 1 — ML classifier (local PyTorch / HF ONNX) — PRIMARY SOURCE
+                    when ml_conf >= ML_PRIMARY_THRESHOLD AND result is in candidate_names
+          Fallback (only when Stage 1 is uncertain / out of candidates):
+            Stage 2 — template matching + histogram (SETS wiki-icon cache)
             Stage 3 — session examples (confirmed training-data crops)
+            Stage 4 — last resort: weak ML result (better than nothing)
+
+        Rationale: ML is trained on real game-screenshot crops (via
+        sync.py → admin_train.py), so it generalizes to actual rendered
+        icons including virtual states (__empty__, __inactive__). Template
+        matching against wiki PNGs and session examples suffer from HSV-
+        distribution mismatch on dimly-rendered cells, producing false
+        positives (e.g. filled icon → __empty__). Treating ML as primary
+        eliminates that class of error; the fallback chain only kicks in
+        for items genuinely missing from the model's label_map.
 
         Returns:
             (item_name, confidence, thumbnail_QImage, used_session)
             item_name='' and confidence=0.0 if nothing matched.
-            used_session=True means Phase A failed and Phase B rescued the result.
-            Callers should treat used_session=True as a training gap.
+            used_session=True means Stage 3 (session example) rescued the
+            result — a training gap signal for the caller.
         """
         if crop_bgr is None or crop_bgr.size == 0:
             return '', 0.0, None, False
@@ -122,9 +134,7 @@ class SETSIconMatcher:
                             interpolation=cv2.INTER_AREA)
         q_hist = self._hist_hsv(crop64)
 
-        # ── Phase A — autonomous recognition ──────────────────────────────────
-
-        # Stage 0: community pHash knowledge override
+        # Stage 0: community pHash knowledge override (hard override)
         if self._sync_client is not None:
             try:
                 from warp.knowledge.sync_client import _compute_phash
@@ -132,7 +142,14 @@ class SETSIconMatcher:
                 overrides = self._sync_client.get_knowledge()
                 if phash in overrides:
                     name = overrides[phash]
-                    if candidate_names is not None and name not in candidate_names:
+                    # Defense-in-depth: never let knowledge.json hard-override a
+                    # crop to a virtual class (__empty__ / __inactive__) or a
+                    # leftover dev-test entry. Such entries pollute Stage 0 and
+                    # used to silently turn real icons into empty slots at
+                    # conf=1.0. Skip the override — fall through to ML/template.
+                    if name.startswith('__') or name == 'Test Item Name':
+                        log.debug(f'WARPSync: pHash override {name!r} suppressed (virtual/test)')
+                    elif candidate_names is not None and name not in candidate_names:
                         log.debug(f'WARPSync: pHash override {name!r} rejected — not valid for slot')
                     else:
                         log.debug(f'WARPSync: knowledge override → {name!r}')
@@ -140,66 +157,75 @@ class SETSIconMatcher:
             except Exception as e:
                 log.debug(f'WARPSync: override lookup failed: {e}')
 
-        # Stages 1+2: template matching + histogram
+        # Stage 1: ML classifier — always consulted (one of three signals)
+        ml_name, ml_conf = ('', 0.0)
+        if not self._ml_disabled:
+            ml_name, ml_conf = self._classify_ml(crop64)
+
+        # Stage 2: template matching + histogram against wiki PNGs
         auto_name  = ''
         auto_score = 0.0
         auto_entry = None
-
         for entry in self._index:
             if candidate_names is not None and entry['name'] not in candidate_names:
                 continue
             res      = cv2.matchTemplate(crop64, entry['tmpl64'],
                                          cv2.TM_CCOEFF_NORMED)
             tm_score = float(res.max())
-            if tm_score < TEMPLATE_THRESHOLD * 0.7:   # early reject
+            if tm_score < TEMPLATE_THRESHOLD * 0.7:
                 continue
-            h_score = float(cv2.compareHist(
-                q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL))
-            if h_score < 0:
-                h_score = 0.0
+            h_score = max(0.0, float(cv2.compareHist(
+                q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL)))
             combined = tm_score * (1.0 - HIST_WEIGHT) + h_score * HIST_WEIGHT
             if combined > auto_score:
                 auto_score = combined
                 auto_name  = entry['name']
                 auto_entry = entry
 
-        # ── Phase B — session examples (confirmed crops from training data) ────
-        # Checked BEFORE ML: human-confirmed game-screenshot crops take priority
-        # over a model that may confuse visually similar items.
-        # sess_score > auto_score is the guard — template only beats confirmed
-        # crops when template matching is already confident.
+        # Stage 3: session examples (confirmed training-data crops)
         sess_name, sess_score, sess_entry = self._best_session_match(
             crop64, q_hist, candidate_names)
-        if sess_score > auto_score and sess_name:
-            thumb = self._bgr_to_qimage(sess_entry.get('orig')) if sess_entry else None
-            log.debug(f'WARP: session example beats template '
-                      f'({sess_score:.3f} > {auto_score:.3f}) → {sess_name!r}')
-            return sess_name, sess_score, thumb, True
 
-        # Stage 3 (P8 confidence fusion): run ML when template score < FUSION_THRESHOLD.
-        # fused = max(template_conf, 0.4*template_conf + 0.6*ml_conf)
-        # When template is borderline and ML is high, ML name wins with fused confidence.
-        if auto_score < FUSION_THRESHOLD and not self._ml_disabled:
-            ml_name, ml_conf = self._classify_ml(crop64)
-            log.debug(f'WARP: template={auto_score:.3f} ml={ml_conf:.3f} ({ml_name!r})')
-            if ml_name and (candidate_names is None or ml_name in candidate_names):
-                fused = max(auto_score, 0.4 * auto_score + 0.6 * ml_conf)
-                if fused > auto_score:
-                    # Re-check session examples: if confirmed crops still beat ML-fused score, prefer them
-                    if sess_score > fused and sess_name:
-                        thumb = self._bgr_to_qimage(sess_entry.get('orig')) if sess_entry else None
-                        log.debug(f'WARP: session example beats ML-fused '
-                                  f'({sess_score:.3f} > {fused:.3f}) → {sess_name!r}')
-                        return sess_name, sess_score, thumb, True
-                    auto_name  = ml_name
-                    auto_score = fused
-                    auto_entry = None
+        # Combine all signals — strongest wins. No hard threshold here;
+        # caller (warp_importer) applies MIN_ACCEPT_CONF as final gate.
+        # Anti-virtual-bias rule: when ML returned a real icon with decent
+        # confidence (>= VIRTUAL_OVERRIDE_CONF), suppress virtual session /
+        # template matches (__empty__/__inactive__). This is the Bug 2 fix —
+        # session-virtual was beating real ML on filled icons due to HSV
+        # histogram bias of dim cells. ML is still NOT mandatory to win;
+        # template/session with a real icon name can outscore it.
+        ml_real = bool(ml_name) and not ml_name.startswith('__')
+        suppress_virtual = ml_real and ml_conf >= VIRTUAL_OVERRIDE_CONF
 
-        # Phase A result (autonomous)
-        thumb = None
-        if auto_entry is not None and auto_score >= TEMPLATE_THRESHOLD:
-            thumb = self._bgr_to_qimage(auto_entry.get('orig'))
-        return auto_name, auto_score, thumb, False
+        def _virtual(n: str) -> bool:
+            return bool(n) and n.startswith('__')
+
+        candidates = []
+        if sess_name and not (suppress_virtual and _virtual(sess_name)):
+            candidates.append(('session', sess_name, sess_score, sess_entry))
+        if auto_name and not (suppress_virtual and _virtual(auto_name)):
+            candidates.append(('template', auto_name, auto_score, auto_entry))
+        if ml_name and (candidate_names is None or ml_name in candidate_names):
+            candidates.append(('ml', ml_name, ml_conf, None))
+        if not candidates:
+            return '', 0.0, None, False
+        src, name, score, entry = max(candidates, key=lambda x: x[2])
+        if entry is not None:
+            thumb = self._bgr_to_qimage(entry.get('orig'))
+        else:
+            thumb = self._thumb_for_name(name)
+        return name, score, thumb, (src == 'session')
+
+    def _thumb_for_name(self, name: str) -> object:
+        """Return a QImage thumbnail for an item name by looking it up in the
+        wiki PNG index. Returns None for virtual items (__empty__/__inactive__)
+        or when the name is not in the index."""
+        if not name or name.startswith('__'):
+            return None
+        for entry in self._index:
+            if entry['name'] == name:
+                return self._bgr_to_qimage(entry.get('orig'))
+        return None
 
     def _best_session_match(
         self,

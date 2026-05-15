@@ -1162,11 +1162,12 @@ class WarpImporter:
                     )
                     if _is_sk(final_slot_name) and _psp(final_slot_name) is None:
                         _u_refine_buf.append((_new_item, crop, candidates))
-                # Contribute to community knowledge (non-blocking, only high-conf, skip virtual)
-                if conf >= TEMPLATE_CONF_THRESHOLD and name not in ('__empty__', '__inactive__'):
-                    sync = self._get_sync_client()
-                    if sync is not None:
-                        sync.contribute(crop, name, confirmed=False)
+                # Runtime contributions (confirmed=False) used to upload the
+                # detector's *own guesses* during a regular WARP import. These
+                # are discarded server-side by admin_merge (majority vote
+                # ignores confirmed=False), so they only generated storage
+                # clutter and bandwidth. The community knowledge base is now
+                # fed exclusively from WARP CORE Accept clicks (confirmed=True).
 
         # Universal-seat ability refinement (pre-remap): re-rank low-conf
         # abilities in U seats using sibling-prof prior + spec stripe prior.

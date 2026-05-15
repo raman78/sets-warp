@@ -39,8 +39,14 @@ _BACKEND_URL          = 'https://sets-warp-backend.onrender.com'
 _CHECK_INTERVAL_HOURS = 0.25        # minimum hours between remote checks (15 min)
 _VERSION_CACHE_FILE   = 'warp/models/model_version_remote_cache.json'
 _CONNECT_TIMEOUT      = 5           # seconds
-_READ_TIMEOUT         = 15          # seconds
-_RETRY_DELAYS_MIN     = (5, 15, 60, 240)  # backoff schedule on network failure
+# Render free tier cold-starts in ~50 s. 60 s read-timeout covers the wake-up;
+# anything shorter guarantees the very first call after idle will fail.
+# Matches CONTRIBUTE_TIMEOUT in sync_client.py for the same reason.
+_READ_TIMEOUT         = 60          # seconds
+# First retry shortened from 5 → 1 min so we re-hit the backend while it is
+# still warm from our previous attempt (Render sleeps after 15 min idle, but
+# stays warm for several minutes after any request).
+_RETRY_DELAYS_MIN     = (1, 5, 15, 60)    # backoff schedule on network failure
 _MODEL_FILES          = [           # files to download from HF knowledge repo
     ('models/icon_classifier.pt',            'icon_classifier.pt'),
     ('models/label_map.json',               'label_map.json'),
