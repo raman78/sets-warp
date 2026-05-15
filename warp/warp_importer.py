@@ -807,18 +807,6 @@ class WarpImporter:
             profile = self._get_shipdb().get_profile(ship_name, ship_type, ship_tier)
             _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}/{ship_tier!r}: {dict((k,v) for k,v in profile.items() if v)}')
 
-        # Trainer-mode overlay: user-confirmed annotation counts are a FLOOR for
-        # the profile — they can only raise counts above ShipDB, never lower them.
-        # This handles partial annotations and custom builds without diverging
-        # from the WARP detection path.
-        if _is_trainer_call:
-            if not profile_override:
-                profile_override = self._load_confirmed_profile(source)
-            for slot, count in (profile_override or {}).items():
-                if count > profile.get(slot, 0):
-                    profile[slot] = count
-                    _slog.info(f'WarpImporter: trainer profile {slot}={count} (confirmed floor)')
-
         # Game caps for Traits / Rep / Active Rep / BOFF fallbacks (both paths).
         # BOFF counts from _boff_profile_from_shipdb already set above; these
         # apply only when ShipDB had nothing.
@@ -829,6 +817,10 @@ class WarpImporter:
         # T6-X / T6-X2 tier upgrades (cumulative per level), both paths:
         #   T6-X  (level 1): +1 Universal Console, +1 Starship Trait, +1 Device
         #   T6-X2 (level 2): additional +1 each → total +2 vs base T6
+        # Applied BEFORE the trainer-mode confirmed-count floor so the user's
+        # confirmed count (which already reflects the X/X2 bonus) is the final
+        # word — without this order, ShipDB(4)+override(6)+X2(+2) = 8 slots,
+        # one cell past the panel.
         if '-X' in ship_tier:
             _x_bonus = 2 if 'X2' in ship_tier else 1
             if profile.get('Devices', 0) > 0:
@@ -838,6 +830,17 @@ class WarpImporter:
             _slog.info(f'WarpImporter: {ship_tier} — Universal Consoles +{_x_bonus} → {profile["Universal Consoles"]}')
             profile['Starship Traits'] = profile.get('Starship Traits', 5) + _x_bonus
             _slog.info(f'WarpImporter: {ship_tier} — Starship Traits +{_x_bonus} → {profile["Starship Traits"]}')
+
+        # Trainer-mode overlay: user-confirmed annotation counts are a FLOOR for
+        # the profile — they can only raise counts above ShipDB+tier bonus,
+        # never lower them. Applied LAST so confirmed counts are authoritative.
+        if _is_trainer_call:
+            if not profile_override:
+                profile_override = self._load_confirmed_profile(source)
+            for slot, count in (profile_override or {}).items():
+                if count > profile.get(slot, 0):
+                    profile[slot] = count
+                    _slog.info(f'WarpImporter: trainer profile {slot}={count} (confirmed floor)')
         _slog.debug(f'WarpImporter: final profile (traits/rep/boff): '
                     f'{dict((k,v) for k,v in profile.items() if "Boff" in k or "Trait" in k or "Rep" in k)}')
 

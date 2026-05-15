@@ -1971,17 +1971,25 @@ class LayoutDetector:
                 n_icons = min(max(pixel_count, profile_count), profile_count + 1)
             if n_icons == 0:
                 continue
-            _slog.info(
-                f'LayoutDetector: row {i} [{slot_name}] '
-                f'pixel_count={pixel_count} profile={profile_count} → using {n_icons}')
+            # Project cells right→left from panel_right. The grid itself is
+            # the constraint: any candidate whose left edge falls before
+            # panel_x_start lies outside the 6-cell matrix and is discarded.
             bboxes = []
             for j in range(n_icons):
                 # Float-domain positioning per cell — avoids 1-2 px overshoot
                 # past panel_x_start when round(final_dx) is just above the
                 # true float (e.g. final_dx=36.67 → cell_w=37 → 6×37=222 vs
                 # true panel width 220).
-                bx = max(0, int(round(panel_right - (j + 1) * geom.final_dx)) + 1)
+                bx = int(round(panel_right - (j + 1) * geom.final_dx)) + 1
+                if bx < panel_x_start:
+                    break
                 bboxes.append((bx, cy - icon_h // 2, icon_w, icon_h))
+            if not bboxes:
+                continue
+            _slog.info(
+                f'LayoutDetector: row {i} [{slot_name}] '
+                f'pixel_count={pixel_count} profile={profile_count} → '
+                f'requested {n_icons}, kept {len(bboxes)} within grid')
             bboxes.reverse()
             result[slot_name] = bboxes
         return result
