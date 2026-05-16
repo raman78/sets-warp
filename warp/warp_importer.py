@@ -693,6 +693,10 @@ class WarpImporter:
         self._text    = None
         self._shipdb  = None
         self._sync    = None   # WARPSyncClient — lazy init
+        # Per-match diagnostic log filled during pipeline(). Each entry:
+        # {'slot', 'name', 'conf', 'src', 'stages': {embed, soft, session,
+        # template, knowledge}}. Read by RecognitionWorker for summary table.
+        self.match_log: list[dict] = []
 
     def set_interrupt_check(self, fn):
         # fn() returns True when processing should stop
@@ -1131,7 +1135,14 @@ class WarpImporter:
                                 pass
 
                 name, conf, thumb, used_session = matcher.match(crop, candidate_names=candidates)
-                
+                self.match_log.append({
+                    'slot':  slot_name,
+                    'name':  name,
+                    'conf':  float(conf),
+                    'src':   getattr(matcher, '_last_match_src', ''),
+                    'stages': dict(getattr(matcher, '_last_stage_scores', {}) or {}),
+                })
+
                 # ── P5: Icon-to-Layout Feedback Loop ──────────────────────────
                 # If we haven't anchored yet on this image, check if this is a good anchor
                 if (not confirmed_layout and _gear_type and 

@@ -97,6 +97,14 @@ class SETSIconMatcher:
         # 'none' (no signal above threshold), '' (no match attempted).
         # Read by warp_importer to expose match source in autodetect logs.
         self._last_match_src: str = ''
+        # Per-stage raw scores from the most recent match() call. Filled in
+        # before every return path (knowledge / no-candidates / final winner).
+        # Consumed by RecognitionWorker to build the per-image match summary
+        # table. Keys: 'embed', 'soft', 'session', 'template', 'knowledge'.
+        self._last_stage_scores: dict[str, float] = {
+            'embed': 0.0, 'soft': 0.0, 'session': 0.0,
+            'template': 0.0, 'knowledge': 0.0,
+        }
         self._sync_client = sync_client  # WARPSyncClient | None
         self._build_index()
 
@@ -139,10 +147,16 @@ class SETSIconMatcher:
         """
         if crop_bgr is None or crop_bgr.size == 0:
             self._last_match_src = ''
+            self._last_stage_scores = {'embed': 0.0, 'soft': 0.0,
+                                       'session': 0.0, 'template': 0.0,
+                                       'knowledge': 0.0}
             return '', 0.0, None, False
 
         import cv2
         self._last_match_src = ''
+        self._last_stage_scores = {'embed': 0.0, 'soft': 0.0,
+                                   'session': 0.0, 'template': 0.0,
+                                   'knowledge': 0.0}
 
         crop64 = cv2.resize(crop_bgr, (MATCH_SIZE, MATCH_SIZE),
                             interpolation=cv2.INTER_AREA)
@@ -168,6 +182,7 @@ class SETSIconMatcher:
                     else:
                         log.debug(f'WARPSync: knowledge override → {name!r}')
                         self._last_match_src = 'knowledge'
+                        self._last_stage_scores['knowledge'] = 1.0
                         return name, 1.0, self._bgr_to_qimage(crop_bgr), False
             except Exception as e:
                 log.debug(f'WARPSync: override lookup failed: {e}')
@@ -200,6 +215,14 @@ class SETSIconMatcher:
         # Stage 3: session examples (confirmed training-data crops)
         sess_name, sess_score, sess_entry = self._best_session_match(
             crop64, q_hist, candidate_names)
+
+        # Record raw per-stage scores for the summary table.
+        if self._ml_kind == 'embedder':
+            self._last_stage_scores['embed'] = float(ml_conf)
+        elif self._ml_kind == 'classifier':
+            self._last_stage_scores['soft']  = float(ml_conf)
+        self._last_stage_scores['template'] = float(auto_score)
+        self._last_stage_scores['session']  = float(sess_score)
 
         # Combine all signals — strongest wins. No hard threshold here;
         # caller (warp_importer) applies MIN_ACCEPT_CONF as final gate.

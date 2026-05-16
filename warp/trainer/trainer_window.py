@@ -45,6 +45,105 @@ _KEY_LAST_DIR       = 'warp_core/last_dir'
 _KEY_AUTO_ACCEPT    = 'warp_core/auto_accept_enabled'
 _KEY_AUTO_CONF      = 'warp_core/auto_accept_conf'
 
+# ── Match summary table + history ──────────────────────────────────────────
+_RECOG_HISTORY_PATH = Path(__file__).resolve().parent.parent / 'training_data' / 'recog_history.json'
+_DELTA_EPS = 0.03  # minimum absolute conf change to render an arrow
+
+
+def _arrow(prev: float | None, curr: float) -> str:
+    if prev is None:
+        return ' new'
+    d = curr - prev
+    if abs(d) < _DELTA_EPS:
+        return '  ─ '
+    return f'{"↑" if d > 0 else "↓"}{abs(d):.2f}'
+
+
+def _fmt_score(v: float) -> str:
+    return f'{v:.2f}' if v > 0 else ' -  '
+
+
+def _load_recog_history() -> dict:
+    try:
+        if _RECOG_HISTORY_PATH.exists():
+            import json
+            return json.loads(_RECOG_HISTORY_PATH.read_text(encoding='utf-8'))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_recog_history(hist: dict) -> None:
+    try:
+        import json
+        _RECOG_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _RECOG_HISTORY_PATH.write_text(
+            json.dumps(hist, indent=2), encoding='utf-8')
+    except Exception:
+        pass
+
+
+def _log_match_summary(image_name: str, match_log: list[dict]) -> None:
+    """
+    Render the per-image match summary table and update recog_history.json.
+
+    Columns: slot | name | win | embed | sess | tmpl | knldg | Δ (vs previous
+    run for the same image+slot). Totals per source at the bottom.
+    """
+    from src.setsdebug import log as _slog
+    if not match_log:
+        return
+
+    hist  = _load_recog_history()
+    prev  = hist.get(image_name, {})
+    curr: dict[str, dict] = {}
+    totals: dict[str, int] = {}
+
+    header = (f'{"slot":<28} {"name":<32} {"win":<6} '
+              f'{"embed":>6} {"sess":>6} {"tmpl":>6} {"knldg":>6}   Δ')
+    rows: list[str] = [header, '-' * len(header)]
+
+    # When the same slot appears multiple times (e.g. Boff Tactical row),
+    # disambiguate by appending index. recog_history is keyed by these labels.
+    slot_seen: dict[str, int] = {}
+    for entry in match_log:
+        slot = entry.get('slot', '')
+        idx  = slot_seen.get(slot, 0)
+        slot_seen[slot] = idx + 1
+        key  = slot if idx == 0 else f'{slot}#{idx}'
+
+        name   = entry.get('name', '') or ''
+        src    = entry.get('src',  '') or ''
+        stages = entry.get('stages', {}) or {}
+        e = float(stages.get('embed',     0.0))
+        f = float(stages.get('soft',      0.0))
+        s = float(stages.get('session',   0.0))
+        t = float(stages.get('template',  0.0))
+        k = float(stages.get('knowledge', 0.0))
+
+        prev_conf = prev.get(key, {}).get('conf')
+        arrow = _arrow(prev_conf, float(entry.get('conf', 0.0)))
+        # Track the active ML score (embed or soft, whichever the matcher used).
+        ml_score = e if e > 0 else f
+        rows.append(
+            f'{key[:28]:<28} {name[:32]:<32} {src[:6]:<6} '
+            f'{_fmt_score(ml_score):>6} {_fmt_score(s):>6} '
+            f'{_fmt_score(t):>6} {_fmt_score(k):>6}   {arrow}'
+        )
+        totals[src] = totals.get(src, 0) + 1
+        curr[key] = {'name': name, 'conf': float(entry.get('conf', 0.0)),
+                     'src':  src}
+
+    totals_str = '  '.join(f'{src or "?"}={cnt}'
+                            for src, cnt in sorted(totals.items()))
+    _slog.info(f'WARP CORE: match summary  {image_name}  ({len(match_log)} items)')
+    for r in rows:
+        _slog.info(f'  {r}')
+    _slog.info(f'  TOTAL: {totals_str}')
+
+    hist[image_name] = curr
+    _save_recog_history(hist)
+
 CONF_HIGH   = 0.85
 CONF_MEDIUM = 0.70
 
@@ -510,6 +609,12 @@ class RecognitionWorker(QThread):
                           'state': 'pending', 'thumb': ri.thumbnail, 'crop_bgr': crop_bgr,
                           'orig_name': ri.name, 'ship_name': result.ship_name,
                           'cross_check_failed': cross_check})
+        # Summary table: per-stage scores + Δ vs previous run for this image.
+        try:
+            _log_match_summary(self._path.name, getattr(importer, 'match_log', []))
+        except Exception as e:
+            _slog.debug(f'RecognitionWorker: summary table failed: {e}')
+
         _slog.info(f'RecognitionWorker: emitting {len(items)} items')
         self.finished.emit(items)
 
@@ -2128,13 +2233,19 @@ class WarpCoreWindow(QMainWindow):
             # Constrain matcher to names valid for this slot (see _on_bbox_changed
             # for rationale — prevents cross-domain/career embedder leakage).
             cand = set(self._build_search_candidates(slot))
-            name, conf, thumb, _used_sess = SETSIconMatcher(self._sets).match(
+            _matcher = SETSIconMatcher(self._sets)
+            name, conf, thumb, _used_sess = _matcher.match(
                 crop, candidate_names=cand if cand else None)
             from src.setsdebug import log as _slog
+            st = dict(getattr(_matcher, '_last_stage_scores', {}) or {})
+            src = getattr(_matcher, '_last_match_src', '')
+            ml = st.get('embed', 0) or st.get('soft', 0)
             _slog.info(
                 f"WARP CORE: rematch row={row} slot='{slot}' "
-                f"bbox={bbox} cand={len(cand)} → ('{name}',{conf:.2f}) "
-                f"state={ri.get('state','')}"
+                f"bbox={bbox} cand={len(cand)} src={src} "
+                f"stages[embed={ml:.2f} sess={st.get('session',0):.2f} "
+                f"tmpl={st.get('template',0):.2f} knldg={st.get('knowledge',0):.2f}] "
+                f"→ ('{name}',{conf:.2f}) state={ri.get('state','')}"
             )
 
             _cross_check = False
@@ -2482,9 +2593,14 @@ class WarpCoreWindow(QMainWindow):
                         name, conf, thumb, _used_sess = matcher.match(
                             crop, candidate_names=cand if cand else None)
                         from src.setsdebug import log as _slog
+                        st = dict(getattr(matcher, '_last_stage_scores', {}) or {})
+                        src = getattr(matcher, '_last_match_src', '')
+                        ml = st.get('embed', 0) or st.get('soft', 0)
                         _slog.info(
                             f"WARP CORE: bbox_changed row={row} slot='{ri.get('slot','')}' "
-                            f"bbox={new_bbox} cand={len(cand)} "
+                            f"bbox={new_bbox} cand={len(cand)} src={src} "
+                            f"stages[embed={ml:.2f} sess={st.get('session',0):.2f} "
+                            f"tmpl={st.get('template',0):.2f} knldg={st.get('knowledge',0):.2f}] "
                             f"old=('{old_name}',{old_conf:.2f}) → "
                             f"new=('{name}',{conf:.2f}) "
                             f"state={ri.get('state','')}"
