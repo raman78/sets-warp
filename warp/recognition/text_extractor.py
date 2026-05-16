@@ -204,11 +204,34 @@ class TextExtractor:
     def __init__(self):
         self._ocr = None
 
+    @staticmethod
+    def _poly_to_xywh(poly) -> tuple[int, int, int, int]:
+        """EasyOCR polygon [[x0,y0],[x1,y1],[x2,y2],[x3,y3]] → axis-aligned (x,y,w,h)."""
+        xs = [int(p[0]) for p in poly]
+        ys = [int(p[1]) for p in poly]
+        x0, y0 = min(xs), min(ys)
+        return x0, y0, max(xs) - x0, max(ys) - y0
+
+    @staticmethod
+    def _union_xywh(*boxes) -> tuple[int, int, int, int] | None:
+        """Return the smallest (x,y,w,h) covering all non-None inputs."""
+        valid = [b for b in boxes if b]
+        if not valid:
+            return None
+        x0 = min(b[0] for b in valid)
+        y0 = min(b[1] for b in valid)
+        x1 = max(b[0] + b[2] for b in valid)
+        y1 = max(b[1] + b[3] for b in valid)
+        return x0, y0, x1 - x0, y1 - y0
+
     def extract_ship_info(self, img: np.ndarray) -> dict:
         result = {
             'ship_name':  '',
             'ship_type':  '',
             'ship_tier':  '',
+            'ship_name_bbox': None,   # (x,y,w,h) | None
+            'ship_type_bbox': None,
+            'ship_tier_bbox': None,
             'build_type': '',
             'scan_scope': 'partial',  # 'partial' or 'full' — set below
         }
@@ -276,16 +299,22 @@ class TextExtractor:
             # ── Find Tier token first — it's the most distinctive ─────────────
             # Tier looks like: T6-X2, T6-X, T6, T5-U etc.
             tier_idx = None
+            tier_token_bbox = None  # bbox of the full token containing tier (may include type prefix)
             for i, (bbox, t, c) in enumerate(items):
                 m = RE_TIER_LOOSE.search(t)
                 if m:
                     result['ship_tier'] = m.group(1).upper().replace(' ', '')
                     tier_idx = i
+                    tier_token_bbox = self._poly_to_xywh(bbox)
+                    # Tier bbox = whole token (no easy way to slice OCR poly to the tier sub-string).
+                    result['ship_tier_bbox'] = tier_token_bbox
                     _slog.info(f'TextExtractor: tier={result["ship_tier"]!r} from {t!r}')
                     # Check if ship type is on the same line before tier
                     prefix = t[:m.start()].strip().rstrip(' [')
                     if len(prefix) > 4:
                         result['ship_type'] = prefix
+                        # Same-token prefix → reuse tier token bbox as initial type bbox
+                        result['ship_type_bbox'] = tier_token_bbox
                     break
 
             # ── Find ship type and name near tier ─────────────────────────────
@@ -297,14 +326,16 @@ class TextExtractor:
 
                 # Same row as tier: within 8px vertically AND left of tier token
                 # Strict x-filter: must be in same horizontal cluster as tier
-                same_row = [t for i, (bbox, t, c) in enumerate(items)
+                same_row = [(t, self._poly_to_xywh(bbox))
+                            for i, (bbox, t, c) in enumerate(items)
                             if abs(bbox[0][1] - tier_y) < 8
                             and i != tier_idx
                             and bbox[0][0] < tier_x0  # to the left of tier
                             and len(t) > 2]           # skip noise tokens
 
                 # Lines above tier: within 40px (one or two rows max)
-                above = [(bbox[0][1], t) for i, (bbox, t, c) in enumerate(items)
+                above = [(bbox[0][1], t, self._poly_to_xywh(bbox))
+                         for i, (bbox, t, c) in enumerate(items)
                          if tier_y - 40 < bbox[0][1] < tier_y - 8
                          and len(t) > 3]  # skip noise
                 above.sort(key=lambda x: x[0], reverse=True)  # closest to tier first
@@ -323,30 +354,39 @@ class TextExtractor:
                     r'fore|aft|stations?)\b',
                     re.IGNORECASE
                 )
-                above_clean = [t for _, t in above if not _SECTION_HEADER_RE.search(t)]
+                above_clean = [(t, bb) for _, t, bb in above
+                               if not _SECTION_HEADER_RE.search(t)]
                 prefix_type = result['ship_type']
                 if above_clean:
-                    result['ship_type'] = (above_clean[0] + ' ' + prefix_type).strip() if prefix_type else above_clean[0]
+                    above_t, above_bb = above_clean[0]
+                    result['ship_type'] = (above_t + ' ' + prefix_type).strip() if prefix_type else above_t
+                    # Type bbox = union of above-line token + same-row prefix bbox
+                    result['ship_type_bbox'] = self._union_xywh(
+                        above_bb, result.get('ship_type_bbox'))
                 elif not prefix_type:
                     if same_row:
-                        result['ship_type'] = ' '.join(same_row).strip()
+                        result['ship_type'] = ' '.join(t for t, _ in same_row).strip()
+                        result['ship_type_bbox'] = self._union_xywh(
+                            *(bb for _, bb in same_row))
 
                 # Ship name: look for U.S.S./I.S.S./R.R.W. pattern anywhere in band
                 # or topmost token if no pattern match
                 _SHIP_NAME_RE = re.compile(
                     r'^([UuIiRr]\.?[SsRr]\.?[SsWw]\.?\s+\S)', re.UNICODE)
-                name_candidates = [(bbox[0][1], t)
+                name_candidates = [(bbox[0][1], t, self._poly_to_xywh(bbox))
                                    for bbox, t, c in items if c > 0.5]
                 name_candidates.sort(key=lambda x: x[0])  # top to bottom
-                for _, t in name_candidates:
+                for _, t, bb in name_candidates:
                     if _SHIP_NAME_RE.match(t):
                         result['ship_name'] = t
+                        result['ship_name_bbox'] = bb
                         break
                 # Fallback: topmost high-conf token that isn't the type
                 if not result['ship_name'] and name_candidates:
-                    top = name_candidates[0][1]
+                    _, top, top_bb = name_candidates[0]
                     if top != result['ship_type']:
                         result['ship_name'] = top
+                        result['ship_name_bbox'] = top_bb
 
                 _slog.info(f'TextExtractor: name={result["ship_name"]!r} '
                            f'type={result["ship_type"]!r} '

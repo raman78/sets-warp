@@ -1512,7 +1512,7 @@ class WarpCoreWindow(QMainWindow):
         self._review_summary.setText('')
         self._set_review_buttons_enabled(False)
         for ri in self._recognition_items:
-            self._add_review_row(ri['name'], ri['slot'], ri.get('conf', 0.0), confirmed=(ri.get('state') == 'confirmed'), cross_check_failed=ri.get('cross_check_failed', False))
+            self._add_review_row(ri['name'], ri['slot'], ri.get('conf', 0.0), confirmed=(ri.get('state') == 'confirmed'), cross_check_failed=ri.get('cross_check_failed', False), auto_confirmed=ri.get('auto_confirmed', False))
         self._ann_widget.set_review_items(self._recognition_items)
         self._ann_widget.set_selected_row(-1)
         n = len(self._recognition_items)
@@ -1530,14 +1530,15 @@ class WarpCoreWindow(QMainWindow):
         # before OCR finished), re-run OCR now so the name is filled in.
         self._ocr_empty_non_icon_items()
 
-    def _add_review_row(self, name: str, slot: str, conf: float, confirmed: bool = False, cross_check_failed: bool = False):
+    def _add_review_row(self, name: str, slot: str, conf: float, confirmed: bool = False, cross_check_failed: bool = False, auto_confirmed: bool = False):
         is_virtual = name in VIRTUAL_ITEM_NAMES
         slot_disp = _pretty_slot(slot)
         if confirmed:
+            tag = 'auto' if auto_confirmed else 'confirmed'
             if conf > 0.0:
-                label = f'{slot_disp}  ->  {name or "—"}  [confirmed {conf:.0%}]'
+                label = f'{slot_disp}  ->  {name or "—"}  [{tag} {conf:.0%}]'
             else:
-                label = f'{slot_disp}  ->  {name or "—"}  [confirmed]'
+                label = f'{slot_disp}  ->  {name or "—"}  [{tag}]'
         elif is_virtual:
             display = 'empty slot' if name == '__empty__' else 'inactive slot'
             label = f'{slot_disp}  ->  [{display}]'
@@ -1547,13 +1548,14 @@ class WarpCoreWindow(QMainWindow):
             label = f'{slot_disp}  ->  {name or "— unmatched —"}  [{conf:.0%}]'
         item = QListWidgetItem(label)
         if confirmed:
+            status = 'auto-confirmed by detector' if auto_confirmed else 'confirmed by user'
             if conf > 0.0:  # real confidence saved
                 tooltip = (f'Slot: {slot_disp}\nItem: {name or "—"}\n'
-                           f'Status: confirmed by user\n'
+                           f'Status: {status}\n'
                            f'ML recognition: {conf:.1%}')
             else:           # conf=0.0 — old annotation without saved confidence
                 tooltip = (f'Slot: {slot_disp}\nItem: {name or "—"}\n'
-                           f'Status: confirmed by user\n'
+                           f'Status: {status}\n'
                            f'ML recognition: unknown (previous session)')
         elif name:
             tooltip = f'Slot: {slot_disp}\nItem: {name}\nConfidence: {conf:.1%}'
@@ -1564,6 +1566,8 @@ class WarpCoreWindow(QMainWindow):
         item.setToolTip(tooltip)
         if confirmed and is_virtual:
             item.setForeground(QColor('#888888'))   # grey — virtual, no build value
+        elif confirmed and auto_confirmed:
+            item.setForeground(QColor('#ffc800'))   # yellow — auto-confirmed by detector
         elif confirmed:
             item.setForeground(QColor('#7effc8'))
         elif is_virtual:
@@ -1980,7 +1984,12 @@ class WarpCoreWindow(QMainWindow):
                 from src.setsdebug import log as _slog2
                 _slog2.info(f'add_bbox: discarding {name!r} — not valid for stype={stype}')
                 name, conf, thumb = '', 0.0, None
-        # NON_ICON_SLOTS (Ship Name/Type/Tier) — position only, always confirmed
+        # NON_ICON_SLOTS (Ship Name/Type/Tier) — text/position only, never icon.
+        # If the matcher ran (because slot inference moved us into NON_ICON after
+        # match) or P1 misrouted us, suppress any icon-name leak — OCR is the
+        # only valid content source for these slots.
+        if slot in NON_ICON_SLOTS:
+            name, conf, thumb = '', 0.0, None
         if slot == 'Ship Name':
             _auto = True
         elif slot in NON_ICON_SLOTS:
@@ -2339,10 +2348,16 @@ class WarpCoreWindow(QMainWindow):
                     self._populate_ship_type_combo()
                 v_tiers = [self._tier_combo.itemText(i) for i in range(self._tier_combo.count())]
                 v_types = [self._ship_type_combo.itemText(i) for i in range(self._ship_type_combo.count())]
-                
+
                 ri = self._recognition_items[row]
                 ri['name'] = ''
                 ri['slot'] = slot
+                # Wipe any stale icon-matcher name still showing in the name field
+                # (e.g. matcher returned a junk label on the ship-name crop before
+                # the user switched the slot to Ship Name/Type/Tier).
+                self._name_edit.blockSignals(True)
+                self._name_edit.clear()
+                self._name_edit.blockSignals(False)
                 litem = self._review_list.item(row)
                 if litem:
                     litem.setText(f'{slot}  ->  [Scanning...]')
@@ -2571,6 +2586,7 @@ class WarpCoreWindow(QMainWindow):
             name = ri.get('name', '') or ri.get('orig_name', '')
             if not slot or not name: continue
             ri['state'] = 'confirmed'
+            ri['auto_confirmed'] = True
             if ri.get('bbox') and path:
                 _saved = self._data_mgr.add_annotation(
                     image_path=path, bbox=ri['bbox'], slot=slot, name=name,
@@ -2649,6 +2665,7 @@ class WarpCoreWindow(QMainWindow):
             ri['name'] = name
             ri['slot'] = slot
             ri['state'] = 'confirmed'
+            ri['auto_confirmed'] = False  # user override → green, not yellow
             if ri.get('bbox') and self._current_idx >= 0:
                 path = self._screenshots[self._current_idx]
                 log.debug(f'accept: row={row} slot={slot!r} name={name!r} bbox={ri["bbox"]}')
@@ -2660,6 +2677,7 @@ class WarpCoreWindow(QMainWindow):
                 )
                 ri['ann_id'] = saved.ann_id  # track for future edits on this bbox
                 self._ann_widget.refresh_annotations(path)
+                self._ann_widget.update()  # repaint review-layer bbox in new color
             litem = self._review_list.item(row)
             if litem:
                 conf = ri.get('conf', 0.0)

@@ -85,6 +85,18 @@ class SETSIconMatcher:
         self._ml_session  = None
         self._ml_disabled = False      # True after first failed download attempt
         self._label_map: dict[int, str] = {}
+        # Metric-learning path: when icon_embedder.pt is present, _ml_session is
+        # the embedder model and _gallery_* hold the k-NN search index. When
+        # _ml_kind=='classifier' (legacy softmax), _gallery_* stay None.
+        self._ml_kind: str = ''        # 'embedder' | 'classifier' | ''
+        self._gallery_emb = None       # np.ndarray (N, D) float32, L2-normed
+        self._gallery_lbl = None       # np.ndarray (N,) int32 — indices into _label_map
+        # Diagnostic: source of the most recent match() decision.
+        # Values: 'ml' (embedder/classifier), 'template' (wiki PNG histogram),
+        # 'session' (confirmed training crop), 'knowledge' (pHash override),
+        # 'none' (no signal above threshold), '' (no match attempted).
+        # Read by warp_importer to expose match source in autodetect logs.
+        self._last_match_src: str = ''
         self._sync_client = sync_client  # WARPSyncClient | None
         self._build_index()
 
@@ -126,9 +138,11 @@ class SETSIconMatcher:
             result — a training gap signal for the caller.
         """
         if crop_bgr is None or crop_bgr.size == 0:
+            self._last_match_src = ''
             return '', 0.0, None, False
 
         import cv2
+        self._last_match_src = ''
 
         crop64 = cv2.resize(crop_bgr, (MATCH_SIZE, MATCH_SIZE),
                             interpolation=cv2.INTER_AREA)
@@ -153,6 +167,7 @@ class SETSIconMatcher:
                         log.debug(f'WARPSync: pHash override {name!r} rejected — not valid for slot')
                     else:
                         log.debug(f'WARPSync: knowledge override → {name!r}')
+                        self._last_match_src = 'knowledge'
                         return name, 1.0, self._bgr_to_qimage(crop_bgr), False
             except Exception as e:
                 log.debug(f'WARPSync: override lookup failed: {e}')
@@ -208,8 +223,17 @@ class SETSIconMatcher:
         if ml_name and (candidate_names is None or ml_name in candidate_names):
             candidates.append(('ml', ml_name, ml_conf, None))
         if not candidates:
+            self._last_match_src = 'none'
             return '', 0.0, None, False
         src, name, score, entry = max(candidates, key=lambda x: x[2])
+        # Disambiguate ML source by model kind so logs distinguish the
+        # ArcFace embedder from the legacy softmax classifier.
+        if src == 'ml' and self._ml_kind == 'embedder':
+            self._last_match_src = 'embed'
+        elif src == 'ml':
+            self._last_match_src = 'soft'
+        else:
+            self._last_match_src = src
         if entry is not None:
             thumb = self._bgr_to_qimage(entry.get('orig'))
         else:
@@ -375,6 +399,9 @@ class SETSIconMatcher:
         model = self._get_ml_session()
         if model is None:
             return '', 0.0
+        # Metric-learning path: model is an Embedder, _gallery_* hold the k-NN index.
+        if self._ml_kind == 'embedder':
+            return self._classify_ml_embed(crop64)
         rgb = cv2.cvtColor(cv2.resize(crop64, (224, 224)), cv2.COLOR_BGR2RGB)
         inp = rgb.astype(np.float32) / 255.0
         # ImageNet normalization (same as T.Normalize in admin_train.py)
@@ -398,6 +425,36 @@ class SETSIconMatcher:
             log.debug(f'WARP: ML classify error: {e}')
             return '', 0.0
 
+    def _classify_ml_embed(self, crop64: np.ndarray) -> tuple[str, float]:
+        """Embed a crop and return the nearest-neighbour label from the gallery.
+
+        Confidence is the cosine similarity to the nearest gallery embedding,
+        clamped to [0, 1] — same range as the softmax classifier's confidence,
+        so the rest of the fallback chain treats both models interchangeably.
+        """
+        import cv2
+        if self._gallery_emb is None or self._gallery_lbl is None:
+            return '', 0.0
+        rgb = cv2.cvtColor(cv2.resize(crop64, (224, 224)), cv2.COLOR_BGR2RGB)
+        inp = rgb.astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        inp = (inp - mean) / std
+        inp = np.expand_dims(np.transpose(inp, (2, 0, 1)), axis=0)
+        try:
+            import torch
+            t = torch.from_numpy(inp)
+            with torch.no_grad():
+                emb = self._ml_session(t).numpy()[0]    # (D,) already L2-normed
+            sims = self._gallery_emb @ emb              # (N,) cosine similarity
+            top = int(np.argmax(sims))
+            best_lbl = int(self._gallery_lbl[top])
+            conf = float(max(0.0, min(1.0, sims[top])))
+            return self._label_map.get(best_lbl, ''), conf
+        except Exception as e:
+            log.debug(f'WARP: ML embed error: {e}')
+            return '', 0.0
+
     def _get_ml_session(self):
         if self._ml_disabled:
             return None
@@ -406,6 +463,53 @@ class SETSIconMatcher:
 
         sets_root  = self._find_sets_root()
         models_dir = sets_root / 'warp' / 'models'
+
+        # Priority 0: metric-learning embedder (icon_embedder.pt + gallery index)
+        # Uses embedder_label_map.json so its class space stays disjoint from
+        # the softmax classifier's label_map.json (different class counts).
+        emb_path     = models_dir / 'icon_embedder.pt'
+        gallery_path = models_dir / 'embedding_index.npz'
+        emb_label    = models_dir / 'embedder_label_map.json'
+        if emb_path.exists() and gallery_path.exists() and emb_label.exists():
+            try:
+                import torch
+                import torch.nn as nn
+                import torch.nn.functional as F
+                from torchvision.models import efficientnet_b0
+                with open(emb_label, encoding='utf-8') as f:
+                    raw = json.load(f)
+                self._label_map = {int(k): v for k, v in raw.items()}
+                # Match admin_train_metric.py architecture: backbone with no classifier,
+                # plus a Linear projection to EMBED_DIM with L2-normalize on output.
+                gallery = np.load(str(gallery_path))
+                embed_dim = int(gallery['embeddings'].shape[1])
+                backbone = efficientnet_b0(weights=None)
+                in_features = backbone.classifier[1].in_features
+                backbone.classifier = nn.Identity()
+
+                class Embedder(nn.Module):
+                    def __init__(self):
+                        super().__init__()
+                        self.backbone = backbone
+                        self.proj = nn.Linear(in_features, embed_dim)
+                    def forward(self, x):
+                        f = self.backbone(x)
+                        return F.normalize(self.proj(f), dim=1)
+
+                model = Embedder()
+                model.load_state_dict(torch.load(str(emb_path), map_location='cpu',
+                                                  weights_only=True))
+                model.eval()
+                self._ml_session = model
+                self._ml_kind = 'embedder'
+                self._gallery_emb = gallery['embeddings'].astype(np.float32)
+                self._gallery_lbl = gallery['labels'].astype(np.int32)
+                log.info(f'WARP: metric-learning embedder loaded '
+                         f'({len(self._label_map)} classes, '
+                         f'gallery={len(self._gallery_emb)}, dim={embed_dim})')
+                return self._ml_session
+            except Exception as e:
+                log.warning(f'WARP: embedder load failed: {e} — falling back to classifier')
 
         # Priority 1: locally trained PyTorch model (.pt)
         pt_path    = models_dir / 'icon_classifier.pt'
@@ -426,6 +530,7 @@ class SETSIconMatcher:
                                                   weights_only=True))
                 model.eval()
                 self._ml_session = model
+                self._ml_kind = 'classifier'
                 log.info(f'WARP: local PyTorch icon classifier loaded ({n_classes} classes)')
                 return self._ml_session
             except Exception as e:
@@ -443,6 +548,7 @@ class SETSIconMatcher:
                 with open(hf_label, encoding='utf-8') as f:
                     raw = json.load(f)
                     self._label_map = {int(k): v for k, v in raw.items()}
+                self._ml_kind = 'classifier'
                 log.info('WARP: HuggingFace ONNX icon classifier loaded')
                 return self._ml_session
             except Exception as e:

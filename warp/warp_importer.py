@@ -50,6 +50,12 @@ def _bbox_iou(a, b) -> float:
 # Minimum confidence to include a recognition result in output
 # Below this threshold the matcher is essentially guessing
 MIN_ACCEPT_CONF = 0.35
+# When a bbox came from a detected/confirmed grid but matching produces conf
+# below MIN_ACCEPT_CONF, keep the bbox in the review list with an empty name
+# instead of dropping it. The user can then type the name manually in WARP
+# CORE rather than losing the grid position. Set False to restore the old
+# "drop low-conf entirely" behavior.
+KEEP_LOW_CONF_GRID_BBOXES = True
 # ── P5: Anchoring constants ──────────────────────────────────────────────────
 # Slots used as reference points for layout recalibration
 ANCHOR_SLOTS = frozenset({'Deflector', 'Engines', 'Warp Core', 'Shield'})
@@ -871,6 +877,35 @@ class WarpImporter:
             icon_matcher=self._get_matcher() if _needs_matcher else None,
             app_cache=self._app.cache if _needs_matcher else None,
         )
+        # Inject Ship Name/Type/Tier bboxes captured by the OCR pass so WARP
+        # CORE can render them as reviewable slots on the canvas. Pure pass-
+        # through — they are NON_ICON slots, never go through icon_matcher.
+        # Space-only screens (SPACE / SPACE_MIXED / SPACE_TRAITS) are the only
+        # ones where the top band carries the ship-info line.
+        if build_type in ('SPACE', 'SPACE_MIXED', 'SPACE_TRAITS'):
+            for _slot, _bbkey, _valkey in (
+                ('Ship Name', 'ship_name_bbox', 'ship_name'),
+                ('Ship Type', 'ship_type_bbox', 'ship_type'),
+                ('Ship Tier', 'ship_tier_bbox', 'ship_tier'),
+            ):
+                _bb = text_info.get(_bbkey)
+                if not _bb:
+                    continue
+                _bb_t = tuple(_bb)
+                layout[_slot] = [_bb_t]
+                # Append as RecognisedItem so trainer review list picks it up.
+                # Ship Name is position-only in WARP CORE (no content stored),
+                # so name='' there; Type/Tier carry the OCR value.
+                _val = '' if _slot == 'Ship Name' else text_info.get(_valkey, '')
+                result.items.append(RecognisedItem(
+                    slot        = _slot,
+                    slot_index  = 0,
+                    name        = _val,
+                    confidence  = 1.0 if _val or _slot == 'Ship Name' else 0.0,
+                    thumbnail   = None,
+                    source_file = source,
+                    bbox        = _bb_t,
+                ))
         _slog.info(
             f'WarpImporter: layout → {len(layout)} slot groups, '
             f'{sum(len(v) for v in layout.values())} bboxes ({build_type})'
@@ -976,7 +1011,7 @@ class WarpImporter:
         # Build per-slot candidate sets restricted by SLOT_VALID_TYPES.
         # This prevents template matching from picking items of the wrong type
         # (e.g. a shield icon matching the Warp Core slot at conf=1.00).
-        slot_candidates = self._build_slot_candidates(slot_defs_to_process)
+        slot_candidates = self._build_slot_candidates(slot_defs_to_process, build_type)
 
         # Count total bboxes upfront for granular progress reporting.
         total_bboxes = sum(
@@ -1104,15 +1139,28 @@ class WarpImporter:
                         found_anchor = True
                 
                 _tag = '[P5 Anchored]' if found_anchor and current_dy != 0 else ('[WARP CORE]' if used_session else '[Autodetect]')
-                _slog.info(f'  {_tag} [{slot_name}][{idx}] dy={current_dy:+} bbox={bbox} crop={crop.shape[1]}x{crop.shape[0]} → {name!r} conf={conf:.2f}')
+                _src = getattr(matcher, '_last_match_src', '') or '-'
+                _slog.info(f'  {_tag} [{slot_name}][{idx}] dy={current_dy:+} bbox={bbox} crop={crop.shape[1]}x{crop.shape[0]} → {name!r} conf={conf:.2f} src={_src}')
                 
-                if not name:
-                    continue
-                # Reject low-confidence results — below threshold is a guess
-                if conf < MIN_ACCEPT_CONF:
-                    _slog.info(f'  [{slot_name}][{idx}] SKIP — conf {conf:.2f} < {MIN_ACCEPT_CONF}')
+                # Low-confidence / no-name results: by default keep the bbox in
+                # the review list with an empty name so the user can type the
+                # correct one manually. Set KEEP_LOW_CONF_GRID_BBOXES=False to
+                # restore the old "skip entirely" behavior.
+                if not name or conf < MIN_ACCEPT_CONF:
+                    _slog.info(f'  [{slot_name}][{idx}] LOW-CONF — conf {conf:.2f} < {MIN_ACCEPT_CONF} '
+                               f'(keep_bbox={KEEP_LOW_CONF_GRID_BBOXES})')
                     _stat_skip_conf += 1
                     _stat_per_slot.setdefault(slot_name, {'ok': 0, 'skip': 0})['skip'] += 1
+                    if KEEP_LOW_CONF_GRID_BBOXES:
+                        result.items.append(RecognisedItem(
+                            slot        = slot_name,
+                            slot_index  = idx,
+                            name        = '',
+                            confidence  = 0.0,
+                            thumbnail   = None,
+                            source_file = source,
+                            bbox        = bbox,
+                        ))
                     continue
                 # Validate item type matches slot category
                 if not self._item_valid_for_slot(name, slot_name):
@@ -1694,7 +1742,8 @@ class WarpImporter:
             _slog.debug(f'WarpImporter: _load_confirmed_profile error: {e}')
             return {}
 
-    def _build_slot_candidates(self, slot_defs: list) -> dict[str, set[str]]:
+    def _build_slot_candidates(self, slot_defs: list,
+                                build_type: str = '') -> dict[str, set[str]]:
         """
         For each equipment slot, build the set of valid item names from the SETS
         cache using the slot's build key (e.g. 'deflector', 'core', 'shield').
@@ -1707,6 +1756,9 @@ class WarpImporter:
 
         Console slots include universal consoles since they are accepted everywhere.
         Boff slots are restricted to boff abilities to prevent equipment from matching.
+        When `build_type` is ground-flavored, BOFF candidates are further restricted
+        to ground abilities only (cache.boff_abilities['ground']) so the matcher
+        cannot return space abilities like 'Tractor Beam' on a GROUND_MIXED screen.
         """
         result: dict[str, set[str]] = {}
         try:
@@ -1733,8 +1785,21 @@ class WarpImporter:
         # Without this, candidate_names=None → full index search → equipment items
         # (Deflectors, Consoles, etc.) can match ability slots at conf=1.00 via
         # session examples that were accidentally confirmed in the wrong slot.
+        # For ground build types, the ability pool is further narrowed to the
+        # 'ground' env so the matcher cannot return space-only abilities.
+        _is_ground_bt = build_type in ('GROUND', 'GROUND_MIXED', 'GROUND_BOFFS')
+        boff_names: set[str] = set()
         try:
-            boff_names = set(self._app.cache.boff_abilities.get('all', {}).keys())
+            cache = self._app.cache.boff_abilities
+            if _is_ground_bt:
+                for _prof, rank_lists in (cache.get('ground') or {}).items():
+                    if not isinstance(rank_lists, (list, tuple)):
+                        continue
+                    for rank_dict in rank_lists:
+                        if isinstance(rank_dict, dict):
+                            boff_names.update(rank_dict.keys())
+            else:
+                boff_names = set(cache.get('all', {}).keys())
         except Exception:
             boff_names = set()
         if boff_names:

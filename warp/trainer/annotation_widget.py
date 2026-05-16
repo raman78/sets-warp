@@ -262,17 +262,17 @@ class AnnotationWidget(QWidget):
         # 1. Background (unselected) items
         for idx, ri in enumerate(self._review_items):
             if idx == self._selected_row or idx == self._highlighted_row: continue
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, False)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, False, ri.get('auto_confirmed', False))
 
         # 2. Highlighted item (Red Dashed)
         if self._highlighted_row != -1 and self._highlighted_row < len(self._review_items) and self._highlighted_row != self._selected_row:
             ri = self._review_items[self._highlighted_row]
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, True)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, True, ri.get('auto_confirmed', False))
 
         # 3. Selected item (Full Edit with handles)
         if self._selected_row != -1 and self._selected_row < len(self._review_items):
             ri = self._review_items[self._selected_row]
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), True, False)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), True, False, ri.get('auto_confirmed', False))
 
         # In-progress drawing (while dragging)
         if self._drawing and self._draw_start and self._draw_current:
@@ -287,18 +287,26 @@ class AnnotationWidget(QWidget):
         'confirmed': QColor( 60, 220, 100, 220),
         'new':       QColor(220,  80,  80, 220),
     }
+    # Auto-confirmed (computer-confirmed via auto-accept threshold) — yellow
+    # so the user can distinguish them at a glance from green user-confirmed.
+    _AUTO_CONFIRMED_COLOR = QColor(255, 200, 0, 220)
     # Text/fixed-value slots (Ship Name/Type/Tier) use cyan — visually distinct
     # from icon slots; signals "bbox saved for layout learning, no ML crop"
     _TEXT_SLOT_COLOR = QColor(0, 200, 220, 220)
 
-    def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, selected: bool, highlighted: bool):
+    def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, selected: bool, highlighted: bool, auto_confirmed: bool = False):
         if not bbox: return
         try:
             from warp.trainer.training_data import NON_ICON_SLOTS
             is_text_slot = slot in NON_ICON_SLOTS
         except Exception:
             is_text_slot = False
-        base_color = self._TEXT_SLOT_COLOR if is_text_slot else self._STATE_COLOR.get(state, QColor(200, 200, 200, 180))
+        if is_text_slot:
+            base_color = self._TEXT_SLOT_COLOR
+        elif state == 'confirmed' and auto_confirmed:
+            base_color = self._AUTO_CONFIRMED_COLOR
+        else:
+            base_color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180))
         if highlighted and not selected:
             color = base_color; pw = SELECTED_PEN_WIDTH + 1; style = Qt.PenStyle.DashLine
         elif selected:
