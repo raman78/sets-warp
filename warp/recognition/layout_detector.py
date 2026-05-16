@@ -177,6 +177,14 @@ _TRAIT_SLOT_MARKER: dict[str, str] = {
     'Active Ground Rep':      '__trait_ground_active_rep',
 }
 
+_SPACE_TRAIT_SLOTS = frozenset({
+    'Personal Space Traits', 'Starship Traits',
+    'Space Reputation', 'Active Space Rep',
+})
+_GROUND_TRAIT_SLOTS = frozenset({
+    'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
+})
+
 _BOFF_SLOT_NAMES = frozenset({
     'Boff Tactical', 'Boff Engineering', 'Boff Science',
     'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
@@ -496,8 +504,10 @@ class LayoutDetector:
                     g_geom = self._get_ground_eq_geometry(img)
                     if g_geom is not None:
                         labels = self._ocr_section_labels(img)
+                        # GROUND_MIXED: drop any phantom space-trait OCR hits
+                        # so the trait grid cannot anchor on "Starship Traits".
                         trait_labels = {s: v for s, v in labels.items()
-                                        if s in _TRAIT_SLOT_MARKER}
+                                        if s in _GROUND_TRAIT_SLOTS}
                         cell_w = max(20, int(round(g_geom.cell_w)))
                         icon_h = max(20, int(round(g_geom.cell_h)))
                         ground_eq.update(
@@ -523,9 +533,11 @@ class LayoutDetector:
                     # Traits: OCR section labels → 5-column grid via
                     # _detect_traits_via_ocr. Cell geometry mirrors the
                     # eq_geometry values used for EQ above.
+                    # GROUND_MIXED returns earlier; here build_type is
+                    # SPACE_MIXED so drop any phantom ground-trait OCR hits.
                     labels = self._ocr_section_labels(img)
                     trait_labels = {s: v for s, v in labels.items()
-                                    if s in _TRAIT_SLOT_MARKER}
+                                    if s in _SPACE_TRAIT_SLOTS}
                     cell_w = max(20, int(round(geom.final_dx)))
                     icon_h = max(20, int(round(geom.row_pitch * 0.85)) + 2)
                     eq_result.update(
