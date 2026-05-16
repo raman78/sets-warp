@@ -742,7 +742,10 @@ class WarpImporter:
                         result.ship_profile = file_result.ship_profile
                         result.build_type   = file_result.build_type
                 for item in file_result.items:
-                    key = (item.slot, item.slot_index)
+                    # Include seat_key so multiple BOFF seats remapped to the
+                    # same profession (e.g. two Science seats both → Boff Science
+                    # with slot_index 0..3) don't collide and drop abilities.
+                    key = (item.slot, item.slot_index, getattr(item, 'seat_key', None))
                     if key not in best or item.confidence > best[key].confidence:
                         best[key] = item
                 result.errors.extend(file_result.errors)
