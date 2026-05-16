@@ -863,6 +863,19 @@ class WarpImporter:
         # _use_confirmed = 'MIXED' in build_type or _is_trainer_call
         _use_confirmed = _is_trainer_call
         confirmed_layout = self._load_confirmed_layout(source) if _use_confirmed else None
+        # Filter confirmed annotations to slots relevant for this build_type.
+        # The same screenshot may have stale annotations from a previous
+        # SPACE_MIXED pass while now being opened as GROUND_MIXED (or vice
+        # versa) — without this filter, the trainer would re-propose space
+        # Starship Traits bboxes on a ground panel and vice versa. Dynamic
+        # BOFF seat keys (e.g. "Boff Seat L[E]_392") are allowed through
+        # since they are not in SLOT_ORDER.
+        if confirmed_layout and build_type in SLOT_ORDER:
+            valid_slots = {s['name'] for s in SLOT_ORDER[build_type]}
+            confirmed_layout = {
+                slot: bboxes for slot, bboxes in confirmed_layout.items()
+                if slot in valid_slots or slot.startswith('Boff Seat ')
+            } or None
         
         _needs_matcher = build_type in (
             'SPACE_MIXED', 'GROUND_MIXED',
