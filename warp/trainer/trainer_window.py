@@ -2123,14 +2123,17 @@ class WarpCoreWindow(QMainWindow):
             crop = img[y:y+h, x:x+w]
             if crop.size == 0:
                 return
-            name, conf, thumb, _used_sess = SETSIconMatcher(self._sets).match(crop)
-
             ri = self._recognition_items[row]
             slot = ri['slot']
+            # Constrain matcher to names valid for this slot (see _on_bbox_changed
+            # for rationale — prevents cross-domain/career embedder leakage).
+            cand = set(self._build_search_candidates(slot))
+            name, conf, thumb, _used_sess = SETSIconMatcher(self._sets).match(
+                crop, candidate_names=cand if cand else None)
             from src.setsdebug import log as _slog
             _slog.info(
                 f"WARP CORE: rematch row={row} slot='{slot}' "
-                f"bbox={bbox} → ('{name}',{conf:.2f}) "
+                f"bbox={bbox} cand={len(cand)} → ('{name}',{conf:.2f}) "
                 f"state={ri.get('state','')}"
             )
 
@@ -2471,13 +2474,17 @@ class WarpCoreWindow(QMainWindow):
                     if crop.size > 0:
                         old_name = ri.get('name', '')
                         old_conf = ri.get('conf', 0.0)
-                        # Optional: limit candidates by slot type
-                        # For now, just match against full index for better flexibility in trainer
-                        name, conf, thumb, _used_sess = matcher.match(crop)
+                        # Constrain matcher to names valid for the current slot
+                        # (domain + career for BOFFs, item type for traits, etc.)
+                        # so the embedder cannot return e.g. space-tactical
+                        # 'Kemocite-Laced Weaponry' on a ground Science seat.
+                        cand = set(self._build_search_candidates(ri.get('slot', '')))
+                        name, conf, thumb, _used_sess = matcher.match(
+                            crop, candidate_names=cand if cand else None)
                         from src.setsdebug import log as _slog
                         _slog.info(
                             f"WARP CORE: bbox_changed row={row} slot='{ri.get('slot','')}' "
-                            f"bbox={new_bbox} "
+                            f"bbox={new_bbox} cand={len(cand)} "
                             f"old=('{old_name}',{old_conf:.2f}) → "
                             f"new=('{name}',{conf:.2f}) "
                             f"state={ri.get('state','')}"
