@@ -2127,6 +2127,11 @@ class WarpCoreWindow(QMainWindow):
 
             ri = self._recognition_items[row]
             slot = ri['slot']
+            log.info(
+                f"WARP CORE: rematch row={row} slot='{slot}' "
+                f"bbox={bbox} → ('{name}',{conf:.2f}) "
+                f"state={ri.get('state','')}"
+            )
 
             _cross_check = False
             try:
@@ -2463,10 +2468,19 @@ class WarpCoreWindow(QMainWindow):
                     
                     crop = img[y:y+h, x:x+w]
                     if crop.size > 0:
+                        old_name = ri.get('name', '')
+                        old_conf = ri.get('conf', 0.0)
                         # Optional: limit candidates by slot type
                         # For now, just match against full index for better flexibility in trainer
                         name, conf, thumb, _used_sess = matcher.match(crop)
-                        
+                        log.info(
+                            f"WARP CORE: bbox_changed row={row} slot='{ri.get('slot','')}' "
+                            f"bbox={new_bbox} "
+                            f"old=('{old_name}',{old_conf:.2f}) → "
+                            f"new=('{name}',{conf:.2f}) "
+                            f"state={ri.get('state','')}"
+                        )
+
                         if ri.get('state') != 'confirmed':
                             ri['name'] = name
                             ri['conf'] = conf
