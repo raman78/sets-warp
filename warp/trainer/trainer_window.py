@@ -2127,7 +2127,8 @@ class WarpCoreWindow(QMainWindow):
 
             ri = self._recognition_items[row]
             slot = ri['slot']
-            log.info(
+            from src.setsdebug import log as _slog
+            _slog.info(
                 f"WARP CORE: rematch row={row} slot='{slot}' "
                 f"bbox={bbox} → ('{name}',{conf:.2f}) "
                 f"state={ri.get('state','')}"
@@ -2473,7 +2474,8 @@ class WarpCoreWindow(QMainWindow):
                         # Optional: limit candidates by slot type
                         # For now, just match against full index for better flexibility in trainer
                         name, conf, thumb, _used_sess = matcher.match(crop)
-                        log.info(
+                        from src.setsdebug import log as _slog
+                        _slog.info(
                             f"WARP CORE: bbox_changed row={row} slot='{ri.get('slot','')}' "
                             f"bbox={new_bbox} "
                             f"old=('{old_name}',{old_conf:.2f}) → "
