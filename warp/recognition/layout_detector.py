@@ -395,7 +395,8 @@ class LayoutDetector:
             # measured 91.5% slot IoU≥30 on 59 GT screens vs OCR-header
             # baseline. Falls back to OCR-header strategy on failure.
             if icon_matcher is not None and app_cache is not None:
-                grid = _trait_grid.detect_traits(img, icon_matcher, app_cache)
+                grid = _trait_grid.detect_traits(img, icon_matcher, app_cache,
+                                                 build_type=build_type)
                 if grid and sum(len(v) for v in grid.values()) >= 5:
                     _slog.info(
                         f'LayoutDetector: Strategy 0 (trait_grid) → '
@@ -448,7 +449,8 @@ class LayoutDetector:
             # for MIXED screens; merged into whichever equipment chain wins.
             trait_grid_res: dict | None = None
             if icon_matcher is not None and app_cache is not None:
-                tg = _trait_grid.detect_traits(img, icon_matcher, app_cache)
+                tg = _trait_grid.detect_traits(img, icon_matcher, app_cache,
+                                               build_type=build_type)
                 if tg and sum(len(v) for v in tg.values()) >= 5:
                     trait_grid_res = tg
 

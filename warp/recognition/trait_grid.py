@@ -409,7 +409,16 @@ def _emit_bboxes(group, grid_cols, icon_w, icon_h):
 
 
 # ── Master entry point ─────────────────────────────────────────────────────
-def detect_traits(img, icon_matcher, app_cache):
+_SPACE_TRAIT_SLOTS = frozenset({
+    'Personal Space Traits', 'Starship Traits',
+    'Space Reputation', 'Active Space Rep',
+})
+_GROUND_TRAIT_SLOTS = frozenset({
+    'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
+})
+
+
+def detect_traits(img, icon_matcher, app_cache, build_type: str | None = None):
     """Detect trait icon bboxes per section.
 
     Returns dict[slot_name → list[bbox]] where bbox = (x, y, w, h).
@@ -417,9 +426,22 @@ def detect_traits(img, icon_matcher, app_cache):
 
     Section classification is ML-driven: each row-group is probed
     independently — we never rely on canonical section order.
+
+    `build_type` (optional) scopes the output: GROUND_MIXED / GROUND /
+    GROUND_TRAITS keep only ground-trait slots; SPACE_MIXED / SPACE /
+    SPACE_TRAITS keep only space-trait slots. Cross-environment leakage
+    (e.g. emitting "Starship Traits" on a ground panel) is impossible.
     """
     if icon_matcher is None or app_cache is None:
         return {}
+
+    allowed_slots: frozenset[str] | None = None
+    if build_type:
+        bt = build_type.upper()
+        if 'GROUND' in bt:
+            allowed_slots = _GROUND_TRAIT_SLOTS
+        elif 'SPACE' in bt:
+            allowed_slots = _SPACE_TRAIT_SLOTS
 
     name_to_section = _build_name_to_section(app_cache)
     if not name_to_section:
@@ -463,6 +485,12 @@ def detect_traits(img, icon_matcher, app_cache):
             else:
                 slot, _votes = _classify_group_section(
                     g, img, icon_matcher, name_to_section)
+            # Drop slots that don't belong to the requested build_type
+            # group (prevents space traits from leaking onto ground panels
+            # and vice versa).
+            if slot is not None and allowed_slots is not None \
+                    and slot not in allowed_slots:
+                slot = None
             labels.append(slot)
             if slot is None:
                 continue
