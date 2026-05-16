@@ -117,7 +117,8 @@ class ModelUpdater:
             # check regardless of the rate-limit cache (the cache may exist from a prior
             # attempt that returned "no model published yet").
             model_missing = not (models_dir / 'model_version.json').exists()
-            if not model_missing and not self._due_for_check(sets_root):
+            embedder_stale = self._embedder_needs_refresh(models_dir)
+            if not model_missing and not embedder_stale and not self._due_for_check(sets_root):
                 return
 
             log.info('ModelUpdater: checking for remote model update...')
