@@ -185,6 +185,7 @@ class AnnotationWidget(QWidget):
         elif self._selected_idx >= 0:
             ann = self._annotations[self._selected_idx]
             ann.slot = slot; ann.name = name; ann.state = AnnotationState.CONFIRMED
+            ann.auto_confirmed = False
             self._data_mgr.update_annotation(self._img_path, ann)
             self._annotations = self._data_mgr.get_annotations(self._img_path)
         self.update()

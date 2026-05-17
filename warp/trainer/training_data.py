@@ -79,6 +79,7 @@ class Annotation:
     ml_conf:  float = 0.0     # original ML recognition confidence (0.0 = unknown)
     ml_name:  str  = ""       # what ML originally recognised (may differ from confirmed name)
     crop_name: str = ""       # relative path of saved crop PNG (set by _export_crop)
+    auto_confirmed: bool = False  # True if confirmed by auto-accept threshold (yellow), False if user-confirmed (green)
 
     def __post_init__(self):
         if not self.ann_id:
@@ -144,6 +145,7 @@ class TrainingDataManager:
         state: AnnotationState = AnnotationState.PENDING,
         ml_conf: float = 0.0,
         ml_name: str = "",
+        auto_confirmed: bool = False,
     ) -> Annotation:
         """Add or update annotation, treating the same bbox as the same annotation.
 
@@ -156,7 +158,8 @@ class TrainingDataManager:
           4. Insert as new annotation
         """
         ann = Annotation(bbox=bbox, slot=slot, name=name, state=state,
-                         ml_conf=ml_conf, ml_name=ml_name)
+                         ml_conf=ml_conf, ml_name=ml_name,
+                         auto_confirmed=auto_confirmed)
         key = image_path.name
         if key not in self._annotations:
             self._annotations[key] = []
@@ -634,4 +637,5 @@ class TrainingDataManager:
             ann_id=d.get("ann_id", ""),
             ml_conf=float(d.get("ml_conf", 0.0)),
             ml_name=d.get("ml_name", ""),
+            auto_confirmed=bool(d.get("auto_confirmed", False)),
         )

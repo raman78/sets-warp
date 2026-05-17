@@ -1526,6 +1526,7 @@ class WarpCoreWindow(QMainWindow):
                     confirmed_by_id[ann.ann_id] = {
                     'name': ann.name, 'slot': ann.slot, 'bbox': ann.bbox,
                     'state': 'confirmed',
+                    'auto_confirmed': ann.auto_confirmed,
                     'conf': ann.ml_conf,          # real ML confidence, 0.0 if unknown
                     'orig_name': ann.ml_name or ann.name,  # what ML originally saw
                     'thumb': None, 'crop_bgr': None, 'ship_name': '', 'ann_id': ann.ann_id,
@@ -2048,15 +2049,19 @@ class WarpCoreWindow(QMainWindow):
         except: pass
 
         _state = 'confirmed' if _auto else 'pending'
+        # _auto means "program decided based on conf threshold" → yellow (auto-confirmed),
+        # to be distinguished from green user-confirmed in the canvas.
+        _auto_conf_flag = bool(_auto and slot != 'Ship Name')
         new_item = {'name': name, 'slot': slot, 'conf': conf, 'bbox': bbox, 'state': _state,
                     'thumb': thumb, 'crop_bgr': crop_bgr, 'orig_name': name, 'ship_name': '',
-                    'cross_check_failed': _cross_check}
+                    'cross_check_failed': _cross_check, 'auto_confirmed': _auto_conf_flag}
         self._recognition_items.append(new_item)
         if _auto and self._current_idx >= 0:
             _path = self._screenshots[self._current_idx]
             _saved = self._data_mgr.add_annotation(
                 image_path=_path, bbox=bbox, slot=slot, name=name,
-                state=AnnotationState.CONFIRMED, ml_conf=conf, ml_name=name)
+                state=AnnotationState.CONFIRMED, ml_conf=conf, ml_name=name,
+                auto_confirmed=_auto_conf_flag)
             new_item['ann_id'] = _saved.ann_id
             if crop_bgr is not None:
                 from warp.recognition.icon_matcher import SETSIconMatcher
@@ -2652,12 +2657,14 @@ class WarpCoreWindow(QMainWindow):
         path = self._screenshots[self._current_idx] if self._current_idx >= 0 else None
         for ri in self._recognition_items:
             if ri.get('state') != 'pending': continue
-            if ri.get('slot', '') in NON_ICON_SLOTS: continue
+            slot = ri.get('slot', '')
             conf = ri.get('conf', 0.0)
             if conf < threshold: continue
-            slot = ri.get('slot', '')
             name = ri.get('name', '') or ri.get('orig_name', '')
-            if not slot or not name: continue
+            # Ship Name is position-only — no content stored, but bbox alone is enough
+            # to auto-confirm (OCR found the anchor). Other NON_ICON_SLOTS need a name.
+            if not slot: continue
+            if slot != 'Ship Name' and not name: continue
             ri['state'] = 'confirmed'
             ri['auto_confirmed'] = True
             if ri.get('bbox') and path:
@@ -2665,9 +2672,12 @@ class WarpCoreWindow(QMainWindow):
                     image_path=path, bbox=ri['bbox'], slot=slot, name=name,
                     state=AnnotationState.CONFIRMED,
                     ml_conf=conf, ml_name=name,
+                    auto_confirmed=True,
                 )
                 ri['ann_id'] = _saved.ann_id
-            if ri.get('crop_bgr') is not None:
+            # Seed icon-matcher session examples only for ML icon slots —
+            # NON_ICON_SLOTS (Ship Name/Type/Tier) are text, not classifiable icons.
+            if ri.get('crop_bgr') is not None and slot not in NON_ICON_SLOTS:
                 from warp.recognition.icon_matcher import SETSIconMatcher
                 SETSIconMatcher.add_session_example(ri['crop_bgr'], name)
             accepted += 1
@@ -2747,6 +2757,7 @@ class WarpCoreWindow(QMainWindow):
                     state=AnnotationState.CONFIRMED,
                     ml_conf=ri.get('conf', 0.0),
                     ml_name=ri.get('ocr_raw', '') or ri.get('orig_name', ''),
+                    auto_confirmed=False,
                 )
                 ri['ann_id'] = saved.ann_id  # track for future edits on this bbox
                 self._ann_widget.refresh_annotations(path)
