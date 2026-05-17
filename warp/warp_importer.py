@@ -787,17 +787,23 @@ class WarpImporter:
                 img         = self._load_image(fpath)
                 file_result = self._process_image(
                     img, str(fpath), _base_pct=base_pct, _end_pct=end_pct)
-                if file_result.ship_name:
-                    _upgrade = (
-                        not result.ship_name or  # no result yet
-                        (file_result.ship_tier and not result.ship_tier)  # new has tier, current doesn't
-                    )
-                    if _upgrade:
-                        result.ship_name    = file_result.ship_name
-                        result.ship_type    = file_result.ship_type
-                        result.ship_tier    = file_result.ship_tier
-                        result.ship_profile = file_result.ship_profile
-                        result.build_type   = file_result.build_type
+                # Score-based upgrade: ship_tier and ship_type are the
+                # signals ShipDB actually needs; ship_name is informational
+                # and often polluted by non-SPACE_EQ screens (tab labels like
+                # 'Commando' on SPEC, 'Space Stations' on BOFFS). Tuple
+                # comparison weights tier > type > name.
+                _new_score = (bool(file_result.ship_tier),
+                              bool(file_result.ship_type),
+                              bool(file_result.ship_name))
+                _cur_score = (bool(result.ship_tier),
+                              bool(result.ship_type),
+                              bool(result.ship_name))
+                if _new_score > _cur_score:
+                    result.ship_name    = file_result.ship_name or result.ship_name
+                    result.ship_type    = file_result.ship_type
+                    result.ship_tier    = file_result.ship_tier
+                    result.ship_profile = file_result.ship_profile
+                    result.build_type   = file_result.build_type
                 for item in file_result.items:
                     # Include seat_key so multiple BOFF seats remapped to the
                     # same profession (e.g. two Science seats both → Boff Science
@@ -1095,7 +1101,16 @@ class WarpImporter:
         # space ship profile and corrupt the ground layout on the second run.
         if not ship_name and layout and not _is_ground:
             pixel_counts = {slot: len(boxes) for slot, boxes in layout.items() if boxes}
-            if pixel_counts:
+            # Refine only when at least one MEASURABLE EQ slot has pixel
+            # counts — otherwise (e.g. trait-only TRAITS screen masquerading
+            # as SPACE_MIXED) every keyword profile scores 0 and the first
+            # one wins arbitrarily, polluting the profile with phantom EQ
+            # slots and forcing a re-detect that drops the real traits.
+            _MEASURABLE = {'Fore Weapons', 'Aft Weapons', 'Devices',
+                           'Engineering Consoles', 'Science Consoles',
+                           'Tactical Consoles'}
+            has_measurable = any(pixel_counts.get(s, 0) > 0 for s in _MEASURABLE)
+            if pixel_counts and has_measurable:
                 refined = _profile_from_pixel_counts(pixel_counts)
                 changed = False
                 for slot, count in refined.items():

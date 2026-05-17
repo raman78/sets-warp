@@ -179,6 +179,33 @@ _SPEC_HEADER_KEYWORDS: list[str] = [
 ]
 
 
+def _name_text_from_row_tokens(tokens: list) -> tuple[str, list]:
+    """
+    Build ship-name text from a row's tokens, defending against two cases
+    where a far-away label (e.g. 'Fore Weapons') leaks into the name:
+
+      (a) EasyOCR fused name + distant label into ONE wide token with many
+          internal spaces ('U.S.S. ILLINOIS                Fore').
+      (b) Adjacent tokens in the same row are visually far apart in x.
+
+    Returns (text, kept_tokens). kept_tokens is the filtered list (for bbox
+    union) — empty when no tokens survive.
+    """
+    if not tokens:
+        return '', []
+    toks = sorted(tokens, key=lambda t: t['x'])
+    kept = [toks[0]]
+    for t in toks[1:]:
+        prev = kept[-1]
+        gap = t['x'] - (prev['x'] + prev['w'])
+        if gap > max(prev['h'], t['h']) * 2.0:
+            break
+        kept.append(t)
+    text = ' '.join(t['text'] for t in kept).strip()
+    text = re.split(r'\s{5,}', text, maxsplit=1)[0].strip()
+    return text, kept
+
+
 def _detect_type_from_text(lines_lower: list[str]) -> str:
     """
     Return detected screen type from OCR lines, or empty string if unknown.
@@ -553,10 +580,10 @@ class TextExtractor:
                         anchor_x = hit['x']; anchor_y = hit['y']
                         anchor_w = hit['w']; anchor_h = hit['h']
                         anchor_kind = 'name'
-                        name_text = ' '.join(t['text'] for t in r['tokens']).strip()
+                        name_text, kept_toks = _name_text_from_row_tokens(r['tokens'])
                         result['ship_name'] = name_text
                         result['ship_name_bbox'] = self._union_xywh(
-                            *((t['x'], t['y'], t['w'], t['h']) for t in r['tokens']))
+                            *((t['x'], t['y'], t['w'], t['h']) for t in kept_toks))
                         tier_row = r
                         _slog.info(f'TextExtractor: name-prefix anchor → {name_text!r}')
                         break
@@ -708,11 +735,14 @@ class TextExtractor:
                             if not _row_in_column(r_above):
                                 continue
                             if _row_is_name_row(r_above):
-                                name_text = ' '.join(t['text'] for t in r_above['tokens']).strip()
+                                name_text, kept_toks = _name_text_from_row_tokens(
+                                    r_above['tokens'])
+                                if not name_text:
+                                    continue
                                 result['ship_name'] = name_text
                                 result['ship_name_bbox'] = self._union_xywh(
                                     *((t['x'], t['y'], t['w'], t['h'])
-                                      for t in r_above['tokens']))
+                                      for t in kept_toks))
                                 break
 
                 elif anchor_kind == 'name' and anchor_row_idx >= 0:
@@ -735,15 +765,12 @@ class TextExtractor:
                            f'type={result["ship_type"]!r} '
                            f'tier={result["ship_tier"]!r}')
             else:
-                # No anchor — best-effort: topmost dark-bg token.
-                dark_tokens = [t for t in tokens
-                               if t['dark'] and not _is_blacklisted(t['text'])]
-                if dark_tokens:
-                    dark_tokens.sort(key=lambda t: t['y'])
-                    nt = dark_tokens[0]
-                    result['ship_name'] = nt['text']
-                    result['ship_name_bbox'] = (nt['x'], nt['y'], nt['w'], nt['h'])
-                _slog.info(f'TextExtractor: no anchor, name={result["ship_name"]!r}')
+                # No anchor — no SPACE_EQ-like signal. Do NOT write any
+                # token to ship_name: on SPEC / BOFFS / TRAITS screens the
+                # topmost dark token is a tab label ('Commando', 'Space
+                # Stations', …) and polluting ship_name breaks multi-screen
+                # aggregation in WarpImporter.process_folder.
+                _slog.info(f'TextExtractor: no anchor, ship info unset')
 
             # ── Infer build type if not already detected ──────────────────────
             if not result['build_type']:
