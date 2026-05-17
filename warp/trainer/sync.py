@@ -195,6 +195,11 @@ class SyncWorker(QThread):
         # Load local cache of already-uploaded hashes (avoids list_repo_files on every sync)
         self.progress.emit(5, "Checking existing uploads…")
         existing_hashes = self._load_uploaded_hashes_cache()
+        # Per-sha label cache lets us detect when only the label changed
+        # (user corrected a name/slot for an already-uploaded crop) — and
+        # skip queuing unchanged labels so we don't rewrite the HF jsonl
+        # on every sync.
+        uploaded_labels = self._load_uploaded_labels_cache()
         if existing_hashes:
             _slog.info(f'HF Sync: {len(existing_hashes)} crops in local cache (skipping HF listing)')
         else:
@@ -202,6 +207,14 @@ class SyncWorker(QThread):
             existing_hashes = self._fetch_staging_hashes(api, staging_crop)
             _slog.info(f'HF Sync: bootstrapped {len(existing_hashes)} hashes from HF listing')
             self._save_uploaded_hashes_cache(existing_hashes)
+        # Bootstrap labels cache from HF jsonl on first run after upgrade —
+        # otherwise every confirmed crop would look like a "label changed"
+        # case and trigger an unnecessary annotations.jsonl rewrite.
+        if not uploaded_labels and existing_hashes:
+            uploaded_labels = self._fetch_staging_labels(api, staging_anno)
+            if uploaded_labels:
+                _slog.info(f'HF Sync: bootstrapped {len(uploaded_labels)} labels from HF annotations.jsonl')
+                self._save_uploaded_labels_cache(uploaded_labels)
 
         # Collect all new files first, then upload in a single commit
         from huggingface_hub import CommitOperationAdd
@@ -231,17 +244,24 @@ class SyncWorker(QThread):
                 continue
 
             sha = self._file_sha256(crop_path)
-            if sha in existing_hashes:
-                _slog.debug(f'HF Sync: skipping (already on HF): {crop_path.name}')
+            file_already_on_hf = sha in existing_hashes
+            current_label = f'{item["slot"]}|{item["name"]}'
+            cached_label = uploaded_labels.get(sha)
+            label_changed = cached_label != current_label
+            if not file_already_on_hf:
+                _slog.debug(f'HF Sync: queuing [{item["slot"]}] {item["name"]} → {sha[:12]}…')
+                operations.append(CommitOperationAdd(
+                    path_in_repo=f"{staging_crop}/{sha}.png",
+                    path_or_fileobj=str(crop_path),
+                ))
+                existing_hashes.add(sha)
+                uploaded += 1
+            elif label_changed:
+                _slog.debug(f'HF Sync: label correction [{item["slot"]}] {item["name"]} → {sha[:12]} (was {cached_label!r})')
+            else:
+                # File on HF AND label unchanged — nothing to do for this item.
                 continue
-
-            _slog.debug(f'HF Sync: queuing [{item["slot"]}] {item["name"]} → {sha[:12]}…')
-            operations.append(CommitOperationAdd(
-                path_in_repo=f"{staging_crop}/{sha}.png",
-                path_or_fileobj=str(crop_path),
-            ))
-            existing_hashes.add(sha)
-            uploaded += 1
+            uploaded_labels[sha] = current_label
             ann_entry: dict = {
                 "slot":        item["slot"],
                 "name":        item["name"],
@@ -252,28 +272,34 @@ class SyncWorker(QThread):
                 ann_entry["ml_name"] = item["ml_name"]
             new_annotations.append(ann_entry)
 
+        ann_total = len(new_annotations)
+        ann_corrections = ann_total - uploaded  # entries reusing an existing HF crop
         if new_annotations:
-            self.progress.emit(88, f"Uploading {uploaded} crops in one commit…")
+            self.progress.emit(88, f"Uploading {uploaded} crops + {ann_total} annotations…")
             self._append_staging_annotations_to_ops(operations, staging_anno, new_annotations, api)
             api.create_commit(
                 repo_id=HF_DATASET_REPO,
                 repo_type=HF_REPO_TYPE,
                 operations=operations,
-                commit_message=f"WARP staging: {uploaded} new crops ({today})",
+                commit_message=f"WARP staging: {uploaded} new crops + {ann_corrections} corrections ({today})",
             )
-            _slog.info(f'HF Sync: commit sent — {uploaded} crops + annotations')
+            _slog.info(f'HF Sync: commit sent — {uploaded} new crops, {ann_corrections} label corrections')
             # Persist newly uploaded hashes so next sync skips list_repo_files
             self._save_uploaded_hashes_cache(existing_hashes)
+            self._save_uploaded_labels_cache(uploaded_labels)
 
-        # Update local rate limit counter
+        # Update local rate limit counter (file uploads only — corrections are cheap)
         rl[today] = daily_count + uploaded
         try:
             rl_file.write_text(json.dumps(rl))
         except Exception:
             pass
 
-        msg = f"Uploaded {uploaded} annotations to staging." if uploaded else "Nothing new to upload (all already on HF)."
-        _slog.info(f'HF Sync: done — {uploaded} new uploads, total on HF: {len(existing_hashes)}')
+        if ann_total:
+            msg = f"Uploaded {uploaded} new crops + {ann_corrections} corrections."
+        else:
+            msg = "Nothing new to upload (all already on HF)."
+        _slog.info(f'HF Sync: done — {uploaded} new crops, {ann_corrections} corrections, total on HF: {len(existing_hashes)}')
         self.progress.emit(100, msg)
 
     def _load_uploaded_hashes_cache(self) -> set[str]:
@@ -292,6 +318,59 @@ class SyncWorker(QThread):
         except Exception:
             pass
 
+    def _load_uploaded_labels_cache(self) -> dict[str, str]:
+        """Load {sha: 'slot|name'} for already-uploaded annotation entries.
+
+        Used to skip re-queueing annotation entries whose label matches what
+        we previously uploaded — avoids no-op annotations.jsonl rewrites on
+        every sync when nothing actually changed.
+        """
+        cache_file = self._mgr._dir / '.sync_uploaded_labels.json'
+        try:
+            return dict(json.loads(cache_file.read_text()))
+        except Exception:
+            return {}
+
+    def _save_uploaded_labels_cache(self, labels: dict[str, str]) -> None:
+        cache_file = self._mgr._dir / '.sync_uploaded_labels.json'
+        try:
+            cache_file.write_text(json.dumps(labels, sort_keys=True))
+        except Exception:
+            pass
+
+    def _fetch_staging_labels(self, api, path_in_repo: str) -> dict[str, str]:
+        """Bootstrap labels cache: read existing annotations.jsonl from HF and
+        return {sha: 'slot|name'} for the most recent entry per sha."""
+        try:
+            from huggingface_hub import hf_hub_download
+            local = hf_hub_download(
+                repo_id=HF_DATASET_REPO,
+                filename=path_in_repo,
+                repo_type=HF_REPO_TYPE,
+                token=self._token,
+            )
+        except Exception:
+            return {}
+        labels: dict[str, str] = {}
+        try:
+            with open(local, encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except Exception:
+                        continue
+                    sha = d.get('crop_sha256')
+                    if not sha:
+                        continue
+                    # Last-wins: later entries in the file override earlier ones.
+                    labels[sha] = f'{d.get("slot","")}|{d.get("name","")}'
+        except Exception:
+            pass
+        return labels
+
     def _fetch_staging_hashes(self, api, staging_crop_dir: str) -> set[str]:
         try:
             files = api.list_repo_files(
@@ -308,11 +387,15 @@ class SyncWorker(QThread):
 
     def _append_staging_annotations_to_ops(self, operations: list, path_in_repo: str,
                                            new_entries: list[dict], api) -> None:
-        """Build annotations.jsonl content and add it as a CommitOperationAdd to operations."""
+        """Build annotations.jsonl content and add it as a CommitOperationAdd to operations.
+
+        Per-sha dedup with last-wins semantics: new_entries override matching
+        existing lines so name/slot corrections propagate to the central
+        pipeline instead of accumulating multiple labels for the same crop.
+        """
         import io
         from huggingface_hub import CommitOperationAdd
         existing_lines: list[str] = []
-        existing_hashes: set[str] = set()
         try:
             from huggingface_hub import hf_hub_download
             local = hf_hub_download(
@@ -325,18 +408,41 @@ class SyncWorker(QThread):
                 for line in f:
                     line = line.strip()
                     if line:
-                        try:
-                            existing_hashes.add(json.loads(line).get("crop_sha256", ""))
-                        except Exception:
-                            pass
                         existing_lines.append(line)
         except Exception:
             pass
 
-        combined = list(existing_lines)
-        for entry in new_entries:
-            if entry["crop_sha256"] not in existing_hashes:
-                combined.append(json.dumps(entry, ensure_ascii=False))
+        # Dedup by sha — last write wins. Preserve order: keep first
+        # appearance for entries we are NOT overriding (so history stays
+        # readable), but drop earlier lines whose sha is overridden by a
+        # new entry. Final new entries are appended at the end.
+        override_shas = {e.get("crop_sha256", "") for e in new_entries if e.get("crop_sha256")}
+        kept_lines: list[str] = []
+        replaced = 0
+        for line in existing_lines:
+            try:
+                sha = json.loads(line).get("crop_sha256", "")
+            except Exception:
+                kept_lines.append(line)
+                continue
+            if sha and sha in override_shas:
+                replaced += 1
+                continue
+            kept_lines.append(line)
+
+        # Within new_entries themselves, also dedup by sha keeping the last
+        # occurrence (caller may have queued multiple corrections in one batch).
+        seen: dict[str, dict] = {}
+        for e in new_entries:
+            sha = e.get("crop_sha256", "")
+            if sha:
+                seen[sha] = e
+        deduped_new = list(seen.values())
+
+        combined = kept_lines + [json.dumps(e, ensure_ascii=False) for e in deduped_new]
+
+        if replaced:
+            _slog.info(f'HF Sync: annotations.jsonl — replaced {replaced} stale entries with corrected labels')
 
         content_bytes = "\n".join(combined).encode("utf-8")
         operations.append(CommitOperationAdd(
