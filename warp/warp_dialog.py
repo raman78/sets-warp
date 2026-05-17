@@ -806,25 +806,14 @@ class WarpDialog(QDialog):
     # ── Folder picker ──────────────────────────────────────────────────────
 
     def _browse_folder(self):
+        from warp.folder_picker import pick_folder
         last = self._settings.value(_SETTINGS_KEY_LAST_DIR, '')
-        dlg  = QFileDialog(self)
-        dlg.setWindowTitle('Select Screenshots Folder')
-        dlg.setFileMode(QFileDialog.FileMode.Directory)
-        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        # Show image files for context but keep directory-only selection
-        dlg.setNameFilter('Images (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*)')
-        if last and Path(last).is_dir():
-            dlg.setDirectory(last)
-        # Make file list read-only: user can see images but only dirs are selectable
-        from PySide6.QtWidgets import QListView, QTreeView
-        for view in dlg.findChildren(QListView) + dlg.findChildren(QTreeView):
-            view.setSelectionMode(view.SelectionMode.NoSelection)
-        if dlg.exec():
-            files = dlg.selectedFiles()
-            if files:
-                self._folder = Path(files[0])
-                self._folder_label.setText(str(self._folder))
-                self._folder_label.setStyleSheet(
-                    f'color:{FG};background:{MBG};border:1px solid {ACCENT};'
-                    f'border-radius:3px;padding:3px 7px;')
-                self._settings.setValue(_SETTINGS_KEY_LAST_DIR, str(self._folder))
+        folder = pick_folder(self, title='Select Screenshots Folder', start_dir=last)
+        if folder is None:
+            return
+        self._folder = folder
+        self._folder_label.setText(str(folder))
+        self._folder_label.setStyleSheet(
+            f'color:{FG};background:{MBG};border:1px solid {ACCENT};'
+            f'border-radius:3px;padding:3px 7px;')
+        self._settings.setValue(_SETTINGS_KEY_LAST_DIR, str(folder))
