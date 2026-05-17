@@ -9,11 +9,13 @@ WARP CORE lets you review, correct, and confirm what WARP found — and train th
 
 1. [Preparing screenshots](#1-preparing-screenshots)
 2. [Using WARP — import a build](#2-using-warp--import-a-build)
+   - [Step 4 — Run recognition](#step-4--run-recognition)
+   - [Step 4b — Automatic transfer to SETS](#step-4b--automatic-transfer-to-sets)
 3. [WARP CORE — interface overview](#3-warp-core--interface-overview)
 4. [Reviewing and correcting recognition](#4-reviewing-and-correcting-recognition)
 5. [Confirming items and accepting results](#5-confirming-items-and-accepting-results)
-6. [Training the ML model](#6-training-the-ml-model)
-7. [Community model sync](#7-community-model-sync)
+6. [Community model — how it works](#6-community-model--how-it-works)
+7. [Community sync details](#7-community-sync-details)
 8. [Keyboard shortcuts](#8-keyboard-shortcuts)
 9. [Tips and troubleshooting](#9-tips-and-troubleshooting)
 
@@ -86,15 +88,95 @@ Choose the type that matches the screenshots you took. One import fills one tab.
 
 ### Step 4 — Run recognition
 
-Click **Import**. WARP processes each screenshot:
+Click **Import**. WARP processes each screenshot through this pipeline:
 
-1. Classifies the screen type (Equipment / Traits / Boffs / etc.)
-2. Detects the ship name, tier, and type from OCR (space screens)
-3. Reads slot layout from pixel analysis and the ship database
-4. Matches each slot's icon against the community and local model
-5. Fills matching equipment/traits/boffs into your SETS build
+```
+   [screenshot.png]
+        │
+        ▼
+  ┌─────────────────────┐
+  │ 1. Screen classify  │  MobileNetV3-Small  →  SPACE_EQ / GROUND_EQ /
+  └─────────────────────┘                        TRAITS / BOFFS / MIXED / …
+        │
+        ▼
+  ┌─────────────────────┐
+  │ 2. OCR              │  EasyOCR  →  ship_name / ship_type / ship_tier
+  │    (space screens)  │              (anchored on T6-X2 / T6-X / Tx tokens)
+  └─────────────────────┘
+        │
+        ▼
+  ┌─────────────────────┐
+  │ 3. ShipDB lookup    │  type-first match (783 ships)  →  ship profile
+  │                     │  • exact type  • word-subset (boff-Jaccard tiebreak)
+  │                     │  • fuzzy 0.68  • keyword fallback
+  └─────────────────────┘
+        │
+        ▼
+  ┌─────────────────────┐
+  │ 4. Layout detection │  per build_type, in priority order:
+  │                     │   • Strategy 0:  BOFF marker grid (BOFFS / MIXED)
+  │                     │   • Strategy 1:  EQ geometry detector (OCR-anchored)
+  │                     │   • Strategy 1G: Ground EQ geometry
+  │                     │   • Strategy 2:  pixel analysis (legacy)
+  │                     │   • Strategy 3:  learned anchors.json
+  │                     │   • Strategy 4:  default calibration
+  └─────────────────────┘
+        │
+        ▼
+  ┌─────────────────────┐
+  │ 5. Icon matching    │  per slot crop  →  RecognisedItem
+  │                     │   template / histogram k-NN / ArcFace embed /
+  │                     │   EfficientNet softmax / community pHash
+  └─────────────────────┘
+        │
+        ▼
+  ┌─────────────────────┐
+  │ 6. Write to SETS    │  ship_data → align_space_frame → slot_equipment_item /
+  │                     │  slot_trait_item; BOFF cluster→seat assignment
+  └─────────────────────┘
+```
 
-A progress bar shows the current step. Recognition typically takes 5–30 seconds depending on the number of screenshots and your hardware.
+A progress bar shows the current step. Recognition typically takes 5–30 seconds per screenshot, depending on the number of screens, image resolution, and whether your hardware is CPU- or GPU-accelerated.
+
+### Step 4b — Automatic transfer to SETS
+
+WARP does not stop at recognition — once a screenshot is processed, it writes the result directly into the SETS build. The transfer happens in `_apply_to_sets()` (warp_dialog.py) and follows this sequence:
+
+```
+RecognisedItem stream from importer
+        │
+        ├──► ship_type / ship_tier        ──► _resolve_and_apply_ship()
+        │                                       • match against sets_app.cache.ships
+        │                                       • set ship button text + image
+        │                                       • populate tier combo (T6 / T6-X / T6-X2)
+        │                                       • align_space_frame() — rebuilds the
+        │                                         SPACE/GROUND tab to match ship's
+        │                                         slot counts (consoles, devices,
+        │                                         hangars, sec-def, …)
+        │
+        ├──► equipment & traits           ──► _import_equipment_and_traits()
+        │                                       • SLOT_MAP translates WARP slot
+        │                                         names → SETS build keys
+        │                                       • slot_equipment_item / slot_trait_item
+        │                                         writes the item into the right column
+        │                                       • universal-console overflow handled
+        │                                         (extra Universal consoles get queued)
+        │
+        ├──► BOFF abilities (Boff *)      ──► _write_boffs_to_build()
+        │                                       • cluster abilities by Y proximity
+        │                                       • match each cluster to a ship seat
+        │                                         (profession + spec)
+        │                                       • _slot_indices_from_x maps each
+        │                                         ability to its rank position using
+        │                                         X-gap analysis (handles empty mid-slots)
+        │
+        └──► virtual items (__empty__,    ──► silently skipped on the SETS write
+             __inactive__)                       (still uploaded to HF for training)
+```
+
+After all items are written, the dialog switches the SETS tab to match the build type and runs `sets.autosave()`. A summary message box reports detected / imported / unmatched counts and the ship that WARP picked.
+
+**If the ship is not recognised** — the ship dropdown is cleared, slots are left at their default profile, and you can pick the correct ship manually in SETS afterwards. The equipment items that WARP did identify are still imported into the default layout where possible.
 
 ### Step 5 — Review results
 
@@ -180,12 +262,30 @@ If you need to make changes, click **↩ Back to Edit** (same button) or press *
 
 Displays the current screenshot with coloured bounding boxes drawn over each detected item slot:
 
-| Box colour | Meaning |
-|------------|---------|
-| Red | Pending — not yet reviewed / confirmed |
-| Green | Confirmed (accepted by user) |
-| Cyan | Text slot (Ship Name / Ship Type / Ship Tier) — read by OCR, no icon matching |
-| Yellow | Bbox currently being drawn (Alt+LMB drag) |
+| Box colour | State | Meaning |
+|------------|-------|---------|
+| Red          | `pending`         | Detected but not yet reviewed — needs your attention |
+| Green        | `confirmed (user)`| Accepted by you (Enter / autocomplete pick / Accept button) |
+| Yellow/gold  | `confirmed (auto)`| Auto-accepted by the program because confidence ≥ Auto threshold (default 0.75). Persists across restarts so you can tell at a glance what *you* confirmed vs what the program did. Editing the name re-flags it as user-confirmed (green). |
+| Cyan         | `text slot`       | Ship Name / Ship Type / Ship Tier — read by OCR, no icon matching, no confidence score |
+| Grey (empty name) | `pending, no match` | The grid found this slot but the icon matcher had low confidence (< 0.35) or the match name had the wrong type for the slot. The bbox is kept so you can correct it manually — type the right name and Accept. |
+| Gold crosshair | (drawing)       | While Alt+LMB drag is in progress — the bbox you're currently drawing |
+
+Diagram:
+
+```
+   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+   │░░░░░░░░░░░░░░│   │██████████████│   │▓▓▓▓▓▓▓▓▓▓▓▓▓▓│
+   │░░ pending  ░░│   │██  user OK ██│   │▓▓ auto OK  ▓▓│
+   │░░░ (red)  ░░░│   │██ (green)  ██│   │▓▓ (yellow) ▓▓│
+   └──────────────┘   └──────────────┘   └──────────────┘
+
+   ┌──────────────┐   ┌──────────────┐
+   │░░░░░░░░░░░░░░│   │┄┄┄┄┄┄┄┄┄┄┄┄┄┄│
+   │░ text slot ░│   │  no match    │
+   │░░░ (cyan) ░░│   │  (grey)      │
+   └──────────────┘   └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+```
 
 #### Ship Name / Ship Type / Ship Tier bboxes
 
@@ -249,17 +349,81 @@ At the bottom:
 
 ## 4. Reviewing and correcting recognition
 
-### Typical workflow
+### Step-by-step user journey
 
-1. Open WARP CORE (from the WARP results dialog, or click the **WARP CORE** button in the menu bar).
-2. Select the first screenshot in the left panel.
-3. Look at the review list on the right — items are sorted by confidence (low first).
-4. Click a red or yellow item to select it. The canvas highlights the corresponding box.
-5. Check whether the recognised item is correct:
-   - **Correct** → press **Enter** or click **Accept** to confirm.
-   - **Wrong** → type the correct name in the Item field, then press Enter to confirm.
-   - **Box in wrong position** → remove the box (Del) and draw a new one with Alt+drag.
-6. Move through all items, then click the next screenshot in the left panel.
+The intended WARP CORE workflow, end to end:
+
+```
+   START: open WARP CORE → pick a folder of screenshots
+        │
+        ▼
+   ┌─────────────────────────────────────────────────┐
+   │ A. SCREEN TYPES                                 │
+   │    On folder open, every file is classified     │
+   │    (SPACE_EQ / GROUND_EQ / TRAITS / BOFFS /     │
+   │     SPECIALIZATIONS / SPACE_MIXED / …).         │
+   │    For each file: check the type next to the    │
+   │    filename. If correct → tick the checkbox.    │
+   │    If wrong → change it via the Screen Type     │
+   │    dropdown above the canvas (auto-ticks).      │
+   └─────────────────────────────────────────────────┘
+        │
+        ▼
+   ┌─────────────────────────────────────────────────┐
+   │ B. AUTO-DETECT SLOTS                            │
+   │    Select a screenshot in the left panel.       │
+   │    Click "Auto-Detect Slots" (toolbar) to run   │
+   │    the recognition pipeline on it.              │
+   │    Items appear in the right panel's review     │
+   │    list, sorted by confidence (lowest first).   │
+   │    Items above the Auto-accept threshold are    │
+   │    auto-confirmed (yellow) immediately.         │
+   └─────────────────────────────────────────────────┘
+        │
+        ▼
+   ┌─────────────────────────────────────────────────┐
+   │ C. REVIEW & CORRECT                             │
+   │    For each remaining pending (red) item:       │
+   │      • Click it → canvas highlights the box.    │
+   │      • Correct name? Press Enter / click Accept │
+   │        → box turns green.                       │
+   │      • Wrong name? Type the right one (autocom- │
+   │        plete) and Accept.                       │
+   │      • Box in wrong place? Del to remove, then  │
+   │        Alt+drag a new one on the right icon.    │
+   │    For grey (empty-name) bboxes: type the name. │
+   │    For missing slots: Alt+drag directly on the  │
+   │    canvas to add a new bbox.                    │
+   └─────────────────────────────────────────────────┘
+        │
+        ▼
+   ┌─────────────────────────────────────────────────┐
+   │ D. MARK DONE                                    │
+   │    When the screenshot is fully reviewed, click │
+   │    "✓ Mark Done" (or Alt+D).                    │
+   │    Locks the screenshot, saves its layout to    │
+   │    anchors.json (improves future detection on   │
+   │    similar screens), colours the entry green    │
+   │    in the file list.                            │
+   └─────────────────────────────────────────────────┘
+        │
+        ▼
+   Repeat B–D for the next screenshot in the folder.
+        │
+        ▼
+   END: confirmed crops upload automatically to HF
+        every 10 min in the background.
+```
+
+### Typical micro-loop (per item)
+
+1. Pick the lowest-confidence red item in the review list (sorted automatically).
+2. Compare what's in the Item field against the icon on the canvas.
+3. **Correct** → **Enter**. **Wrong** → type the correct name, pick from autocomplete (instant accept, no Enter needed).
+4. **Bbox in wrong position** → **Del** to remove, **Alt+drag** to redraw.
+5. Move to the next item.
+
+> **Tip:** Auto ≥ 0.75 already handles the easy cases. In practice, you usually only need to review red items (< 40%) and the occasional yellow-confidence item.
 
 ### Correcting item names
 
@@ -346,7 +510,7 @@ automatically downloaded to your installation.
 
 Every time you confirm an item annotation in WARP CORE, the icon crop is queued for upload to
 HuggingFace (`sets-sto/sto-icon-dataset`). The upload happens automatically in the background
-every 5 minutes when a HuggingFace token is configured.
+**every 10 minutes** (first run 15 s after app start) when a HuggingFace token is configured.
 
 **What is sent:** Only the icon crop image (small PNG, ~64×64 px) and its label (item name +
 slot type). No screenshots, no ship names, no personal data.
@@ -354,13 +518,17 @@ slot type). No screenshots, no ship names, no personal data.
 ### Model update
 
 A new model is trained hourly on GitHub Actions using all community crops. Your installation
-checks for updates every 15 minutes (while WARP CORE is open) and downloads the new
+checks for updates **every 15 minutes** (rate-limit cache; uses `requests` with 5 s connect /
+60 s read timeouts to survive Render free-tier cold-starts) and downloads the new
 `icon_classifier.pt` automatically if a newer version is available.
 
 | File | Source | Update interval |
 |------|--------|----------------|
-| `warp/models/icon_classifier.pt` | Community pipeline (HuggingFace) | Every 15 min check |
-| `warp/models/screen_classifier.pt` | Community pipeline (HuggingFace) | Every 15 min check |
+| `warp/models/icon_classifier.pt` (EfficientNet-B0 softmax) | `sets-sto/warp-knowledge` (HF) | 15 min check |
+| `warp/models/icon_embedder.pt` (ArcFace embedder) | `sets-sto/warp-knowledge` (HF) | 15 min check |
+| `warp/models/screen_classifier.pt` (MobileNetV3-Small) | `sets-sto/warp-knowledge` (HF) | 15 min check |
+| `warp/models/community_anchors.json` (learned layouts) | `sets-sto/warp-knowledge` (HF) | 15 min check |
+| `warp/models/ship_type_corrections.json` (OCR correction map) | `sets-sto/warp-knowledge` (HF) | 15 min check |
 
 ---
 
@@ -396,14 +564,18 @@ and never uploaded — ship names are treated as personal data.
 | **Alt + LMB drag** | Draw new bounding box directly |
 | **Ctrl + Wheel** | Zoom canvas in/out (1× – 6×, anchored to cursor) |
 
-### Bounding box colours
+### Bounding box colours (canonical)
 
 | Colour | Meaning |
 |--------|---------|
-| Green | Confirmed (accepted) |
-| Gold/yellow | Pending (awaiting review) |
-| Grey | Skipped or low-confidence |
-| Red | Error / removed |
+| Red | Pending — awaiting your review |
+| Green | User-confirmed (Enter / autocomplete pick / Accept) |
+| Yellow / gold | Auto-confirmed by program (conf ≥ Auto threshold). Persists across restarts. |
+| Cyan | Text slot (Ship Name / Type / Tier) — OCR, no icon matching |
+| Grey (empty name) | Detected bbox without a usable match — type the name and Accept |
+| Gold crosshair | Currently being drawn (Alt + LMB drag in progress) |
+
+See section 3 for the full colour legend with diagram.
 
 ---
 
