@@ -29,6 +29,21 @@ except Exception:
 SCREENSHOT_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 TEMPLATE_CONF_THRESHOLD = 0.72
 
+# Single source of truth: ScreenTypeClassifier label → WarpImporter build_type.
+# Used both by the importer (per-image ML autodetection) and by the trainer's
+# folder-level pre-classification worker.
+SCREEN_TYPE_TO_BUILD_TYPE: dict[str, str] = {
+    'SPACE_EQ':        'SPACE',
+    'GROUND_EQ':       'GROUND',
+    'TRAITS':          'SPACE_TRAITS',
+    'BOFFS':           'BOFFS',
+    'SPACE_BOFFS':     'SPACE_BOFFS',
+    'GROUND_BOFFS':    'GROUND_BOFFS',
+    'SPECIALIZATIONS': 'SPEC',
+    'SPACE_MIXED':     'SPACE_MIXED',
+    'GROUND_MIXED':    'GROUND_MIXED',
+}
+
 # Virtual placeholders for empty/inactive slot positions. Mirrors
 # `warp.trainer.training_data.VIRTUAL_ITEM_NAMES`; defined locally so
 # warp_importer doesn't pull in the trainer package on the hot path.
@@ -50,6 +65,12 @@ def _bbox_iou(a, b) -> float:
 # Minimum confidence to include a recognition result in output
 # Below this threshold the matcher is essentially guessing
 MIN_ACCEPT_CONF = 0.35
+# When a bbox came from a detected/confirmed grid but matching produces conf
+# below MIN_ACCEPT_CONF, keep the bbox in the review list with an empty name
+# instead of dropping it. The user can then type the name manually in WARP
+# CORE rather than losing the grid position. Set False to restore the old
+# "drop low-conf entirely" behavior.
+KEEP_LOW_CONF_GRID_BBOXES = True
 # ── P5: Anchoring constants ──────────────────────────────────────────────────
 # Slots used as reference points for layout recalibration
 ANCHOR_SLOTS = frozenset({'Deflector', 'Engines', 'Warp Core', 'Shield'})
@@ -428,6 +449,11 @@ class ShipDB:
         # displayprefix + displayclass + displaytype + name tokens.
         # Each entry: (words_frozenset, tier_int, ship_dict).
         self._display_index: list[tuple[frozenset, int, dict]] = []
+        # Parallel index of canonical display *strings* (lowercase) for fuzzy
+        # matching when OCR contains 1-2 letter typos that defeat exact word-
+        # subset matching (e.g. 'Legondary' / 'Battlocruiser'). Each entry:
+        # (lowercase_string, ship_dict).
+        self._display_strings: list[tuple[str, dict]] = []
         self._load(cargo_dir)
 
     def _load(self, cargo_dir: Path):
@@ -462,6 +488,13 @@ class ShipDB:
                     tier = 0
                 if disp_words:
                     self._display_index.append((disp_words, tier, ship))
+                    # Fuzzy index uses `name` alone — `displayprefix +
+                    # displayclass + displaytype` typically concatenates into
+                    # the same string as `name`, so combining them duplicates
+                    # tokens and inflates string length, sinking the similarity
+                    # ratio below the cutoff for 1-2 letter typos.
+                    if name:
+                        self._display_strings.append((name.lower(), ship))
             log.info(f'ShipDB: loaded {len(self._ships)} ships, '
                      f'{len(self._by_type)} unique types, '
                      f'{len(self._display_index)} display entries')
@@ -483,12 +516,18 @@ class ShipDB:
           2c. Fuzzy type match
           3. Keyword fallback
         """
+        # Reset match metadata — populated by _entry_to_profile when a real
+        # match is found. Read by callers (e.g. WarpImporter._process_image)
+        # for logging which ShipDB entry was actually selected.
+        self.last_match: dict | None = None
+        self.last_match_strategy: str = ''
         st = ship_type.lower().strip()
 
         # 1. Exact type match
         entry = self._by_type.get(st)
         if entry:
             log.debug(f'ShipDB exact type: {ship_type!r}')
+            self.last_match, self.last_match_strategy = entry, 'exact-type'
             return self._entry_to_profile(entry)
 
         # 2. Fuzzy type match — handles OCR errors and extra/missing words
@@ -503,12 +542,14 @@ class ShipDB:
             if len(subset_hits) == 1:
                 # Unique subset match — high confidence
                 log.debug(f'ShipDB subset match: {ship_type!r} → {subset_hits[0][0]!r}')
+                self.last_match, self.last_match_strategy = subset_hits[0][1], 'word-subset'
                 return self._entry_to_profile(subset_hits[0][1])
             elif len(subset_hits) > 1:
                 # Multiple subset matches — pick the one with fewest extra words
                 best = min(subset_hits, key=lambda x: len(set(x[0].split()) - ocr_words))
                 log.debug(f'ShipDB subset match (best of {len(subset_hits)}): '
                           f'{ship_type!r} → {best[0]!r}')
+                self.last_match, self.last_match_strategy = best[1], 'word-subset-best'
                 return self._entry_to_profile(best[1])
 
             # 2b. Display-name match — the `type` field in ship_list.json is
@@ -527,12 +568,14 @@ class ShipDB:
                 _, _, ship = disp_hits[0]
                 log.debug(f'ShipDB display match: {ship_type!r}+{ship_tier!r} '
                           f'→ {ship.get("name")!r}')
+                self.last_match, self.last_match_strategy = ship, 'display-name'
                 return self._entry_to_profile(ship)
             elif len(disp_hits) > 1:
                 # Prefer the entry with fewest extra words (closest to OCR text)
                 best = min(disp_hits, key=lambda h: len(h[0] - ocr_words))
                 log.debug(f'ShipDB display match (best of {len(disp_hits)}): '
                           f'{ship_type!r}+{ship_tier!r} → {best[2].get("name")!r}')
+                self.last_match, self.last_match_strategy = best[2], 'display-name-best'
                 return self._entry_to_profile(best[2])
 
             # 2c. Standard fuzzy match as fallback
@@ -540,10 +583,29 @@ class ShipDB:
             if type_matches:
                 entry = self._by_type[type_matches[0]]
                 log.debug(f'ShipDB fuzzy type: {ship_type!r} → {type_matches[0]!r}')
+                self.last_match, self.last_match_strategy = entry, 'fuzzy-type'
                 return self._entry_to_profile(entry)
+
+            # 2d. Fuzzy display-string match — handles OCR typos that defeat
+            # word-subset matching ('Legondary'/'Battlocruiser'/'IIl'/'IIIl').
+            # Cutoff 0.85 is tight enough that real-different ships do not
+            # collide; require ≥3 OCR words to avoid false positives on tiny
+            # strings ('Cruiser' would otherwise fuzzy-match dozens of ships).
+            if len(ocr_words) >= 3 and self._display_strings:
+                disp_candidates = [s for s, _ in self._display_strings]
+                disp_matches = get_close_matches(st, disp_candidates, n=1, cutoff=0.85)
+                if disp_matches:
+                    for s, ship in self._display_strings:
+                        if s == disp_matches[0]:
+                            log.debug(f'ShipDB fuzzy display: {ship_type!r} → '
+                                      f'{ship.get("name")!r}')
+                            self.last_match = ship
+                            self.last_match_strategy = 'fuzzy-display'
+                            return self._entry_to_profile(ship)
 
         # 3. Keyword fallback from type string
         log.debug(f'ShipDB: type {ship_type!r} not found — using keyword fallback')
+        self.last_match_strategy = 'keyword-fallback'
         return _type_keyword_profile(ship_type)
 
     def _entry_to_profile(self, e: dict) -> dict[str, int]:
@@ -687,6 +749,11 @@ class WarpImporter:
         self._text    = None
         self._shipdb  = None
         self._sync    = None   # WARPSyncClient — lazy init
+        self._screen_classifier = None  # ScreenTypeClassifier — lazy init
+        # Per-match diagnostic log filled during pipeline(). Each entry:
+        # {'slot', 'name', 'conf', 'src', 'stages': {embed, soft, session,
+        # template, knowledge}}. Read by RecognitionWorker for summary table.
+        self.match_log: list[dict] = []
 
     def set_interrupt_check(self, fn):
         # fn() returns True when processing should stop
@@ -720,19 +787,28 @@ class WarpImporter:
                 img         = self._load_image(fpath)
                 file_result = self._process_image(
                     img, str(fpath), _base_pct=base_pct, _end_pct=end_pct)
-                if file_result.ship_name:
-                    _upgrade = (
-                        not result.ship_name or  # no result yet
-                        (file_result.ship_tier and not result.ship_tier)  # new has tier, current doesn't
-                    )
-                    if _upgrade:
-                        result.ship_name    = file_result.ship_name
-                        result.ship_type    = file_result.ship_type
-                        result.ship_tier    = file_result.ship_tier
-                        result.ship_profile = file_result.ship_profile
-                        result.build_type   = file_result.build_type
+                # Score-based upgrade: ship_tier and ship_type are the
+                # signals ShipDB actually needs; ship_name is informational
+                # and often polluted by non-SPACE_EQ screens (tab labels like
+                # 'Commando' on SPEC, 'Space Stations' on BOFFS). Tuple
+                # comparison weights tier > type > name.
+                _new_score = (bool(file_result.ship_tier),
+                              bool(file_result.ship_type),
+                              bool(file_result.ship_name))
+                _cur_score = (bool(result.ship_tier),
+                              bool(result.ship_type),
+                              bool(result.ship_name))
+                if _new_score > _cur_score:
+                    result.ship_name    = file_result.ship_name or result.ship_name
+                    result.ship_type    = file_result.ship_type
+                    result.ship_tier    = file_result.ship_tier
+                    result.ship_profile = file_result.ship_profile
+                    result.build_type   = file_result.build_type
                 for item in file_result.items:
-                    key = (item.slot, item.slot_index)
+                    # Include seat_key so multiple BOFF seats remapped to the
+                    # same profession (e.g. two Science seats both → Boff Science
+                    # with slot_index 0..3) don't collide and drop abilities.
+                    key = (item.slot, item.slot_index, getattr(item, 'seat_key', None))
                     if key not in best or item.confidence > best[key].confidence:
                         best[key] = item
                 result.errors.extend(file_result.errors)
@@ -748,52 +824,101 @@ class WarpImporter:
     def _process_image(self, img: np.ndarray, source: str, profile_override: dict | None = None,
                        _base_pct: int = 0, _end_pct: int = 90) -> ImportResult:
         _slog.info(f'####### WARP: {Path(source).name} | {self._build_type} #######')
-        # Step 1 — extract ship info via OCR.
-        # build_type from caller sets the import mode but we always try OCR
-        # for ship name/type — unless called from trainer (has _data_mgr attr).
+        # Step 1 — extract ship info via OCR (single mechanism for WARP and WARP CORE).
+        # Trainer-mode legitimate overlay: user's screen-type combo wins over
+        # OCR build_type upgrades — but ship_name/type/tier from OCR still feed
+        # ShipDB so profile matches the actual ship (carrier vs standard, etc.).
         _is_trainer_call = self._from_trainer
+        _text = self._get_text()
+        text_info = _text.extract_ship_info(img)
+
+        # Single-crop OCR fallback for Ship Tier / Ship Type when the main
+        # scan found a bbox but failed to read a value. Shared by WARP and
+        # WARP CORE — same logic that the trainer's OCRWorker used to run
+        # inline for user-drawn bboxes.
+        try:
+            _valid_types = sorted(self._app.cache.ships.keys()) if (
+                self._app and getattr(self._app, 'cache', None)) else None
+        except Exception:
+            _valid_types = None
+        from warp.recognition.text_extractor import SHIP_TIER_VALUES
+        text_info = _text.refine_ship_info(
+            img, text_info, SHIP_TIER_VALUES, _valid_types)
+
+        ship_name  = text_info.get('ship_name', '')
+        ship_type  = text_info.get('ship_type', '')
+        _ocr_bt = text_info.get('build_type', '')
+
+        # ML screen-type classifier — second autodetection signal (shared by
+        # WARP and WARP CORE). Used to upgrade generic build_type when OCR
+        # alone can't decide (e.g. MIXED screens where text labels are sparse).
+        _ml_stype, _ml_conf = self._classify_screen(img)
+        _ml_bt = SCREEN_TYPE_TO_BUILD_TYPE.get(_ml_stype, '') if _ml_stype else ''
+        _slog.info(f'WarpImporter: ML screen: stype={_ml_stype!r} conf={_ml_conf:.2f} → bt={_ml_bt!r}')
+
         if _is_trainer_call:
-            # Trainer always has build_type set and uses confirmed annotations
+            # WARP CORE: user explicitly selected screen type in dropdown — that
+            # is a stronger signal than OCR build_type. Skip the OCR upgrade step.
             build_type = self._build_type
-            ship_name  = ''
-            ship_type  = ''
-            text_info  = {}
-        else:
-            # WARP dialog — run OCR to get ship info regardless of build_type
-            text_info  = self._get_text().extract_ship_info(img)
-            ship_name  = text_info.get('ship_name', '')
-            ship_type  = text_info.get('ship_type', '')
+        elif self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
+                                  'GROUND_TRAITS', 'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
+                                  'SPEC', 'SPACE_MIXED', 'GROUND_MIXED'):
             # Use caller's build_type as primary, OCR as confirmation.
             # Upgrade SPACE→SPACE_MIXED / GROUND→GROUND_MIXED when OCR signals
             # a richer screen type (broadside screenshots contain equipment +
             # traits + boffs simultaneously).  Never downgrade.
-            _ocr_bt = text_info.get('build_type', '')
-            if self._build_type in ('SPACE', 'GROUND', 'SPACE_TRAITS',
-                                    'GROUND_TRAITS', 'BOFFS', 'SPACE_BOFFS', 'GROUND_BOFFS',
-                                    'SPEC', 'SPACE_MIXED', 'GROUND_MIXED'):
-                build_type = self._build_type
-                if build_type == 'SPACE' and _ocr_bt in ('SPACE_TRAITS', 'SPACE_MIXED'):
+            build_type = self._build_type
+            if build_type == 'SPACE' and _ocr_bt in ('SPACE_TRAITS', 'SPACE_MIXED'):
+                build_type = 'SPACE_MIXED'
+                _slog.info('WarpImporter: upgraded SPACE → SPACE_MIXED (OCR detected richer screen)')
+            elif build_type == 'SPACE' and _ocr_bt in ('BOFFS', 'SPACE_BOFFS') and text_info.get('scan_scope') == 'full':
+                build_type = _ocr_bt  # SPACE_BOFFS preferred over generic BOFFS
+                _slog.info(f'WarpImporter: upgraded SPACE → {build_type} (dedicated BOFFS screen, full scan only)')
+            elif build_type == 'SPACE' and _ocr_bt == 'GROUND_BOFFS':
+                build_type = 'GROUND_BOFFS'
+                _slog.info('WarpImporter: upgraded SPACE → GROUND_BOFFS (OCR detected ground boff screen)')
+            elif build_type == 'SPACE' and _ocr_bt == 'SPEC':
+                build_type = 'SPEC'
+                _slog.info('WarpImporter: upgraded SPACE → SPEC (OCR detected specialization screen)')
+            elif build_type == 'GROUND' and _ocr_bt in ('GROUND_TRAITS', 'GROUND_MIXED'):
+                build_type = 'GROUND_MIXED'
+                _slog.info('WarpImporter: upgraded GROUND → GROUND_MIXED (OCR detected richer screen)')
+            elif build_type == 'GROUND' and _ocr_bt == 'GROUND_BOFFS':
+                build_type = 'GROUND_BOFFS'
+                _slog.info('WarpImporter: upgraded GROUND → GROUND_BOFFS (OCR detected ground boff screen)')
+
+            # ML upgrade — fires when OCR didn't upgrade and ML is confident.
+            # Mirrors the OCR ladder so WARP gets the same screen-type detection
+            # that WARP CORE's folder pre-classifier already provides.
+            if build_type == self._build_type and _ml_bt and _ml_bt != self._build_type:
+                if build_type == 'SPACE' and _ml_bt in ('SPACE_TRAITS', 'SPACE_MIXED'):
                     build_type = 'SPACE_MIXED'
-                    _slog.info('WarpImporter: upgraded SPACE → SPACE_MIXED (OCR detected richer screen)')
-                elif build_type == 'SPACE' and _ocr_bt in ('BOFFS', 'SPACE_BOFFS') and text_info.get('scan_scope') == 'full':
-                    build_type = _ocr_bt  # SPACE_BOFFS preferred over generic BOFFS
-                    _slog.info(f'WarpImporter: upgraded SPACE → {build_type} (dedicated BOFFS screen, full scan only)')
-                elif build_type == 'SPACE' and _ocr_bt == 'GROUND_BOFFS':
+                    _slog.info(f'WarpImporter: upgraded SPACE → SPACE_MIXED (ML classifier, conf={_ml_conf:.2f})')
+                elif build_type == 'SPACE' and _ml_bt in ('BOFFS', 'SPACE_BOFFS'):
+                    build_type = _ml_bt
+                    _slog.info(f'WarpImporter: upgraded SPACE → {build_type} (ML classifier, conf={_ml_conf:.2f})')
+                elif build_type == 'SPACE' and _ml_bt == 'GROUND_BOFFS':
                     build_type = 'GROUND_BOFFS'
-                    _slog.info('WarpImporter: upgraded SPACE → GROUND_BOFFS (OCR detected ground boff screen)')
-                elif build_type == 'SPACE' and _ocr_bt == 'SPEC':
+                    _slog.info(f'WarpImporter: upgraded SPACE → GROUND_BOFFS (ML classifier, conf={_ml_conf:.2f})')
+                elif build_type == 'SPACE' and _ml_bt == 'SPEC':
                     build_type = 'SPEC'
-                    _slog.info('WarpImporter: upgraded SPACE → SPEC (OCR detected specialization screen)')
-                elif build_type == 'GROUND' and _ocr_bt in ('GROUND_TRAITS', 'GROUND_MIXED'):
+                    _slog.info(f'WarpImporter: upgraded SPACE → SPEC (ML classifier, conf={_ml_conf:.2f})')
+                elif build_type == 'GROUND' and _ml_bt in ('GROUND_TRAITS', 'GROUND_MIXED'):
                     build_type = 'GROUND_MIXED'
-                    _slog.info('WarpImporter: upgraded GROUND → GROUND_MIXED (OCR detected richer screen)')
-                elif build_type == 'GROUND' and _ocr_bt == 'GROUND_BOFFS':
+                    _slog.info(f'WarpImporter: upgraded GROUND → GROUND_MIXED (ML classifier, conf={_ml_conf:.2f})')
+                elif build_type == 'GROUND' and _ml_bt == 'GROUND_BOFFS':
                     build_type = 'GROUND_BOFFS'
-                    _slog.info('WarpImporter: upgraded GROUND → GROUND_BOFFS (OCR detected ground boff screen)')
-            else:
-                build_type = 'GROUND' if _ocr_bt == 'GROUND' else 'SPACE'
-            _slog.info(f'WarpImporter: OCR result: name={ship_name!r} type={ship_type!r} '
-                       f'ocr_build={text_info.get("build_type")!r} → using build_type={build_type!r}')
+                    _slog.info(f'WarpImporter: upgraded GROUND → GROUND_BOFFS (ML classifier, conf={_ml_conf:.2f})')
+        else:
+            build_type = 'GROUND' if _ocr_bt == 'GROUND' else 'SPACE'
+            if _ml_bt:
+                # Fallback path (build_type wasn't a known generic) — let ML
+                # provide the specific type when OCR can't.
+                build_type = _ml_bt
+                _slog.info(f'WarpImporter: ML classifier sets build_type={build_type!r} (no OCR signal)')
+        _slog.info(f'WarpImporter: OCR result: name={ship_name!r} type={ship_type!r} '
+                   f'ocr_build={_ocr_bt!r} → using build_type={build_type!r}'
+                   f'{" (trainer override)" if _is_trainer_call else ""}')
 
         # Step 2 — get exact slot profile from ship_list.json
         # Skip for GROUND/GROUND_MIXED — ShipDB contains space ship data only
@@ -805,45 +930,43 @@ class WarpImporter:
             profile = {}
             _slog.info(f'WarpImporter: {build_type} build — skipping ShipDB lookup')
         else:
-            profile = self._get_shipdb().get_profile(ship_name, ship_type, ship_tier)
-            _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}/{ship_tier!r}: {dict((k,v) for k,v in profile.items() if v)}')
-        if _is_trainer_call:
-            # Trainer (WARP CORE): annotation counts are authoritative for equipment —
-            # the user has confirmed every bbox, so the profile must match exactly.
-            if not profile_override:
-                profile_override = self._load_confirmed_profile(source)
-            for slot, count in (profile_override or {}).items():
-                if count > profile.get(slot, 0):
-                    profile[slot] = count
-                    _slog.info(f'WarpImporter: trainer profile {slot}={count} (confirmed)')
-            # Trait/rep/boff slots: confirmed count reflects partial annotation —
-            # user may not have confirmed all visible items. Apply game caps so the
-            # layout detector's full detection isn't artificially capped.
-            for slot, max_val in _GAME_SLOT_MAXES.items():
-                if max_val > profile.get(slot, 0):
-                    profile[slot] = max_val
-        else:
-            # WARP dialog import: coded game rules only — annotations are training data.
-            # Traits / Rep / Active Rep: fixed STO game caps.
-            # BOFF slots: already set by _boff_profile_from_shipdb via _entry_to_profile;
-            #   _GAME_SLOT_MAXES fallbacks apply only when ShipDB lookup failed (no boffs data).
-            for slot, max_val in _GAME_SLOT_MAXES.items():
-                if max_val > profile.get(slot, 0):
-                    profile[slot] = max_val
-            # T6-X / T6-X2 tier upgrades (cumulative per level):
-            #   T6-X  (level 1): +1 Universal Console, +1 Starship Trait, +1 Device
-            #   T6-X2 (level 2): additional +1 each → total +2 vs base T6
-            if '-X' in ship_tier:
-                _x_bonus = 2 if 'X2' in ship_tier else 1
-                if profile.get('Devices', 0) > 0:
-                    profile['Devices'] += _x_bonus
-                    _slog.info(f'WarpImporter: {ship_tier} — Devices +{_x_bonus} → {profile["Devices"]}')
-                profile['Universal Consoles'] = profile.get('Universal Consoles', 0) + _x_bonus
-                _slog.info(f'WarpImporter: {ship_tier} — Universal Consoles +{_x_bonus} → {profile["Universal Consoles"]}')
-                profile['Starship Traits'] = profile.get('Starship Traits', 5) + _x_bonus
-                _slog.info(f'WarpImporter: {ship_tier} — Starship Traits +{_x_bonus} → {profile["Starship Traits"]}')
-            _slog.debug(f'WarpImporter: game-rule profile (traits/rep/boff): '
-                        f'{dict((k,v) for k,v in profile.items() if "Boff" in k or "Trait" in k or "Rep" in k)}')
+            _db = self._get_shipdb()
+            profile = _db.get_profile(ship_name, ship_type, ship_tier)
+            _m = _db.last_match
+            _strategy = _db.last_match_strategy or 'no-match'
+            _matched_name = _m.get('name', '?') if isinstance(_m, dict) else '—'
+            _matched_type = _m.get('type', '?') if isinstance(_m, dict) else '—'
+            _slog.info(
+                f'WarpImporter: ShipDB lookup name={ship_name!r} type={ship_type!r} tier={ship_tier!r} '
+                f'→ matched [{_strategy}] name={_matched_name!r} type={_matched_type!r}')
+            _slog.info(f'WarpImporter: ShipDB profile: {dict((k,v) for k,v in profile.items() if v)}')
+
+        # Game caps for Traits / Rep / Active Rep / BOFF fallbacks (both paths).
+        # BOFF counts from _boff_profile_from_shipdb already set above; these
+        # apply only when ShipDB had nothing.
+        for slot, max_val in _GAME_SLOT_MAXES.items():
+            if max_val > profile.get(slot, 0):
+                profile[slot] = max_val
+
+        # T6-X / T6-X2 tier upgrades (cumulative per level), both paths:
+        #   T6-X  (level 1): +1 Universal Console, +1 Starship Trait, +1 Device
+        #   T6-X2 (level 2): additional +1 each → total +2 vs base T6
+        # Applied BEFORE the trainer-mode confirmed-count floor so the user's
+        # confirmed count (which already reflects the X/X2 bonus) is the final
+        # word — without this order, ShipDB(4)+override(6)+X2(+2) = 8 slots,
+        # one cell past the panel.
+        if '-X' in ship_tier:
+            _x_bonus = 2 if 'X2' in ship_tier else 1
+            if profile.get('Devices', 0) > 0:
+                profile['Devices'] += _x_bonus
+                _slog.info(f'WarpImporter: {ship_tier} — Devices +{_x_bonus} → {profile["Devices"]}')
+            profile['Universal Consoles'] = profile.get('Universal Consoles', 0) + _x_bonus
+            _slog.info(f'WarpImporter: {ship_tier} — Universal Consoles +{_x_bonus} → {profile["Universal Consoles"]}')
+            profile['Starship Traits'] = profile.get('Starship Traits', 5) + _x_bonus
+            _slog.info(f'WarpImporter: {ship_tier} — Starship Traits +{_x_bonus} → {profile["Starship Traits"]}')
+
+        _slog.debug(f'WarpImporter: final profile (traits/rep/boff): '
+                    f'{dict((k,v) for k,v in profile.items() if "Boff" in k or "Trait" in k or "Rep" in k)}')
 
 
         result = ImportResult(
@@ -868,6 +991,19 @@ class WarpImporter:
         # _use_confirmed = 'MIXED' in build_type or _is_trainer_call
         _use_confirmed = _is_trainer_call
         confirmed_layout = self._load_confirmed_layout(source) if _use_confirmed else None
+        # Filter confirmed annotations to slots relevant for this build_type.
+        # The same screenshot may have stale annotations from a previous
+        # SPACE_MIXED pass while now being opened as GROUND_MIXED (or vice
+        # versa) — without this filter, the trainer would re-propose space
+        # Starship Traits bboxes on a ground panel and vice versa. Dynamic
+        # BOFF seat keys (e.g. "Boff Seat L[E]_392") are allowed through
+        # since they are not in SLOT_ORDER.
+        if confirmed_layout and build_type in SLOT_ORDER:
+            valid_slots = {s['name'] for s in SLOT_ORDER[build_type]}
+            confirmed_layout = {
+                slot: bboxes for slot, bboxes in confirmed_layout.items()
+                if slot in valid_slots or slot.startswith('Boff Seat ')
+            } or None
         
         _needs_matcher = build_type in (
             'SPACE_MIXED', 'GROUND_MIXED',
@@ -882,6 +1018,35 @@ class WarpImporter:
             icon_matcher=self._get_matcher() if _needs_matcher else None,
             app_cache=self._app.cache if _needs_matcher else None,
         )
+        # Inject Ship Name/Type/Tier bboxes captured by the OCR pass so WARP
+        # CORE can render them as reviewable slots on the canvas. Pure pass-
+        # through — they are NON_ICON slots, never go through icon_matcher.
+        # Space-only screens (SPACE / SPACE_MIXED / SPACE_TRAITS) are the only
+        # ones where the top band carries the ship-info line.
+        if build_type in ('SPACE', 'SPACE_MIXED', 'SPACE_TRAITS'):
+            for _slot, _bbkey, _valkey in (
+                ('Ship Name', 'ship_name_bbox', 'ship_name'),
+                ('Ship Type', 'ship_type_bbox', 'ship_type'),
+                ('Ship Tier', 'ship_tier_bbox', 'ship_tier'),
+            ):
+                _bb = text_info.get(_bbkey)
+                if not _bb:
+                    continue
+                _bb_t = tuple(_bb)
+                layout[_slot] = [_bb_t]
+                # Append as RecognisedItem so trainer review list picks it up.
+                # Ship Name is position-only in WARP CORE (no content stored),
+                # so name='' there; Type/Tier carry the OCR value.
+                _val = '' if _slot == 'Ship Name' else text_info.get(_valkey, '')
+                result.items.append(RecognisedItem(
+                    slot        = _slot,
+                    slot_index  = 0,
+                    name        = _val,
+                    confidence  = 1.0 if _val or _slot == 'Ship Name' else 0.0,
+                    thumbnail   = None,
+                    source_file = source,
+                    bbox        = _bb_t,
+                ))
         _slog.info(
             f'WarpImporter: layout → {len(layout)} slot groups, '
             f'{sum(len(v) for v in layout.values())} bboxes ({build_type})'
@@ -936,12 +1101,21 @@ class WarpImporter:
         # space ship profile and corrupt the ground layout on the second run.
         if not ship_name and layout and not _is_ground:
             pixel_counts = {slot: len(boxes) for slot, boxes in layout.items() if boxes}
-            if pixel_counts:
+            # Refine only when at least one MEASURABLE EQ slot has pixel
+            # counts — otherwise (e.g. trait-only TRAITS screen masquerading
+            # as SPACE_MIXED) every keyword profile scores 0 and the first
+            # one wins arbitrarily, polluting the profile with phantom EQ
+            # slots and forcing a re-detect that drops the real traits.
+            _MEASURABLE = {'Fore Weapons', 'Aft Weapons', 'Devices',
+                           'Engineering Consoles', 'Science Consoles',
+                           'Tactical Consoles'}
+            has_measurable = any(pixel_counts.get(s, 0) > 0 for s in _MEASURABLE)
+            if pixel_counts and has_measurable:
                 refined = _profile_from_pixel_counts(pixel_counts)
                 changed = False
                 for slot, count in refined.items():
-                    # Never override confirmed annotation counts
-                    if slot in profile_override:
+                    # Respect caller-supplied profile_override when present
+                    if profile_override and slot in profile_override:
                         continue
                     if count > profile.get(slot, 0):
                         profile[slot] = count
@@ -987,7 +1161,7 @@ class WarpImporter:
         # Build per-slot candidate sets restricted by SLOT_VALID_TYPES.
         # This prevents template matching from picking items of the wrong type
         # (e.g. a shield icon matching the Warp Core slot at conf=1.00).
-        slot_candidates = self._build_slot_candidates(slot_defs_to_process)
+        slot_candidates = self._build_slot_candidates(slot_defs_to_process, build_type)
 
         # Count total bboxes upfront for granular progress reporting.
         total_bboxes = sum(
@@ -1094,7 +1268,14 @@ class WarpImporter:
                                 pass
 
                 name, conf, thumb, used_session = matcher.match(crop, candidate_names=candidates)
-                
+                self.match_log.append({
+                    'slot':  slot_name,
+                    'name':  name,
+                    'conf':  float(conf),
+                    'src':   getattr(matcher, '_last_match_src', ''),
+                    'stages': dict(getattr(matcher, '_last_stage_scores', {}) or {}),
+                })
+
                 # ── P5: Icon-to-Layout Feedback Loop ──────────────────────────
                 # If we haven't anchored yet on this image, check if this is a good anchor
                 if (not confirmed_layout and _gear_type and 
@@ -1115,25 +1296,60 @@ class WarpImporter:
                         found_anchor = True
                 
                 _tag = '[P5 Anchored]' if found_anchor and current_dy != 0 else ('[WARP CORE]' if used_session else '[Autodetect]')
-                _slog.info(f'  {_tag} [{slot_name}][{idx}] dy={current_dy:+} bbox={bbox} crop={crop.shape[1]}x{crop.shape[0]} → {name!r} conf={conf:.2f}')
+                _src = getattr(matcher, '_last_match_src', '') or '-'
+                _slog.info(f'  {_tag} [{slot_name}][{idx}] dy={current_dy:+} bbox={bbox} crop={crop.shape[1]}x{crop.shape[0]} → {name!r} conf={conf:.2f} src={_src}')
                 
-                if not name:
-                    continue
-                # Reject low-confidence results — below threshold is a guess
-                if conf < MIN_ACCEPT_CONF:
-                    _slog.info(f'  [{slot_name}][{idx}] SKIP — conf {conf:.2f} < {MIN_ACCEPT_CONF}')
+                # Low-confidence / no-name results: by default keep the bbox in
+                # the review list with an empty name so the user can type the
+                # correct one manually. Set KEEP_LOW_CONF_GRID_BBOXES=False to
+                # restore the old "skip entirely" behavior.
+                if not name or conf < MIN_ACCEPT_CONF:
+                    _slog.info(f'  [{slot_name}][{idx}] LOW-CONF — conf {conf:.2f} < {MIN_ACCEPT_CONF} '
+                               f'(keep_bbox={KEEP_LOW_CONF_GRID_BBOXES})')
                     _stat_skip_conf += 1
                     _stat_per_slot.setdefault(slot_name, {'ok': 0, 'skip': 0})['skip'] += 1
+                    if KEEP_LOW_CONF_GRID_BBOXES:
+                        result.items.append(RecognisedItem(
+                            slot        = slot_name,
+                            slot_index  = idx,
+                            name        = '',
+                            confidence  = 0.0,
+                            thumbnail   = None,
+                            source_file = source,
+                            bbox        = bbox,
+                        ))
                     continue
                 # Validate item type matches slot category
                 if not self._item_valid_for_slot(name, slot_name):
-                    _slog.info(f'  [{slot_name}][{idx}] SKIP — {name!r} wrong type for slot')
+                    _slog.info(f'  [{slot_name}][{idx}] WRONG-TYPE — {name!r} invalid for slot '
+                               f'(keep_bbox={KEEP_LOW_CONF_GRID_BBOXES})')
                     _stat_skip_type += 1
                     _stat_per_slot.setdefault(slot_name, {'ok': 0, 'skip': 0})['skip'] += 1
+                    if KEEP_LOW_CONF_GRID_BBOXES:
+                        result.items.append(RecognisedItem(
+                            slot        = slot_name,
+                            slot_index  = idx,
+                            name        = '',
+                            confidence  = 0.0,
+                            thumbnail   = None,
+                            source_file = source,
+                            bbox        = bbox,
+                        ))
                     continue
                 # Experimental slot: only Experimental Weapon items allowed
                 if slot_def['exp'] and not self._is_experimental(name):
-                    _slog.info(f'  [{slot_name}][{idx}] SKIP — not experimental weapon: {name!r}')
+                    _slog.info(f'  [{slot_name}][{idx}] NOT-EXPERIMENTAL — {name!r} '
+                               f'(keep_bbox={KEEP_LOW_CONF_GRID_BBOXES})')
+                    if KEEP_LOW_CONF_GRID_BBOXES:
+                        result.items.append(RecognisedItem(
+                            slot        = slot_name,
+                            slot_index  = idx,
+                            name        = '',
+                            confidence  = 0.0,
+                            thumbnail   = None,
+                            source_file = source,
+                            bbox        = bbox,
+                        ))
                     continue
                 final_slot_name = slot_name
 
@@ -1163,11 +1379,12 @@ class WarpImporter:
                     )
                     if _is_sk(final_slot_name) and _psp(final_slot_name) is None:
                         _u_refine_buf.append((_new_item, crop, candidates))
-                # Contribute to community knowledge (non-blocking, only high-conf, skip virtual)
-                if conf >= TEMPLATE_CONF_THRESHOLD and name not in ('__empty__', '__inactive__'):
-                    sync = self._get_sync_client()
-                    if sync is not None:
-                        sync.contribute(crop, name, confirmed=False)
+                # Runtime contributions (confirmed=False) used to upload the
+                # detector's *own guesses* during a regular WARP import. These
+                # are discarded server-side by admin_merge (majority vote
+                # ignores confirmed=False), so they only generated storage
+                # clutter and bandwidth. The community knowledge base is now
+                # fed exclusively from WARP CORE Accept clicks (confirmed=True).
 
         # Universal-seat ability refinement (pre-remap): re-rank low-conf
         # abilities in U seats using sibling-prof prior + spec stripe prior.
@@ -1704,7 +1921,8 @@ class WarpImporter:
             _slog.debug(f'WarpImporter: _load_confirmed_profile error: {e}')
             return {}
 
-    def _build_slot_candidates(self, slot_defs: list) -> dict[str, set[str]]:
+    def _build_slot_candidates(self, slot_defs: list,
+                                build_type: str = '') -> dict[str, set[str]]:
         """
         For each equipment slot, build the set of valid item names from the SETS
         cache using the slot's build key (e.g. 'deflector', 'core', 'shield').
@@ -1717,6 +1935,9 @@ class WarpImporter:
 
         Console slots include universal consoles since they are accepted everywhere.
         Boff slots are restricted to boff abilities to prevent equipment from matching.
+        When `build_type` is ground-flavored, BOFF candidates are further restricted
+        to ground abilities only (cache.boff_abilities['ground']) so the matcher
+        cannot return space abilities like 'Tractor Beam' on a GROUND_MIXED screen.
         """
         result: dict[str, set[str]] = {}
         try:
@@ -1743,8 +1964,21 @@ class WarpImporter:
         # Without this, candidate_names=None → full index search → equipment items
         # (Deflectors, Consoles, etc.) can match ability slots at conf=1.00 via
         # session examples that were accidentally confirmed in the wrong slot.
+        # For ground build types, the ability pool is further narrowed to the
+        # 'ground' env so the matcher cannot return space-only abilities.
+        _is_ground_bt = build_type in ('GROUND', 'GROUND_MIXED', 'GROUND_BOFFS')
+        boff_names: set[str] = set()
         try:
-            boff_names = set(self._app.cache.boff_abilities.get('all', {}).keys())
+            cache = self._app.cache.boff_abilities
+            if _is_ground_bt:
+                for _prof, rank_lists in (cache.get('ground') or {}).items():
+                    if not isinstance(rank_lists, (list, tuple)):
+                        continue
+                    for rank_dict in rank_lists:
+                        if isinstance(rank_dict, dict):
+                            boff_names.update(rank_dict.keys())
+            else:
+                boff_names = set(cache.get('all', {}).keys())
         except Exception:
             boff_names = set()
         if boff_names:
@@ -1963,6 +2197,22 @@ class WarpImporter:
             if corrections_path.exists():
                 TextExtractor.load_corrections(corrections_path)
         return self._text
+
+    def _classify_screen(self, img: np.ndarray) -> tuple[str, float]:
+        """
+        Run MobileNetV3 screen-type classifier on the given image.
+        Returns (stype_label, confidence) — ('', 0.0) on any failure.
+        Single autodetection mechanism — shared by WARP and WARP CORE.
+        """
+        try:
+            if self._screen_classifier is None:
+                from warp.recognition.screen_classifier import ScreenTypeClassifier
+                models_dir = Path(__file__).resolve().parent / 'models'
+                self._screen_classifier = ScreenTypeClassifier(models_dir)
+            return self._screen_classifier.classify(img)
+        except Exception as e:
+            _slog.debug(f'WarpImporter: screen classifier unavailable — {e}')
+            return '', 0.0
 
     def _get_shipdb(self) -> ShipDB:
         if self._shipdb is None:

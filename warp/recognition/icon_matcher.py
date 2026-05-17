@@ -43,8 +43,12 @@ MATCH_SIZE          = 64     # resize crop + template to this before matching
 TEMPLATE_THRESHOLD  = 0.55   # min TM_CCOEFF_NORMED score to accept a match
 HIST_WEIGHT         = 0.20   # weight of histogram score when blending with template
 HIST_THRESHOLD      = 0.50   # min histogram correlation to contribute
-ML_TRIGGER_THRESHOLD= 0.50   # if combined conf below this, try ML stage
-FUSION_THRESHOLD    = 0.75   # P8: run ML and fuse scores when template < this
+ML_PRIMARY_THRESHOLD= 0.50   # ML conf >= this → ML is the source of truth
+VIRTUAL_OVERRIDE_CONF = 0.40 # when ML returns a real icon with conf >= this,
+                             # suppress virtual (__empty__/__inactive__)
+                             # session/template candidates
+ML_TRIGGER_THRESHOLD= 0.50   # if combined conf below this, try ML stage (legacy)
+FUSION_THRESHOLD    = 0.75   # P8: run ML and fuse scores when template < this (legacy)
 HIST_BINS           = [18, 16] # H×S bins for _hist_hsv — must match everywhere
 
 HF_REPO_ID          = 'sets-sto/icon-classifier'
@@ -81,6 +85,26 @@ class SETSIconMatcher:
         self._ml_session  = None
         self._ml_disabled = False      # True after first failed download attempt
         self._label_map: dict[int, str] = {}
+        # Metric-learning path: when icon_embedder.pt is present, _ml_session is
+        # the embedder model and _gallery_* hold the k-NN search index. When
+        # _ml_kind=='classifier' (legacy softmax), _gallery_* stay None.
+        self._ml_kind: str = ''        # 'embedder' | 'classifier' | ''
+        self._gallery_emb = None       # np.ndarray (N, D) float32, L2-normed
+        self._gallery_lbl = None       # np.ndarray (N,) int32 — indices into _label_map
+        # Diagnostic: source of the most recent match() decision.
+        # Values: 'ml' (embedder/classifier), 'template' (wiki PNG histogram),
+        # 'session' (confirmed training crop), 'knowledge' (pHash override),
+        # 'none' (no signal above threshold), '' (no match attempted).
+        # Read by warp_importer to expose match source in autodetect logs.
+        self._last_match_src: str = ''
+        # Per-stage raw scores from the most recent match() call. Filled in
+        # before every return path (knowledge / no-candidates / final winner).
+        # Consumed by RecognitionWorker to build the per-image match summary
+        # table. Keys: 'embed', 'soft', 'session', 'template', 'knowledge'.
+        self._last_stage_scores: dict[str, float] = {
+            'embed': 0.0, 'soft': 0.0, 'session': 0.0,
+            'template': 0.0, 'knowledge': 0.0,
+        }
         self._sync_client = sync_client  # WARPSyncClient | None
         self._build_index()
 
@@ -97,34 +121,48 @@ class SETSIconMatcher:
         candidate_names: optional set of allowed item names.
           When provided, only entries in this set are considered.
 
-        Two-phase design — autonomous recognition first, confirmed data as fallback:
-
-          Phase A (autonomous):
-            Stage 0 — community pHash knowledge override
-            Stage 1 — template matching + histogram (SETS wiki-icon cache)
-            Stage 2 — ML classifier (local PyTorch / HF ONNX)
-
-          Phase B (fallback — only when Phase A confidence < TEMPLATE_THRESHOLD):
+        ML-primary design (2026-05-15):
+          Stage 0 — community pHash knowledge override (hard override, trust=1.0)
+          Stage 1 — ML classifier (local PyTorch / HF ONNX) — PRIMARY SOURCE
+                    when ml_conf >= ML_PRIMARY_THRESHOLD AND result is in candidate_names
+          Fallback (only when Stage 1 is uncertain / out of candidates):
+            Stage 2 — template matching + histogram (SETS wiki-icon cache)
             Stage 3 — session examples (confirmed training-data crops)
+            Stage 4 — last resort: weak ML result (better than nothing)
+
+        Rationale: ML is trained on real game-screenshot crops (via
+        sync.py → admin_train.py), so it generalizes to actual rendered
+        icons including virtual states (__empty__, __inactive__). Template
+        matching against wiki PNGs and session examples suffer from HSV-
+        distribution mismatch on dimly-rendered cells, producing false
+        positives (e.g. filled icon → __empty__). Treating ML as primary
+        eliminates that class of error; the fallback chain only kicks in
+        for items genuinely missing from the model's label_map.
 
         Returns:
             (item_name, confidence, thumbnail_QImage, used_session)
             item_name='' and confidence=0.0 if nothing matched.
-            used_session=True means Phase A failed and Phase B rescued the result.
-            Callers should treat used_session=True as a training gap.
+            used_session=True means Stage 3 (session example) rescued the
+            result — a training gap signal for the caller.
         """
         if crop_bgr is None or crop_bgr.size == 0:
+            self._last_match_src = ''
+            self._last_stage_scores = {'embed': 0.0, 'soft': 0.0,
+                                       'session': 0.0, 'template': 0.0,
+                                       'knowledge': 0.0}
             return '', 0.0, None, False
 
         import cv2
+        self._last_match_src = ''
+        self._last_stage_scores = {'embed': 0.0, 'soft': 0.0,
+                                   'session': 0.0, 'template': 0.0,
+                                   'knowledge': 0.0}
 
         crop64 = cv2.resize(crop_bgr, (MATCH_SIZE, MATCH_SIZE),
                             interpolation=cv2.INTER_AREA)
         q_hist = self._hist_hsv(crop64)
 
-        # ── Phase A — autonomous recognition ──────────────────────────────────
-
-        # Stage 0: community pHash knowledge override
+        # Stage 0: community pHash knowledge override (hard override)
         if self._sync_client is not None:
             try:
                 from warp.knowledge.sync_client import _compute_phash
@@ -132,74 +170,109 @@ class SETSIconMatcher:
                 overrides = self._sync_client.get_knowledge()
                 if phash in overrides:
                     name = overrides[phash]
-                    if candidate_names is not None and name not in candidate_names:
+                    # Defense-in-depth: never let knowledge.json hard-override a
+                    # crop to a virtual class (__empty__ / __inactive__) or a
+                    # leftover dev-test entry. Such entries pollute Stage 0 and
+                    # used to silently turn real icons into empty slots at
+                    # conf=1.0. Skip the override — fall through to ML/template.
+                    if name.startswith('__') or name == 'Test Item Name':
+                        log.debug(f'WARPSync: pHash override {name!r} suppressed (virtual/test)')
+                    elif candidate_names is not None and name not in candidate_names:
                         log.debug(f'WARPSync: pHash override {name!r} rejected — not valid for slot')
                     else:
                         log.debug(f'WARPSync: knowledge override → {name!r}')
+                        self._last_match_src = 'knowledge'
+                        self._last_stage_scores['knowledge'] = 1.0
                         return name, 1.0, self._bgr_to_qimage(crop_bgr), False
             except Exception as e:
                 log.debug(f'WARPSync: override lookup failed: {e}')
 
-        # Stages 1+2: template matching + histogram
+        # Stage 1: ML classifier — always consulted (one of three signals)
+        ml_name, ml_conf = ('', 0.0)
+        if not self._ml_disabled:
+            ml_name, ml_conf = self._classify_ml(crop64)
+
+        # Stage 2: template matching + histogram against wiki PNGs
         auto_name  = ''
         auto_score = 0.0
         auto_entry = None
-
         for entry in self._index:
             if candidate_names is not None and entry['name'] not in candidate_names:
                 continue
             res      = cv2.matchTemplate(crop64, entry['tmpl64'],
                                          cv2.TM_CCOEFF_NORMED)
             tm_score = float(res.max())
-            if tm_score < TEMPLATE_THRESHOLD * 0.7:   # early reject
+            if tm_score < TEMPLATE_THRESHOLD * 0.7:
                 continue
-            h_score = float(cv2.compareHist(
-                q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL))
-            if h_score < 0:
-                h_score = 0.0
+            h_score = max(0.0, float(cv2.compareHist(
+                q_hist, entry['hist_hsv'], cv2.HISTCMP_CORREL)))
             combined = tm_score * (1.0 - HIST_WEIGHT) + h_score * HIST_WEIGHT
             if combined > auto_score:
                 auto_score = combined
                 auto_name  = entry['name']
                 auto_entry = entry
 
-        # ── Phase B — session examples (confirmed crops from training data) ────
-        # Checked BEFORE ML: human-confirmed game-screenshot crops take priority
-        # over a model that may confuse visually similar items.
-        # sess_score > auto_score is the guard — template only beats confirmed
-        # crops when template matching is already confident.
+        # Stage 3: session examples (confirmed training-data crops)
         sess_name, sess_score, sess_entry = self._best_session_match(
             crop64, q_hist, candidate_names)
-        if sess_score > auto_score and sess_name:
-            thumb = self._bgr_to_qimage(sess_entry.get('orig')) if sess_entry else None
-            log.debug(f'WARP: session example beats template '
-                      f'({sess_score:.3f} > {auto_score:.3f}) → {sess_name!r}')
-            return sess_name, sess_score, thumb, True
 
-        # Stage 3 (P8 confidence fusion): run ML when template score < FUSION_THRESHOLD.
-        # fused = max(template_conf, 0.4*template_conf + 0.6*ml_conf)
-        # When template is borderline and ML is high, ML name wins with fused confidence.
-        if auto_score < FUSION_THRESHOLD and not self._ml_disabled:
-            ml_name, ml_conf = self._classify_ml(crop64)
-            log.debug(f'WARP: template={auto_score:.3f} ml={ml_conf:.3f} ({ml_name!r})')
-            if ml_name and (candidate_names is None or ml_name in candidate_names):
-                fused = max(auto_score, 0.4 * auto_score + 0.6 * ml_conf)
-                if fused > auto_score:
-                    # Re-check session examples: if confirmed crops still beat ML-fused score, prefer them
-                    if sess_score > fused and sess_name:
-                        thumb = self._bgr_to_qimage(sess_entry.get('orig')) if sess_entry else None
-                        log.debug(f'WARP: session example beats ML-fused '
-                                  f'({sess_score:.3f} > {fused:.3f}) → {sess_name!r}')
-                        return sess_name, sess_score, thumb, True
-                    auto_name  = ml_name
-                    auto_score = fused
-                    auto_entry = None
+        # Record raw per-stage scores for the summary table.
+        if self._ml_kind == 'embedder':
+            self._last_stage_scores['embed'] = float(ml_conf)
+        elif self._ml_kind == 'classifier':
+            self._last_stage_scores['soft']  = float(ml_conf)
+        self._last_stage_scores['template'] = float(auto_score)
+        self._last_stage_scores['session']  = float(sess_score)
 
-        # Phase A result (autonomous)
-        thumb = None
-        if auto_entry is not None and auto_score >= TEMPLATE_THRESHOLD:
-            thumb = self._bgr_to_qimage(auto_entry.get('orig'))
-        return auto_name, auto_score, thumb, False
+        # Combine all signals — strongest wins. No hard threshold here;
+        # caller (warp_importer) applies MIN_ACCEPT_CONF as final gate.
+        # Anti-virtual-bias rule: when ML returned a real icon with decent
+        # confidence (>= VIRTUAL_OVERRIDE_CONF), suppress virtual session /
+        # template matches (__empty__/__inactive__). This is the Bug 2 fix —
+        # session-virtual was beating real ML on filled icons due to HSV
+        # histogram bias of dim cells. ML is still NOT mandatory to win;
+        # template/session with a real icon name can outscore it.
+        ml_real = bool(ml_name) and not ml_name.startswith('__')
+        suppress_virtual = ml_real and ml_conf >= VIRTUAL_OVERRIDE_CONF
+
+        def _virtual(n: str) -> bool:
+            return bool(n) and n.startswith('__')
+
+        candidates = []
+        if sess_name and not (suppress_virtual and _virtual(sess_name)):
+            candidates.append(('session', sess_name, sess_score, sess_entry))
+        if auto_name and not (suppress_virtual and _virtual(auto_name)):
+            candidates.append(('template', auto_name, auto_score, auto_entry))
+        if ml_name and (candidate_names is None or ml_name in candidate_names):
+            candidates.append(('ml', ml_name, ml_conf, None))
+        if not candidates:
+            self._last_match_src = 'none'
+            return '', 0.0, None, False
+        src, name, score, entry = max(candidates, key=lambda x: x[2])
+        # Disambiguate ML source by model kind so logs distinguish the
+        # ArcFace embedder from the legacy softmax classifier.
+        if src == 'ml' and self._ml_kind == 'embedder':
+            self._last_match_src = 'embed'
+        elif src == 'ml':
+            self._last_match_src = 'soft'
+        else:
+            self._last_match_src = src
+        if entry is not None:
+            thumb = self._bgr_to_qimage(entry.get('orig'))
+        else:
+            thumb = self._thumb_for_name(name)
+        return name, score, thumb, (src == 'session')
+
+    def _thumb_for_name(self, name: str) -> object:
+        """Return a QImage thumbnail for an item name by looking it up in the
+        wiki PNG index. Returns None for virtual items (__empty__/__inactive__)
+        or when the name is not in the index."""
+        if not name or name.startswith('__'):
+            return None
+        for entry in self._index:
+            if entry['name'] == name:
+                return self._bgr_to_qimage(entry.get('orig'))
+        return None
 
     def _best_session_match(
         self,
@@ -349,6 +422,9 @@ class SETSIconMatcher:
         model = self._get_ml_session()
         if model is None:
             return '', 0.0
+        # Metric-learning path: model is an Embedder, _gallery_* hold the k-NN index.
+        if self._ml_kind == 'embedder':
+            return self._classify_ml_embed(crop64)
         rgb = cv2.cvtColor(cv2.resize(crop64, (224, 224)), cv2.COLOR_BGR2RGB)
         inp = rgb.astype(np.float32) / 255.0
         # ImageNet normalization (same as T.Normalize in admin_train.py)
@@ -372,6 +448,36 @@ class SETSIconMatcher:
             log.debug(f'WARP: ML classify error: {e}')
             return '', 0.0
 
+    def _classify_ml_embed(self, crop64: np.ndarray) -> tuple[str, float]:
+        """Embed a crop and return the nearest-neighbour label from the gallery.
+
+        Confidence is the cosine similarity to the nearest gallery embedding,
+        clamped to [0, 1] — same range as the softmax classifier's confidence,
+        so the rest of the fallback chain treats both models interchangeably.
+        """
+        import cv2
+        if self._gallery_emb is None or self._gallery_lbl is None:
+            return '', 0.0
+        rgb = cv2.cvtColor(cv2.resize(crop64, (224, 224)), cv2.COLOR_BGR2RGB)
+        inp = rgb.astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        inp = (inp - mean) / std
+        inp = np.expand_dims(np.transpose(inp, (2, 0, 1)), axis=0)
+        try:
+            import torch
+            t = torch.from_numpy(inp)
+            with torch.no_grad():
+                emb = self._ml_session(t).numpy()[0]    # (D,) already L2-normed
+            sims = self._gallery_emb @ emb              # (N,) cosine similarity
+            top = int(np.argmax(sims))
+            best_lbl = int(self._gallery_lbl[top])
+            conf = float(max(0.0, min(1.0, sims[top])))
+            return self._label_map.get(best_lbl, ''), conf
+        except Exception as e:
+            log.debug(f'WARP: ML embed error: {e}')
+            return '', 0.0
+
     def _get_ml_session(self):
         if self._ml_disabled:
             return None
@@ -380,6 +486,53 @@ class SETSIconMatcher:
 
         sets_root  = self._find_sets_root()
         models_dir = sets_root / 'warp' / 'models'
+
+        # Priority 0: metric-learning embedder (icon_embedder.pt + gallery index)
+        # Uses embedder_label_map.json so its class space stays disjoint from
+        # the softmax classifier's label_map.json (different class counts).
+        emb_path     = models_dir / 'icon_embedder.pt'
+        gallery_path = models_dir / 'embedding_index.npz'
+        emb_label    = models_dir / 'embedder_label_map.json'
+        if emb_path.exists() and gallery_path.exists() and emb_label.exists():
+            try:
+                import torch
+                import torch.nn as nn
+                import torch.nn.functional as F
+                from torchvision.models import efficientnet_b0
+                with open(emb_label, encoding='utf-8') as f:
+                    raw = json.load(f)
+                self._label_map = {int(k): v for k, v in raw.items()}
+                # Match admin_train_metric.py architecture: backbone with no classifier,
+                # plus a Linear projection to EMBED_DIM with L2-normalize on output.
+                gallery = np.load(str(gallery_path))
+                embed_dim = int(gallery['embeddings'].shape[1])
+                backbone = efficientnet_b0(weights=None)
+                in_features = backbone.classifier[1].in_features
+                backbone.classifier = nn.Identity()
+
+                class Embedder(nn.Module):
+                    def __init__(self):
+                        super().__init__()
+                        self.backbone = backbone
+                        self.proj = nn.Linear(in_features, embed_dim)
+                    def forward(self, x):
+                        f = self.backbone(x)
+                        return F.normalize(self.proj(f), dim=1)
+
+                model = Embedder()
+                model.load_state_dict(torch.load(str(emb_path), map_location='cpu',
+                                                  weights_only=True))
+                model.eval()
+                self._ml_session = model
+                self._ml_kind = 'embedder'
+                self._gallery_emb = gallery['embeddings'].astype(np.float32)
+                self._gallery_lbl = gallery['labels'].astype(np.int32)
+                log.info(f'WARP: metric-learning embedder loaded '
+                         f'({len(self._label_map)} classes, '
+                         f'gallery={len(self._gallery_emb)}, dim={embed_dim})')
+                return self._ml_session
+            except Exception as e:
+                log.warning(f'WARP: embedder load failed: {e} — falling back to classifier')
 
         # Priority 1: locally trained PyTorch model (.pt)
         pt_path    = models_dir / 'icon_classifier.pt'
@@ -400,6 +553,7 @@ class SETSIconMatcher:
                                                   weights_only=True))
                 model.eval()
                 self._ml_session = model
+                self._ml_kind = 'classifier'
                 log.info(f'WARP: local PyTorch icon classifier loaded ({n_classes} classes)')
                 return self._ml_session
             except Exception as e:
@@ -417,6 +571,7 @@ class SETSIconMatcher:
                 with open(hf_label, encoding='utf-8') as f:
                     raw = json.load(f)
                     self._label_map = {int(k): v for k, v in raw.items()}
+                self._ml_kind = 'classifier'
                 log.info('WARP: HuggingFace ONNX icon classifier loaded')
                 return self._ml_session
             except Exception as e:

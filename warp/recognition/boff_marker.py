@@ -241,14 +241,13 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
             ar = w / max(h, 1)
             if ar < ar_min or ar > ar_max:
                 continue
-            if area < (w * h) * fill_min:
-                continue
             sel = m[y:y + h, x:x + w] > 0
             if sel.sum() < 20:
                 continue
             crop_v = hsv[y:y + h, x:x + w, 2][sel]
             crop_h = hsv[y:y + h, x:x + w, 0][sel]
-            if float(np.std(crop_v)) > uni_v_max:
+            v_std = float(np.std(crop_v))
+            if v_std > uni_v_max:
                 continue
             h_std = min(
                 float(np.std(crop_h)),
@@ -256,13 +255,23 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
             )
             if h_std > uni_h_max:
                 continue
+            # Strong-uniformity bypass for fill/edge: a flat colour bar
+            # (low v_std, low h_std) IS a marker. Spec stripes (e.g. MW
+            # lime on Engineering) break the main-zone CC short and add
+            # a transition that bumps Canny edge_frac just past the
+            # baseline — relax both thresholds when uniformity is high.
+            strong_uniform = v_std <= 20 and h_std <= 4
+            fill_thr = 0.60 if strong_uniform else fill_min
+            edge_thr = 0.12 if strong_uniform else edge_max
+            if area < (w * h) * fill_thr:
+                continue
             ix0 = x + edge_inset; iy0 = y + edge_inset
             ix1 = x + w - edge_inset; iy1 = y + h - edge_inset
             if ix1 > ix0 and iy1 > iy0:
                 edge_crop = edges[iy0:iy1, ix0:ix1]
                 edge_frac = float(edge_crop.sum() / 255.0) / (
                     (ix1 - ix0) * (iy1 - iy0))
-                if edge_frac > edge_max:
+                if edge_frac > edge_thr:
                     continue
             dup = False
             for (px, py, pw, ph) in seen_rects:

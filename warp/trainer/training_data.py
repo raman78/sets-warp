@@ -79,6 +79,7 @@ class Annotation:
     ml_conf:  float = 0.0     # original ML recognition confidence (0.0 = unknown)
     ml_name:  str  = ""       # what ML originally recognised (may differ from confirmed name)
     crop_name: str = ""       # relative path of saved crop PNG (set by _export_crop)
+    auto_confirmed: bool = False  # True if confirmed by auto-accept threshold (yellow), False if user-confirmed (green)
 
     def __post_init__(self):
         if not self.ann_id:
@@ -121,6 +122,18 @@ class TrainingDataManager:
                 logger.info(f'TrainingDataManager: auto-repaired {repaired} crop_index entries')
         except Exception as e:
             logger.warning(f'TrainingDataManager: repair_crop_index failed: {e}')
+        # Sweep crops left behind by the pre-fix correction bugs:
+        # - crop_index entries whose ann_id no longer matches any annotation
+        # - crop_index entries whose slot/name diverged from the annotation
+        # - crop PNG files on disk that no longer have any crop_index entry
+        try:
+            n_orphan, n_resync, n_stale_files = self.cleanup_orphaned_crops()
+            if n_orphan or n_resync or n_stale_files:
+                logger.info(
+                    f'TrainingDataManager: cleanup — {n_orphan} orphaned entries, '
+                    f'{n_resync} label re-syncs, {n_stale_files} unindexed PNGs removed')
+        except Exception as e:
+            logger.warning(f'TrainingDataManager: cleanup_orphaned_crops failed: {e}')
 
     # ---------------------------------------------------------------- annotation CRUD
 
@@ -144,6 +157,7 @@ class TrainingDataManager:
         state: AnnotationState = AnnotationState.PENDING,
         ml_conf: float = 0.0,
         ml_name: str = "",
+        auto_confirmed: bool = False,
     ) -> Annotation:
         """Add or update annotation, treating the same bbox as the same annotation.
 
@@ -156,7 +170,8 @@ class TrainingDataManager:
           4. Insert as new annotation
         """
         ann = Annotation(bbox=bbox, slot=slot, name=name, state=state,
-                         ml_conf=ml_conf, ml_name=ml_name)
+                         ml_conf=ml_conf, ml_name=ml_name,
+                         auto_confirmed=auto_confirmed)
         key = image_path.name
         if key not in self._annotations:
             self._annotations[key] = []
@@ -168,12 +183,25 @@ class TrainingDataManager:
 
         _log.debug(f'add_annotation: img={key} slot={slot!r} bbox={bbox} state={state} ann_id={ann.ann_id}')
 
-        # 1. Update in-place if ann_id already exists (exact match — fast path)
+        # 1. Update in-place if ann_id already exists (exact match — fast path).
+        # ann_id = hash(bbox + slot), so step 1 fires when only name/state/ml_*
+        # changed. We still call _sync_crop_index so the crop PNG gets renamed
+        # to match the new name and crop_index entry is refreshed — otherwise
+        # corrections (user edits the item name) would leave the old crop on
+        # disk under the old filename and the index/HF upload would carry the
+        # stale name forever.
         for i, d in enumerate(self._annotations[key]):
             if d.get('ann_id') == ann.ann_id:
                 _log.debug(f'add_annotation: step1 hit — updating in-place (ann_id={ann.ann_id})')
+                old_name = d.get('name', '')
+                old_state = d.get('state', '')
                 self._annotations[key][i] = asdict(ann)
                 self._dirty = True
+                if old_name != ann.name or old_state != ann.state:
+                    try:
+                        self._sync_crop_index(image_path, ann)
+                    except Exception as e:
+                        logger.warning(f"step1: crop_index sync failed for {image_path.name}: {e}")
                 return ann
 
         # 2. Fallback: same bbox, slot was edited → update in-place without duplicating
@@ -183,10 +211,22 @@ class TrainingDataManager:
         if slot not in NON_ICON_SLOTS:
             for i, d in enumerate(self._annotations[key]):
                 if tuple(d.get('bbox', [])) == bbox_t:
+                    old_ann_id = d.get('ann_id', '')
                     _log.debug(f'add_annotation: step2 hit — slot change on same bbox '
-                               f'old_slot={d.get("slot")!r} -> {slot!r}')
+                               f'old_slot={d.get("slot")!r} -> {slot!r} '
+                               f'old_ann_id={old_ann_id} -> {ann.ann_id}')
                     self._annotations[key][i] = asdict(ann)
                     self._dirty = True
+                    # Cleanup crop PNG + crop_index entry tied to the OLD ann_id —
+                    # otherwise the old slot label stays in the dataset forever.
+                    if old_ann_id and old_ann_id != ann.ann_id:
+                        self._cleanup_crops_for_ann_id(old_ann_id)
+                    # Export new crop + index entry under the new ann_id.
+                    try:
+                        self._export_crop(image_path, ann)
+                        self._sync_crop_index(image_path, ann)
+                    except Exception as e:
+                        logger.warning(f"step2: export/sync failed for {image_path.name}: {e}")
                     return ann
 
         # 3. Single-instance slots: drop any existing confirmed annotation for
@@ -245,21 +285,53 @@ class TrainingDataManager:
         self, image_path: Path, ann: Annotation,
         bbox: tuple | None = None,
     ):
-        """Update an existing annotation in-place (matched by ann_id).
-        If bbox is provided, replaces ann.bbox before saving.
+        """Update an existing annotation in-place (matched by OLD ann_id).
+        If bbox is provided, replaces ann.bbox before saving — the new ann_id
+        is recomputed, but lookup MUST still use the original ann_id so the
+        old dict can be found and the stale crop cleaned up.
         If state is CONFIRMED, also updates crop_index and re-exports crop."""
         from dataclasses import replace as dc_replace
+        # Preserve the ORIGINAL ann_id for lookup before dc_replace recomputes it.
+        old_ann_id = ann.ann_id
         if bbox is not None:
             ann = dc_replace(ann, bbox=bbox)
         key = image_path.name
         dicts = self._annotations.get(key, [])
         for i, d in enumerate(dicts):
-            if d.get("ann_id") == ann.ann_id:
+            if d.get("ann_id") == old_ann_id:
                 dicts[i] = asdict(ann)
                 self._dirty = True
+                # bbox change → ann_id changes → old crop file/index entry are
+                # now stale. Remove them and re-export under the new ann_id.
+                if old_ann_id != ann.ann_id:
+                    self._cleanup_crops_for_ann_id(old_ann_id)
+                    try:
+                        self._export_crop(image_path, ann)
+                    except Exception as e:
+                        logger.warning(f"update_annotation: export failed for {image_path.name}: {e}")
                 # Sync crop_index state + re-export crop if confirmed
                 self._sync_crop_index(image_path, ann)
                 return
+
+    def _cleanup_crops_for_ann_id(self, ann_id: str) -> int:
+        """Remove crop_index entries + crop PNG files whose filename contains
+        the given ann_id. Returns number of files removed.
+
+        Used when an annotation's ann_id changes (slot or bbox edit) — the
+        crop file is named with the OLD ann_id and would otherwise leak into
+        the dataset under stale slot/name forever.
+        """
+        if not ann_id:
+            return 0
+        to_remove = [f for f in self._crop_index if ann_id in f]
+        for fname in to_remove:
+            del self._crop_index[fname]
+            crop_path = self._dir / self.CROPS_DIR / fname
+            if crop_path.exists():
+                crop_path.unlink()
+        if to_remove:
+            self._dirty = True
+        return len(to_remove)
 
     def remove_annotation(self, image_path: Path, ann: Annotation):
         """Remove an annotation by ann_id and clean up its crop_index entry + PNG."""
@@ -267,13 +339,7 @@ class TrainingDataManager:
         dicts = self._annotations.get(key, [])
         self._annotations[key] = [d for d in dicts if d.get("ann_id") != ann.ann_id]
         self._dirty = True
-        # Remove matching crop_index entries (filename contains ann_id) and crop PNG
-        to_remove = [f for f in self._crop_index if ann.ann_id in f]
-        for fname in to_remove:
-            del self._crop_index[fname]
-            crop_path = self._dir / self.CROPS_DIR / fname
-            if crop_path.exists():
-                crop_path.unlink()
+        self._cleanup_crops_for_ann_id(ann.ann_id)
 
     # ---------------------------------------------------------------- persistence
 
@@ -508,6 +574,94 @@ class TrainingDataManager:
                 logger.info(f'repair_crop_index: fixed {repaired} entries')
         return repaired
 
+    def cleanup_orphaned_crops(self) -> tuple[int, int, int]:
+        """Sweep stale data left by the pre-fix correction bugs.
+
+        Returns (orphaned_entries_removed, label_resyncs, stale_png_files_removed).
+
+        Three classes of pollution this handles:
+          1. crop_index entry whose ann_id is not present in annotations.json
+             at all (annotation was deleted, slot or bbox changed without
+             cleanup). The entry + PNG are dropped.
+          2. crop_index entry whose ann_id matches an existing annotation
+             but the slot/name diverged from the current annotation values
+             (user corrected the name; old code skipped _sync_crop_index).
+             The PNG is renamed to match the current label and the index
+             entry is overwritten.
+          3. PNG files on disk inside crops/ that are not referenced by any
+             crop_index entry. Removed to reclaim space.
+        """
+        # Build {ann_id: (image_name, dict)} for fast lookup.
+        ann_by_id: dict[str, tuple[str, dict]] = {}
+        for image_name, ann_list in self._annotations.items():
+            for d in ann_list:
+                aid = d.get('ann_id')
+                if aid:
+                    ann_by_id[aid] = (image_name, d)
+
+        orphaned = 0
+        resynced = 0
+        crops_dir = self._dir / self.CROPS_DIR
+
+        # Pass 1+2: walk crop_index, fix or drop entries.
+        for fname in list(self._crop_index.keys()):
+            entry = self._crop_index.get(fname, {})
+            # Filename schema: '{slot}__{name}__{ann_id}.png'
+            stem = fname.rsplit('.', 1)[0]
+            parts = stem.split('__')
+            if len(parts) < 3:
+                continue  # unknown shape, leave alone
+            ann_id = parts[-1]
+            match = ann_by_id.get(ann_id)
+            if match is None:
+                # Orphaned — annotation gone or ann_id changed without cleanup.
+                del self._crop_index[fname]
+                p = crops_dir / fname
+                if p.exists():
+                    p.unlink()
+                orphaned += 1
+                self._dirty = True
+                continue
+            _img_name, ann_d = match
+            cur_slot = ann_d.get('slot', '')
+            cur_name = ann_d.get('name', '')
+            idx_slot = entry.get('slot', '')
+            idx_name = entry.get('name', '')
+            if cur_slot != idx_slot or cur_name != idx_name:
+                # Rename file to match current label.
+                safe_slot = cur_slot.replace(' ', '_').lower()
+                safe_name = (cur_name or 'unknown').replace(' ', '_').lower()[:40]
+                new_fname = f'{safe_slot}__{safe_name}__{ann_id}.png'
+                old_path = crops_dir / fname
+                new_path = crops_dir / new_fname
+                if old_path.exists() and not new_path.exists():
+                    old_path.rename(new_path)
+                del self._crop_index[fname]
+                new_entry = dict(entry)
+                new_entry['slot'] = cur_slot
+                new_entry['name'] = cur_name
+                self._crop_index[new_fname] = new_entry
+                resynced += 1
+                self._dirty = True
+
+        # Pass 3: walk crops/ dir, drop PNGs not in the index.
+        stale_files = 0
+        if crops_dir.exists():
+            indexed = set(self._crop_index.keys())
+            for p in crops_dir.iterdir():
+                if not p.is_file() or p.suffix.lower() != '.png':
+                    continue
+                if p.name not in indexed:
+                    try:
+                        p.unlink()
+                        stale_files += 1
+                    except Exception as e:
+                        logger.warning(f'cleanup: cannot remove {p.name}: {e}')
+
+        if orphaned or resynced or stale_files:
+            self.save()
+        return orphaned, resynced, stale_files
+
     def get_confirmed_crops(self) -> list[dict]:
         """
         Returns list of confirmed crop metadata dicts for upload.
@@ -634,4 +788,5 @@ class TrainingDataManager:
             ann_id=d.get("ann_id", ""),
             ml_conf=float(d.get("ml_conf", 0.0)),
             ml_name=d.get("ml_name", ""),
+            auto_confirmed=bool(d.get("auto_confirmed", False)),
         )

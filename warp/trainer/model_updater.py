@@ -39,8 +39,14 @@ _BACKEND_URL          = 'https://sets-warp-backend.onrender.com'
 _CHECK_INTERVAL_HOURS = 0.25        # minimum hours between remote checks (15 min)
 _VERSION_CACHE_FILE   = 'warp/models/model_version_remote_cache.json'
 _CONNECT_TIMEOUT      = 5           # seconds
-_READ_TIMEOUT         = 15          # seconds
-_RETRY_DELAYS_MIN     = (5, 15, 60, 240)  # backoff schedule on network failure
+# Render free tier cold-starts in ~50 s. 60 s read-timeout covers the wake-up;
+# anything shorter guarantees the very first call after idle will fail.
+# Matches CONTRIBUTE_TIMEOUT in sync_client.py for the same reason.
+_READ_TIMEOUT         = 60          # seconds
+# First retry shortened from 5 → 1 min so we re-hit the backend while it is
+# still warm from our previous attempt (Render sleeps after 15 min idle, but
+# stays warm for several minutes after any request).
+_RETRY_DELAYS_MIN     = (1, 5, 15, 60)    # backoff schedule on network failure
 _MODEL_FILES          = [           # files to download from HF knowledge repo
     ('models/icon_classifier.pt',            'icon_classifier.pt'),
     ('models/label_map.json',               'label_map.json'),
@@ -50,6 +56,12 @@ _MODEL_FILES          = [           # files to download from HF knowledge repo
     ('models/screen_classifier_labels.json', 'screen_classifier_labels.json'),
     ('models/community_anchors.json',           'community_anchors.json'),        # P11 — optional
     ('models/ship_type_corrections.json',       'ship_type_corrections.json'),    # OCR correction map — optional
+    # ArcFace metric-learning embedder — optional, takes priority over softmax
+    # in icon_matcher when present. Uploaded by admin_train_metric.py.
+    ('models/icon_embedder.pt',                 'icon_embedder.pt'),
+    ('models/embedder_label_map.json',          'embedder_label_map.json'),
+    ('models/icon_embedder_meta.json',          'icon_embedder_meta.json'),
+    ('models/embedding_index.npz',              'embedding_index.npz'),
 ]
 # Used only for the one-time "download if missing" fallback
 _SCREEN_CLASSIFIER_FILES = [
@@ -105,7 +117,8 @@ class ModelUpdater:
             # check regardless of the rate-limit cache (the cache may exist from a prior
             # attempt that returned "no model published yet").
             model_missing = not (models_dir / 'model_version.json').exists()
-            if not model_missing and not self._due_for_check(sets_root):
+            embedder_stale = self._embedder_needs_refresh(models_dir)
+            if not model_missing and not embedder_stale and not self._due_for_check(sets_root):
                 return
 
             log.info('ModelUpdater: checking for remote model update...')
@@ -143,12 +156,22 @@ class ModelUpdater:
             remote_ts = remote.get('trained_at', '')
 
             if local_ts and remote_ts <= local_ts:
-                log.info(
-                    f'ModelUpdater: local model is current '
-                    f'(local={local_ts[:10]}, remote={remote_ts[:10]})'
-                )
-                self._save_check_timestamp(sets_root)
-                return
+                # One-time self-heal: older client versions did not download the
+                # ArcFace embedder files. If the local embedder_label_map.json
+                # still contains snake_case labels (= pre-cleanup), or the
+                # embedder files are missing, force a redownload anyway.
+                if self._embedder_needs_refresh(models_dir):
+                    log.info(
+                        'ModelUpdater: softmax model is current but embedder '
+                        'files are stale/missing — forcing redownload'
+                    )
+                else:
+                    log.info(
+                        f'ModelUpdater: local model is current '
+                        f'(local={local_ts[:10]}, remote={remote_ts[:10]})'
+                    )
+                    self._save_check_timestamp(sets_root)
+                    return
 
             log.info(
                 f'ModelUpdater: remote model is newer '
@@ -373,6 +396,35 @@ class ModelUpdater:
             return (warp_dir / 'hub_token.txt').read_text().strip()
         except Exception:
             return ''
+
+    @staticmethod
+    def _embedder_needs_refresh(models_dir: Path) -> bool:
+        """
+        Return True if the local ArcFace embedder is missing or stale.
+
+        Stale = embedder_label_map.json has snake_case labels (pre-cleanup,
+        pre-2026-05-16). These were trained on un-sanitized HF crops and emit
+        names like 'miniaturized_chrono-capacitor' that don't match the SETS
+        canonical name cache.
+        """
+        emb_pt    = models_dir / 'icon_embedder.pt'
+        emb_label = models_dir / 'embedder_label_map.json'
+        emb_index = models_dir / 'embedding_index.npz'
+        if not (emb_pt.exists() and emb_label.exists() and emb_index.exists()):
+            return True
+        try:
+            raw = json.loads(emb_label.read_text(encoding='utf-8'))
+            # snake_case heuristic: underscore between two lowercase letters in
+            # a label. Pretty labels use spaces. Allow a small false-positive
+            # threshold for legitimate names like 'beam_array' which don't exist
+            # in canonical SETS naming.
+            n_snake = sum(
+                1 for v in raw.values()
+                if isinstance(v, str) and '_' in v and v == v.lower()
+            )
+            return n_snake > 5
+        except Exception:
+            return False
 
     @staticmethod
     def _read_local_trained_at(models_dir: Path) -> str:

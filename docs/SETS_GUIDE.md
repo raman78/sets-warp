@@ -72,8 +72,8 @@ The window is split into two areas:
 |--------|--------|
 | **Export** | Opens the Export window — generates a shareable build summary (Markdown/text). |
 | **Settings** | Opens the Settings tab in the build area. |
-| **WARP** | Opens the WARP import dialog (SETS+WARP installation only). |
-| **WARP CORE** | Opens the WARP CORE annotation and training window (SETS+WARP only). |
+| **WARP** | Opens the WARP import dialog (SETS+WARP installation only). Pick a folder of screenshots → WARP recognises them and writes the result straight into the current build (selects ship, fills equipment, traits, BOFFs, autosaves). See **[WARP_GUIDE.md §2](WARP_GUIDE.md#2-using-warp--import-a-build)**. |
+| **WARP CORE** | Opens the WARP CORE annotation and training window (SETS+WARP only). Use it to review/correct what WARP detected and contribute confirmed crops back to the community model. See **[WARP_GUIDE.md §3–§4](WARP_GUIDE.md#3-warp-core--interface-overview)**. |
 
 ---
 

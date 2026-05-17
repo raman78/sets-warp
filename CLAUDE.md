@@ -1,5 +1,14 @@
 # SETS-WARP — Claude Code Context
 
+## Diagnostic scripts (`tests/diag_*.py`)
+
+These are **local-only developer benchmarks / ad-hoc probes** — ignored by
+git (`tests/diag_*.py` in `.gitignore`) and not part of the test suite.
+References to specific `diag_*.py` paths elsewhere in this doc are for
+on-disk reproduction by the maintainer, not a guarantee the file is in
+the repo. Anyone cloning fresh will not have them; ask the maintainer
+to share if needed.
+
 ## Language rules
 
 **All code must be in English** — comments, log messages, docstrings, variable names, string literals visible in logs. No Polish in source files. When editing existing code that contains Polish log messages or comments, translate them to English.
@@ -125,10 +134,111 @@ Replaced with `torch.save(model.state_dict(), 'model.pt')`.
 
 4. **Layout detection** (`layout_detector.py`):
    - Strategy 1: confirmed annotations as direct bboxes (most accurate)
-   - Strategy 2: pixel analysis (counts bright cells right-to-left)
+   - Strategy 2: pixel analysis — OCR-anchored EQ geometry (see below)
      - Single-slot rows (Deflector=1, Engines=1, etc.) always use profile count exactly
    - Strategy 3: learned layouts (anchors.json)
    - Strategy 4: default calibration anchors
+
+### EQ panel geometry detector (`eq_geometry.py`)
+
+Single source of truth for the 6-cell × N-row equipment matrix used by
+SPACE/GROUND/MIXED equipment pipelines. Pure detection — no annotations.json
+access, no GT look-up.
+
+`detect_eq_geometry(img) → EQGeometry | None` returns:
+- `panel_x_start`, `panel_right`, `final_dx`, `row_pitch`, `row_cys`, `mode`
+
+Pipeline:
+1. EasyOCR full image → label tokens
+2. Classify tokens (fore/aft/weapons/consoles/...) + 2-line composite pairing
+3. **X-cluster canonical-named hits** by x1; keep the LARGEST group as the EQ
+   column. Discards off-panel labels (HUD "Shields", specialization
+   "Miracle Worker", etc.)
+4. `detect_stripe_start` (HSV gradient) per label → `panel_x_start` (median)
+5. `row_pitch` = median of cy-gaps / canonical-step-count between EQ-column hits
+6. `est_dx = row_pitch × 0.725`
+7. `_detect_right_edge_adaptive_bg` (RTL adaptive-bg scan, requires 2
+   consecutive bright columns above `min(col_means) + 12`) on canonical
+   single-slot rows (Deflector / Engines / Warp Core / Shields) → `panel_right`
+8. Math fallback when no single-slot row scan succeeds:
+   `panel_right = panel_x_start + 6 × est_dx`
+9. `final_dx = (panel_right − panel_x_start) / 6`
+10. `row_cys` from EQ-column OCR hits + linear interpolation between
+    consecutive cys (no extrapolation beyond first/last anchor)
+
+**`DX_RATIO = 0.725`** — derived from statistical measurement across 38
+GT-annotated screens (median ratio of GT dx to OCR-derived row_pitch).
+Stdev ~0.03. Used only as default multiplier for `est_dx` — `final_dx`
+is recomputed from the pixel-detected `panel_right` whenever possible.
+Replaces an older `row_pitch / 1.5 + 3` formula which underestimated
+dx by ~1.3 px/cell on big-icon panels.
+
+Wired into `LayoutDetector`:
+- `_get_eq_geometry(img)` — per-image cache keyed by `id(img)`, shares one
+  OCR run across all callers
+- `_find_panel_right_edge(img)` — uses `geom.panel_right` when EQ labels
+  found, falls back to brightness-histogram (`_find_panel_right_edge_brightness`)
+- `_detect_via_pixel_analysis(img, slot_order, profile)` — uses
+  `geom.row_cys` (one per slot, top→bottom), `geom.final_dx` as cell width,
+  `geom.row_pitch × 0.85` as icon height. Falls back to
+  `_detect_via_pixel_analysis_legacy` (row-separator brightness scan) when
+  geometry detection fails
+- **SPACE_MIXED / GROUND_MIXED Strategy 1**: `_detect_via_pixel_analysis`
+  (EQ grid) + `_detect_traits_via_ocr` (5-column trait grid using
+  `geom.final_dx`/`geom.row_pitch`) + BOFF marker/in_mixed merge.
+  Single EQ source of truth shared with SPACE_EQ/GROUND_EQ — eliminates
+  the older divergent cluster-vote `panel_right` in
+  `_detect_via_ocr_anchored`, which is retained as Strategy 1a fallback
+  for cases where `geom` is unavailable.
+
+BOFF and trait detection paths (Strategy 0 marker/grid detectors) do NOT
+go through `_detect_via_pixel_analysis` and are unaffected.
+
+### Ground EQ geometry detector (`ground_eq_geometry.py`)
+
+OCR-anchored prototype for the GROUND EQ panel (separate topology from
+the 6×N space matrix). Pure detection — no annotations.json access.
+
+Slots (top→bottom): Kit Modules (1 row, ≤7 cells, left-shifted from the
+main block), Kit, Body Armor + EV Suit (side by side), Personal Shield,
+Weapons (2 cells stacked at col_left), Ground Devices (2 cols × N rows,
+inset ±cell_w×0.05 horizontally and −cell_h×0.025 vertically vs. the
+Body/EV Suit axis).
+
+OCR anchors: 7 labels above the icon blocks ("Kit Modules", "Kit",
+"Body", "EV Suit", "Shields", "Weapons", "Devices"). "Shields:" with
+trailing colon (HUD stat) is rejected by suffix + x-position filter.
+
+Empirical calibration (12 GT screens):
+- `CELL_H_RATIO = 0.615` — icon_h / row_pitch
+- `CELL_W_RATIO = 0.78`  — icon_w / icon_h (ground icons are tall)
+- `LABEL_TO_ROW_RATIO = 0.46` — label_cy + 0.46×row_pitch = icon_cy
+- `SLOT_X_NUDGE_RATIO = 0.025` — all non-Devices slots shifted +1 px
+  right relative to OCR label (cell_w×0.025)
+- `DEVICES_INSET_X_RATIO = 0.05`, `DEVICES_INSET_Y_RATIO = 0.025` —
+  Devices column inset from Body/EV Suit axis + lift up
+- `KM_PITCH_OFFSET = 3`, `WEAPONS_STACK_OFFSET = 7`
+
+Benchmark (`tests/diag_ground_eq_proto.py`, IoU≥0.30):
+- Overall recall **94.4%**, precision **91.2%**, mean IoU **0.814**.
+- 100% recall on Body Armor / Personal Shield / Weapons.
+- KM recall **90.3%** — lost cells correlate with OCR failure on small
+  res (Screenshot_2025-03-19, 572×477) and one 7-cell KM row (dyson).
+
+Wired into `LayoutDetector`:
+- `_get_ground_eq_geometry(img)` — per-image cache (parallel to
+  `_get_eq_geometry`).
+- `_detect_via_ground_geometry(img, profile)` — calls
+  `detect_ground_eq_geometry` + `project_cells`, trims `Kit Modules` /
+  `Ground Devices` lists to profile counts.
+- `detect()` routes `build_type == 'GROUND'` through ground geometry as
+  Strategy 1; falls through to learned/pixel-legacy on failure.
+- `GROUND_MIXED` block tries ground geometry first inside the MIXED
+  Strategy 1; on success merges OCR-driven trait detection (cell_w /
+  icon_h derived from `ground_geom.cell_w/cell_h`) + marker BOFFs.
+
+Visualization + regression benchmark live in
+`tests/diag_ground_eq_proto.py` / `tests/_diag_out/ground_eq_proto/`.
 
 5. **Icon matching** (`icon_matcher.py`):
    - Template matching (session examples) → HSV histogram k-NN → local PyTorch EfficientNet → HF ONNX fallback

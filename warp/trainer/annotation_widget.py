@@ -100,6 +100,9 @@ class AnnotationWidget(QWidget):
         # Handle size in screen pixels
         self._HANDLE = 9
 
+        # EQ panel geometry overlay (set after auto-detect; cleared on image change)
+        self._eq_geom = None
+
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -122,9 +125,50 @@ class AnnotationWidget(QWidget):
         self._zoom_ox = 0.0
         self._zoom_oy = 0.0
         self._user_scale  = None   # reset to fit-to-window on every image load
+        self._eq_geom     = None   # invalidate geom overlay until next auto-detect
         self._compute_transform()
         self.adjustSize()
         self.setFocus()
+        self.update()
+
+    def set_eq_geom(self, geom) -> None:
+        """Attach EQ panel geometry for grid overlay; pass None to clear."""
+        self._eq_geom = geom
+        # Diagnostic dump: log each review item's bbox alongside expected geom
+        # cell so a shifted/wrong-size canvas display can be traced back to its
+        # source (detection / confirmed merge / preserve_confirmed).
+        if geom is not None and getattr(geom, 'row_cys', None):
+            try:
+                from src.setsdebug import log as _slog
+                dx_f = float(geom.final_dx)
+                ph = int(round(geom.row_pitch * 0.85))
+                cys = list(geom.row_cys)
+                _slog.info(
+                    f'AnnotationWidget: geom panel_x={geom.panel_x_start} '
+                    f'panel_right={geom.panel_right} dx={dx_f:.2f} '
+                    f'cell={int(round(dx_f))}x{ph} rows={len(cys)} cys={cys}')
+                for i, ri in enumerate(self._review_items):
+                    bb = ri.get('bbox')
+                    if not bb: continue
+                    bx, by, bw, bh = bb
+                    if bx < geom.panel_x_start - 5 or bx > geom.panel_right + 5:
+                        continue  # outside EQ panel — boff/trait/etc.
+                    # Closest row cy
+                    row_cy = min(cys, key=lambda c: abs(c - (by + bh // 2)))
+                    row_y = row_cy - ph // 2
+                    # Closest column j (0=rightmost in panel)
+                    rel = geom.panel_right - bx
+                    j = max(0, int(round(rel / dx_f)) - 1)
+                    cell_x = int(round(geom.panel_right - (j + 1) * dx_f)) + 1
+                    dx_off = bx - cell_x
+                    dy_off = by - row_y
+                    _slog.info(
+                        f'  [{i:2d}] {ri.get("slot","?"):25s} bbox=({bx},{by},{bw},{bh}) '
+                        f'state={ri.get("state","?")} '
+                        f'cell=({cell_x},{row_y},{int(round(dx_f))},{ph}) '
+                        f'Δ=({dx_off:+},{dy_off:+}) Δsize=({bw-int(round(dx_f)):+},{bh-ph:+})')
+            except Exception as _e:
+                pass
         self.update()
 
     def refresh_annotations(self, path: Path):
@@ -141,6 +185,7 @@ class AnnotationWidget(QWidget):
         elif self._selected_idx >= 0:
             ann = self._annotations[self._selected_idx]
             ann.slot = slot; ann.name = name; ann.state = AnnotationState.CONFIRMED
+            ann.auto_confirmed = False
             self._data_mgr.update_annotation(self._img_path, ann)
             self._annotations = self._data_mgr.get_annotations(self._img_path)
         self.update()
@@ -199,21 +244,36 @@ class AnnotationWidget(QWidget):
             painter.fillRect(self.rect(), QColor("#1a1a1a")); painter.setPen(QColor("#888888")); painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No image loaded\nOpen a folder to start")
             return
 
+        # EQ geometry overlay — 6×N grid in faint blue, drawn below bboxes.
+        # Disabled by default; re-enable for visual diagnostics of detector grid alignment.
+        # if self._eq_geom is not None and getattr(self._eq_geom, 'row_cys', None):
+        #     geom = self._eq_geom
+        #     dx_f = float(geom.final_dx)
+        #     cell_w = max(1, int(round(dx_f)))
+        #     ph = max(1, int(round(geom.row_pitch * 0.85)))
+        #     pen = QPen(QColor(80, 160, 255, 180), 1, Qt.PenStyle.SolidLine)
+        #     painter.setPen(pen); painter.setBrush(Qt.BrushStyle.NoBrush)
+        #     for cy in geom.row_cys:
+        #         y_top = cy - ph // 2
+        #         for j in range(6):
+        #             bx = int(round(geom.panel_right - (j + 1) * dx_f)) + 1
+        #             painter.drawRect(self._img_to_screen_rect((bx, y_top, cell_w, ph)))
+
         # Z-ORDER DRAWING:
         # 1. Background (unselected) items
         for idx, ri in enumerate(self._review_items):
             if idx == self._selected_row or idx == self._highlighted_row: continue
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, False)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, False, ri.get('auto_confirmed', False))
 
         # 2. Highlighted item (Red Dashed)
         if self._highlighted_row != -1 and self._highlighted_row < len(self._review_items) and self._highlighted_row != self._selected_row:
             ri = self._review_items[self._highlighted_row]
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, True)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), False, True, ri.get('auto_confirmed', False))
 
         # 3. Selected item (Full Edit with handles)
         if self._selected_row != -1 and self._selected_row < len(self._review_items):
             ri = self._review_items[self._selected_row]
-            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), True, False)
+            self._draw_review_item(painter, ri.get('bbox'), ri.get('state'), ri.get('name',''), ri.get('slot',''), True, False, ri.get('auto_confirmed', False))
 
         # In-progress drawing (while dragging)
         if self._drawing and self._draw_start and self._draw_current:
@@ -228,18 +288,26 @@ class AnnotationWidget(QWidget):
         'confirmed': QColor( 60, 220, 100, 220),
         'new':       QColor(220,  80,  80, 220),
     }
+    # Auto-confirmed (computer-confirmed via auto-accept threshold) — yellow
+    # so the user can distinguish them at a glance from green user-confirmed.
+    _AUTO_CONFIRMED_COLOR = QColor(255, 200, 0, 220)
     # Text/fixed-value slots (Ship Name/Type/Tier) use cyan — visually distinct
     # from icon slots; signals "bbox saved for layout learning, no ML crop"
     _TEXT_SLOT_COLOR = QColor(0, 200, 220, 220)
 
-    def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, selected: bool, highlighted: bool):
+    def _draw_review_item(self, painter: QPainter, bbox: tuple, state: str, name: str, slot: str, selected: bool, highlighted: bool, auto_confirmed: bool = False):
         if not bbox: return
         try:
             from warp.trainer.training_data import NON_ICON_SLOTS
             is_text_slot = slot in NON_ICON_SLOTS
         except Exception:
             is_text_slot = False
-        base_color = self._TEXT_SLOT_COLOR if is_text_slot else self._STATE_COLOR.get(state, QColor(200, 200, 200, 180))
+        if is_text_slot:
+            base_color = self._TEXT_SLOT_COLOR
+        elif state == 'confirmed' and auto_confirmed:
+            base_color = self._AUTO_CONFIRMED_COLOR
+        else:
+            base_color = self._STATE_COLOR.get(state, QColor(200, 200, 200, 180))
         if highlighted and not selected:
             color = base_color; pw = SELECTED_PEN_WIDTH + 1; style = Qt.PenStyle.DashLine
         elif selected:
@@ -314,10 +382,6 @@ class AnnotationWidget(QWidget):
             return
         self._alt_draw = False
         if self._draw_mode_forced:
-            if self._selected_idx >= 0:
-                handle = self._handle_hit_test(pos, self._selected_idx)
-                if handle:
-                    self._drag_mode = handle; self._drag_start = pos; self._drag_orig = self._annotations[self._selected_idx].bbox; self.setCursor(self._cursor_for_handle(handle)); self.update(); return
             self._drawing = True
             self._draw_start = pos
             self._draw_current = pos
@@ -325,9 +389,6 @@ class AnnotationWidget(QWidget):
             self.setCursor(self._make_draw_cursor())
             self.update()
             return
-        if self._selected_idx >= 0:
-            handle = self._handle_hit_test(pos, self._selected_idx)
-            if handle: self._drag_mode = handle; self._drag_start = pos; self._drag_orig = self._annotations[self._selected_idx].bbox; self.setCursor(self._cursor_for_handle(handle)); self.update(); return
         clicked = self._hit_test(pos)
         if clicked >= 0:
             self._selected_idx = clicked; self._pending_bbox = None; ann = self._annotations[clicked]
@@ -367,21 +428,6 @@ class AnnotationWidget(QWidget):
             self.update()
             return
 
-        if self._drag_mode and self._drag_start and self._drag_orig:
-            dx = int((pos.x() - self._drag_start.x()) / self._scale); dy = int((pos.y() - self._drag_start.y()) / self._scale); ox, oy, ow, oh = self._drag_orig; m = self._drag_mode
-            if m == 'move': nx, ny, nw, nh = ox + dx, oy + dy, ow, oh
-            elif m == 'resize_NW': nx, ny, nw, nh = ox+dx, oy+dy, ow-dx, oh-dy
-            elif m == 'resize_NE': nx, ny, nw, nh = ox,    oy+dy, ow+dx, oh-dy
-            elif m == 'resize_SW': nx, ny, nw, nh = ox+dx, oy,    ow-dx, oh+dy
-            elif m == 'resize_SE': nx, ny, nw, nh = ox,    oy,    ow+dx, oh+dy
-            elif m == 'resize_N':  nx, ny, nw, nh = ox,    oy+dy, ow,    oh-dy
-            elif m == 'resize_S':  nx, ny, nw, nh = ox,    oy,    ow,    oh+dy
-            elif m == 'resize_W':  nx, ny, nw, nh = ox+dx, oy,    ow-dx, oh
-            elif m == 'resize_E':  nx, ny, nw, nh = ox,    oy,    ow+dx, oh
-            else: nx, ny, nw, nh = ox, oy, ow, oh
-            if nw > 8 and nh > 8:
-                ann = self._annotations[self._selected_idx]; self._data_mgr.update_annotation(self._img_path, ann, bbox=(nx, ny, nw, nh)); self._annotations = self._data_mgr.get_annotations(self._img_path)
-            self.update(); return
         from PySide6.QtWidgets import QApplication as _QApp
         mods = _QApp.queryKeyboardModifiers()
 
@@ -465,9 +511,6 @@ class AnnotationWidget(QWidget):
             self.unsetCursor()
             self.update()
             return
-        if self._drag_mode:
-            self._drag_mode = None; self._drag_start = None
-            self._drag_orig = None; self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -555,20 +598,6 @@ class AnnotationWidget(QWidget):
             h = self._handle_hit_test_review(pos, idx)
             if h: return h, idx
         return None, -1
-
-    def _handle_hit_test(self, pos: QPoint, ann_idx: int) -> str | None:
-        if ann_idx < 0 or ann_idx >= len(self._annotations): return None
-        try:
-            from warp.trainer.training_data import NON_ICON_SLOTS
-            if self._annotations[ann_idx].slot in NON_ICON_SLOTS: return None
-        except Exception:
-            pass
-        rect = self._img_to_screen_rect(self._annotations[ann_idx].bbox); h = self._HANDLE + 2; l, t, r, b = rect.left(), rect.top(), rect.right(), rect.bottom(); mx, my = (l + r) // 2, (t + b) // 2
-        handles = [('resize_NW', l, t), ('resize_N', mx, t), ('resize_NE', r, t), ('resize_W', l, my), ('resize_E', r, my), ('resize_SW', l, b), ('resize_S', mx, b), ('resize_SE', r, b), ('move', mx, my)]
-        x, y = pos.x(), pos.y()
-        for name, hx, hy in handles:
-            if abs(x - hx) <= h and abs(y - hy) <= h: return name
-        return None
 
     @staticmethod
     def _make_draw_cursor() -> QCursor:

@@ -27,6 +27,22 @@ except Exception:
 
 from warp.recognition import boff_marker as _boff_marker
 from warp.recognition import trait_grid as _trait_grid
+from warp.recognition.eq_geometry import detect_eq_geometry, EQGeometry, STD_ORDER
+from warp.recognition.ground_eq_geometry import (
+    detect_ground_eq_geometry,
+    project_cells as _project_ground_cells,
+    GroundEQGeometry,
+    SLOT_KIT_MODULES as _G_KM,
+    SLOT_GROUND_DEVICES as _G_DEV,
+    SLOT_WEAPONS as _G_WEAPONS,
+)
+
+# STD_ORDER (eq_geometry) uses 'Shields' (plural); production uses 'Shield'.
+# All other names match 1:1.
+_STD_IDX_TO_PROD_SLOT: dict[int, str] = {
+    idx: ('Shield' if name == 'Shields' else name)
+    for name, idx in STD_ORDER.items()
+}
 
 OCR_CONF_THRESHOLD = 0.40
 LABEL_FUZZY_CUTOFF = 0.68
@@ -161,6 +177,14 @@ _TRAIT_SLOT_MARKER: dict[str, str] = {
     'Active Ground Rep':      '__trait_ground_active_rep',
 }
 
+_SPACE_TRAIT_SLOTS = frozenset({
+    'Personal Space Traits', 'Starship Traits',
+    'Space Reputation', 'Active Space Rep',
+})
+_GROUND_TRAIT_SLOTS = frozenset({
+    'Personal Ground Traits', 'Ground Reputation', 'Active Ground Rep',
+})
+
 _BOFF_SLOT_NAMES = frozenset({
     'Boff Tactical', 'Boff Engineering', 'Boff Science',
     'Boff Intelligence', 'Boff Command', 'Boff Pilot', 'Boff Miracle Worker', 'Boff Temporal',
@@ -281,6 +305,86 @@ class LayoutDetector:
         self._ocr = None
         self._calibration = self._load_calibration()
         self._community_anchors: list | None = None  # instance cache for community_anchors.json (P11)
+        # Per-image cached EQ geometry result (keyed by id(img)).
+        # Populated lazily by _get_eq_geometry so multiple callers share one OCR run.
+        self._eq_geom_cache: dict[int, EQGeometry | None] = {}
+        # Per-image cached ground EQ geometry. Separate from space cache because
+        # the two detectors anchor on different OCR labels.
+        self._ground_eq_geom_cache: dict[int, GroundEQGeometry | None] = {}
+
+    def _get_eq_geometry(self, img: np.ndarray) -> EQGeometry | None:
+        """Cached wrapper around detect_eq_geometry. Returns None when OCR
+        yields no usable EQ labels (e.g. BOFF-only or trait-only screen)."""
+        key = id(img)
+        if key in self._eq_geom_cache:
+            return self._eq_geom_cache[key]
+        try:
+            geom = detect_eq_geometry(img)
+        except Exception as e:
+            _slog.warning(f'LayoutDetector: detect_eq_geometry crashed: {e}')
+            geom = None
+        self._eq_geom_cache[key] = geom
+        if geom is not None:
+            _slog.info(
+                f'LayoutDetector: eq_geometry mode={geom.mode} '
+                f'p_start={geom.panel_x_start} p_right={geom.panel_right} '
+                f'dx={geom.final_dx:.1f} pitch={geom.row_pitch} '
+                f'rows={len(geom.row_cys)}')
+        return geom
+
+    def _get_ground_eq_geometry(self, img: np.ndarray) -> GroundEQGeometry | None:
+        """Cached wrapper around detect_ground_eq_geometry. Returns None when
+        OCR yields fewer than 2 left-column EQ labels."""
+        key = id(img)
+        if key in self._ground_eq_geom_cache:
+            return self._ground_eq_geom_cache[key]
+        try:
+            geom = detect_ground_eq_geometry(img)
+        except Exception as e:
+            _slog.warning(f'LayoutDetector: detect_ground_eq_geometry crashed: {e}')
+            geom = None
+        self._ground_eq_geom_cache[key] = geom
+        if geom is not None:
+            _slog.info(
+                f'LayoutDetector: ground_eq_geometry mode={geom.mode} '
+                f'col_left={geom.col_left_x} col_right={geom.col_right_x} '
+                f'pitch={geom.row_pitch} cell={geom.cell_w:.1f}x{geom.cell_h:.1f} '
+                f'slots={list(geom.slot_label_cys.keys())}')
+        return geom
+
+    def _detect_via_ground_geometry(
+        self, img: np.ndarray, profile: dict
+    ) -> dict[str, list[tuple[int, int, int, int]]] | None:
+        """Ground EQ detection via OCR-anchored geometry.
+
+        Projects cells from `ground_eq_geometry.project_cells`, then trims
+        Kit Modules / Ground Devices counts against the ship profile
+        (profile is the floor for KM; cap Devices to profile when projected
+        rows exceed). Returns None when geometry detection failed.
+        """
+        geom = self._get_ground_eq_geometry(img)
+        if geom is None:
+            return None
+        h, w = img.shape[:2]
+        projected = _project_ground_cells(geom, w, h)
+        if not projected:
+            return None
+
+        # Kit Modules: profile floors the count. project_cells already caps at
+        # KM_MAX_CELLS=7 and at col_left_x boundary. Trim down to profile
+        # count when projection over-counts.
+        km_profile = profile.get(_G_KM, SLOT_DEFAULT_COUNTS.get(_G_KM, 6))
+        if _G_KM in projected and km_profile > 0:
+            projected[_G_KM] = projected[_G_KM][:max(km_profile, 1)]
+
+        # Ground Devices: project_cells emits up to 3 rows × 2 cols = 6 cells.
+        # Do NOT trim to profile — the trainer needs to see every grid-aligned
+        # position so empty/missed slots are reviewable (matcher will tag
+        # blank cells as __empty__). Profile lower than 6 is just informational.
+
+        # Drop slots with empty bbox lists (defensive — _project should not
+        # emit them, but a future change might).
+        return {k: v for k, v in projected.items() if v}
 
     def detect(self, img: np.ndarray, build_type: str, ship_profile: dict | None = None,
                icon_matcher=None, app_cache=None) -> dict[str, list[tuple[int, int, int, int]]]:
@@ -291,7 +395,8 @@ class LayoutDetector:
             # measured 91.5% slot IoU≥30 on 59 GT screens vs OCR-header
             # baseline. Falls back to OCR-header strategy on failure.
             if icon_matcher is not None and app_cache is not None:
-                grid = _trait_grid.detect_traits(img, icon_matcher, app_cache)
+                grid = _trait_grid.detect_traits(img, icon_matcher, app_cache,
+                                                 build_type=build_type)
                 if grid and sum(len(v) for v in grid.values()) >= 5:
                     _slog.info(
                         f'LayoutDetector: Strategy 0 (trait_grid) → '
@@ -320,6 +425,22 @@ class LayoutDetector:
         else:
             slot_order = (SPACE_SLOT_ORDER_CARRIER if profile.get('Hangars', 0) > 0 else SPACE_SLOT_ORDER_STANDARD)
 
+        # GROUND Strategy 1: OCR-anchored ground EQ geometry. Single source of
+        # truth for the 7-slot ground panel (Kit Modules + 2-col block +
+        # Weapons stack + Devices grid). 94.4% recall, 91.2% precision,
+        # mean IoU 0.814 on 12 GT-annotated screens.
+        if build_type == 'GROUND':
+            ground = self._detect_via_ground_geometry(img, profile)
+            if ground and len(ground) >= 3:
+                _slog.info(
+                    f'LayoutDetector: GROUND Strategy 1 (ground_eq_geometry) → '
+                    f'{len(ground)} slot groups, '
+                    f'{sum(len(v) for v in ground.values())} bboxes')
+                for slot, boxes in ground.items():
+                    for b in boxes:
+                        _slog.info(f'  [{slot}] bbox={b}')
+                return ground
+
         # MIXED detection chain: learned → OCR-anchored → full_scan → fallback
         if build_type in ('SPACE_MIXED', 'GROUND_MIXED'):
             marker_boffs = self._detect_boffs_via_markers(img)
@@ -328,7 +449,8 @@ class LayoutDetector:
             # for MIXED screens; merged into whichever equipment chain wins.
             trait_grid_res: dict | None = None
             if icon_matcher is not None and app_cache is not None:
-                tg = _trait_grid.detect_traits(img, icon_matcher, app_cache)
+                tg = _trait_grid.detect_traits(img, icon_matcher, app_cache,
+                                               build_type=build_type)
                 if tg and sum(len(v) for v in tg.values()) >= 5:
                     trait_grid_res = tg
 
@@ -374,23 +496,84 @@ class LayoutDetector:
                            f'{list(trait_grid_res.keys())} (+{added} bboxes)')
                 return result
 
-            learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
-            if learned and len(learned) >= 5:
-                if marker_boffs:
-                    learned.update(marker_boffs)
-                _slog.info(f'LayoutDetector: Strategy 1 (learned/MIXED) → {len(learned)} slot groups')
-                return _merge_traits(learned)
+            # GROUND_MIXED Strategy 1: ground EQ geometry + traits + BOFFs.
+            # Ground panel uses different OCR anchors than space, so the
+            # space _get_eq_geometry path below would miss the entire EQ
+            # grid on ground screens.
+            if build_type == 'GROUND_MIXED':
+                ground_eq = self._detect_via_ground_geometry(img, profile)
+                if ground_eq and len(ground_eq) >= 3:
+                    g_geom = self._get_ground_eq_geometry(img)
+                    if g_geom is not None:
+                        labels = self._ocr_section_labels(img)
+                        # GROUND_MIXED: drop any phantom space-trait OCR hits
+                        # so the trait grid cannot anchor on "Starship Traits".
+                        trait_labels = {s: v for s, v in labels.items()
+                                        if s in _GROUND_TRAIT_SLOTS}
+                        cell_w = max(20, int(round(g_geom.cell_w)))
+                        icon_h = max(20, int(round(g_geom.cell_h)))
+                        ground_eq.update(
+                            self._detect_traits_via_ocr(
+                                img, trait_labels, cell_w, icon_h))
+                    boff_result = marker_boffs or self._detect_boffs_in_mixed(img)
+                    if boff_result:
+                        ground_eq.update(boff_result)
+                    _slog.info(
+                        f'LayoutDetector: GROUND_MIXED Strategy 1 '
+                        f'(ground_eq_geometry + OCR traits) → '
+                        f'{len(ground_eq)} slot groups, '
+                        f'{sum(len(v) for v in ground_eq.values())} bboxes')
+                    return _merge_traits(ground_eq)
 
-            # OCR-anchored equipment detection (primary path for MIXED)
+            # Strategy 1: EQ via geom-based pixel_analysis + traits via OCR
+            # + BOFFs via marker/in_mixed. One EQ source of truth shared with
+            # SPACE_EQ/GROUND_EQ (no divergent _detect_via_ocr_anchored grid).
+            geom = self._get_eq_geometry(img)
+            if geom is not None and geom.row_cys:
+                eq_result = self._detect_via_pixel_analysis(img, slot_order, profile)
+                if eq_result and len(eq_result) >= 3:
+                    # Traits: OCR section labels → 5-column grid via
+                    # _detect_traits_via_ocr. Cell geometry mirrors the
+                    # eq_geometry values used for EQ above.
+                    # GROUND_MIXED returns earlier; here build_type is
+                    # SPACE_MIXED so drop any phantom ground-trait OCR hits.
+                    labels = self._ocr_section_labels(img)
+                    trait_labels = {s: v for s, v in labels.items()
+                                    if s in _SPACE_TRAIT_SLOTS}
+                    cell_w = max(20, int(round(geom.final_dx)))
+                    icon_h = max(20, int(round(geom.row_pitch * 0.85)) + 2)
+                    eq_result.update(
+                        self._detect_traits_via_ocr(img, trait_labels, cell_w, icon_h))
+
+                    boff_result = marker_boffs or self._detect_boffs_in_mixed(img)
+                    if boff_result:
+                        eq_result.update(boff_result)
+                    _slog.info(f'LayoutDetector: Strategy 1 (geom/pixel + OCR traits) → '
+                               f'{len(eq_result)} slot groups, '
+                               f'{sum(len(v) for v in eq_result.values())} bboxes')
+                    return _merge_traits(eq_result)
+
+            # Strategy 1a fallback: legacy OCR-anchored path (geom unavailable
+            # or pixel_analysis produced too few rows). Retains independent
+            # cluster-based right-edge logic.
             ocr_anch = self._detect_via_ocr_anchored(img, build_type, slot_order, profile)
             if ocr_anch and len(ocr_anch) >= 3:
                 boff_result = marker_boffs or self._detect_boffs_in_mixed(img)
                 if boff_result:
                     ocr_anch.update(boff_result)
-                _slog.info(f'LayoutDetector: Strategy 1.5 (OCR-anchored) → '
+                _slog.info(f'LayoutDetector: Strategy 1a (OCR-anchored fallback) → '
                            f'{len(ocr_anch)} slot groups, '
                            f'{sum(len(v) for v in ocr_anch.values())} bboxes')
                 return _merge_traits(ocr_anch)
+
+            # Strategy 1b: learned layouts — fallback only when geom failed.
+            learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
+            if learned and len(learned) >= 5:
+                if marker_boffs:
+                    learned.update(marker_boffs)
+                _slog.info(f'LayoutDetector: Strategy 1b (learned/MIXED fallback) → '
+                           f'{len(learned)} slot groups')
+                return _merge_traits(learned)
 
             if icon_matcher is not None and app_cache is not None:
                 full = self._detect_via_full_scan(img, build_type, icon_matcher, app_cache)
@@ -404,31 +587,63 @@ class LayoutDetector:
                     return _merge_traits(full)
             # Fall through to standard strategies if both OCR-anchored and full scan fail
 
-        # Strategy 1: Learned Layouts — tried FIRST because they contain
-        # user-confirmed slot counts, more reliable than ShipDB generic fallback
+        # Strategy 1: pixel analysis backed by eq_geometry. On 38 GT screens
+        # geom delivers pixel-perfect grid (max panel_right Δ=7 px, max dx
+        # Δ=2 px, 100 % slot coverage). Promoted ahead of learned layouts
+        # which had 32 px mean panel_right error and returned None for 4
+        # screens on the same benchmark. Learned moves to Strategy 1b as a
+        # safety net when geometry produces no usable result.
+        geom_available = self._get_eq_geometry(img) is not None
+        if geom_available:
+            result = self._detect_via_pixel_analysis(img, slot_order, profile)
+            if result and len(result) >= max(3, int(len(slot_order) * 0.7)):
+                # Supplement missing optional slots (Hangars, Universal
+                # Consoles, Sec-Def, Experimental) from learned layout.
+                missing = [s for s in slot_order
+                           if s not in result and profile.get(s, 0) > 0]
+                if missing:
+                    learned = self._detect_via_learned_layouts(
+                        img, build_type, slot_order, profile)
+                    if learned:
+                        for slot in missing:
+                            if learned.get(slot):
+                                result[slot] = learned[slot]
+                                _slog.info(f'LayoutDetector: Strategy 1 supplement '
+                                           f'[{slot}] from learned ({len(learned[slot])} bboxes)')
+                _slog.info(f'LayoutDetector: Strategy 1 (geom/pixel) → '
+                           f'{len(result)} slot groups, '
+                           f'{sum(len(v) for v in result.values())} bboxes')
+                for slot, boxes in result.items():
+                    for b in boxes:
+                        _slog.info(f'  [{slot}] bbox={b}')
+                return result
+
+        # Strategy 1b: learned layouts — fallback when geometry unavailable
+        # or under-covered the screen.
         learned = self._detect_via_learned_layouts(img, build_type, slot_order, profile)
         if learned:
-            # Supplement with pixel analysis for any profile slots missing from learned layout.
-            # This handles optional slots (Hangars, Universal Consoles, Sec-Def, Experimental)
-            # that may not have been annotated when the layout template was created.
             missing = [s for s in slot_order if s not in learned and profile.get(s, 0) > 0]
             if missing:
                 pixel = self._detect_via_pixel_analysis(img, slot_order, profile)
                 for slot in missing:
                     if pixel.get(slot):
                         learned[slot] = pixel[slot]
-                        _slog.info(f'LayoutDetector: Strategy 1 supplement [{slot}] '
+                        _slog.info(f'LayoutDetector: Strategy 1b supplement [{slot}] '
                                    f'from pixel analysis ({len(pixel[slot])} bboxes)')
-            _slog.info(f'LayoutDetector: Strategy 1 (learned) → {len(learned)} slot groups, {sum(len(v) for v in learned.values())} bboxes')
+            _slog.info(f'LayoutDetector: Strategy 1b (learned fallback) → '
+                       f'{len(learned)} slot groups, '
+                       f'{sum(len(v) for v in learned.values())} bboxes')
             for slot, boxes in learned.items():
                 for b in boxes:
                     _slog.info(f'  [{slot}] bbox={b}')
             return learned
 
-        # Strategy 2: Pixel analysis (fallback — uses ShipDB profile counts)
+        # Strategy 2: pixel analysis without geometry (legacy brightness path).
         result = self._detect_via_pixel_analysis(img, slot_order, profile)
         if result and len(result) >= len(slot_order) * 0.7:
-            _slog.info(f'LayoutDetector: Strategy 2 (pixel) → {len(result)} slot groups, {sum(len(v) for v in result.values())} bboxes')
+            _slog.info(f'LayoutDetector: Strategy 2 (pixel legacy) → '
+                       f'{len(result)} slot groups, '
+                       f'{sum(len(v) for v in result.values())} bboxes')
             for slot, boxes in result.items():
                 for b in boxes:
                     _slog.info(f'  [{slot}] bbox={b}')
@@ -1817,7 +2032,8 @@ class LayoutDetector:
         return 'empty'
 
     def _count_icons_in_row(self, img, y_top, y_bot, panel_right, cell_w,
-                            slot_name: str = '') -> tuple[int, list[str]]:
+                            slot_name: str = '',
+                            panel_x_start: int | None = None) -> tuple[int, list[str]]:
         """
         Count active icons in a row, scanning right-to-left.
 
@@ -1830,19 +2046,28 @@ class LayoutDetector:
         A background cell is any dark cell that lies outside the known
         slot grid (distinguished from empty/inactive by context: once
         we exit the grid there is no more slot structure).
+
+        When `panel_x_start` is given the scan is hard-capped to the
+        6-cell matrix width — we stop as soon as the next sample would
+        cross the panel's left edge. This avoids classifying off-panel
+        content (ship image, BOFF tray) as inactive/empty grid cells.
         """
         import cv2
         row_h = y_bot - y_top
         y1 = max(0, y_top + row_h // 4)
         y2 = min(img.shape[0], y_bot - row_h // 4)
         count = 0
-        max_icons = 8
+        # Matrix is 6 cells wide when panel_x_start is known; otherwise
+        # the legacy buffered scan (8) is retained for backwards compat.
+        max_icons = 6 if panel_x_start is not None else 8
         consecutive_bg = 0   # counts cells that look like plain background (not a slot)
         cell_states: list[str] = []
         for j in range(max_icons):
             x2 = panel_right - j * cell_w
             x1 = max(0, x2 - int(cell_w * 0.85))
             if x1 >= x2 or x1 < 0:
+                break
+            if panel_x_start is not None and x1 < panel_x_start - 2:
                 break
             crop = img[y1:y2, x1:x2]
             if crop.size == 0:
@@ -1863,16 +2088,121 @@ class LayoutDetector:
                         break
                 # else: empty/inactive slot within grid — keep scanning
         if slot_name and any(s in ('empty', 'inactive') for s in cell_states):
-            non_active = [(i, s) for i, s in enumerate(cell_states) if s != 'active']
+            # cell_states is indexed 0 = rightmost; report 1-based positions
+            # counted from the LEFT for human readability (pos 1 = leftmost slot).
+            n_cells = len(cell_states)
+            non_active = [(n_cells - i, s) for i, s in enumerate(cell_states)
+                          if s != 'active']
+            non_active.sort()
             _slog.info(
                 f'LayoutDetector: [{slot_name}] {count} active + '
-                + ', '.join(f'{s} at pos {i}' for i, s in non_active)
+                + ', '.join(f'{s} at pos {p}' for p, s in non_active)
             )
         return max(1, count), cell_states
 
     def _detect_via_pixel_analysis(self, img, slot_order, profile):
+        """Equipment layout detection.
+
+        Primary path uses OCR-anchored EQ geometry (eq_geometry.detect_eq_geometry):
+        OCR labels supply row anchors, single-slot icon right-edges supply
+        panel_right, and dx is computed as (panel_right - panel_x_start) / 6.
+        Cell width = final_dx, icon dims derived from row_pitch. Row identity
+        is taken from geom.eq_label_cys (OCR-anchored STD_ORDER mapping) when
+        present; slot_order[i] is a positional fallback for unmapped rows.
+
+        Fallback (no EQ labels found, OCR failure, etc.) is the legacy
+        brightness/row-separator scan retained as _detect_via_pixel_analysis_legacy.
+        """
         h, w = img.shape[:2]
-        panel_right = self._find_panel_right_edge(img)
+        geom = self._get_eq_geometry(img)
+        if geom is None or not geom.row_cys:
+            return self._detect_via_pixel_analysis_legacy(img, slot_order, profile)
+
+        panel_x_start = geom.panel_x_start
+        panel_right   = geom.panel_right
+        cell_w  = max(20, int(round(geom.final_dx)))
+        icon_w  = max(20, cell_w - 2)
+        icon_h  = max(20, int(round(geom.row_pitch * 0.85)) + 2)
+
+        # OCR-anchored slot identity per row. Carriers / non-standard ships
+        # may skip rows (e.g. T6 carrier has no Universal Consoles but does
+        # have Hangars) — positional slot_order[i] mislabels rows below the
+        # skip point. eq_label_cys maps cy → STD_ORDER index from OCR'd
+        # canonical labels; use it as authoritative when present.
+        cy_to_slot: dict[int, str] = {
+            cy: _STD_IDX_TO_PROD_SLOT[std_idx]
+            for std_idx, cy in geom.eq_label_cys.items()
+            if std_idx in _STD_IDX_TO_PROD_SLOT
+        }
+
+        # Positional fallback: extend slot_order with optional slots present
+        # in profile (Sec-Def after Deflector, Experimental/Hangars after
+        # Aft Weapons). Mirrors _detect_via_ocr_anchored extended_order logic
+        # so ships with Secondary Deflector or Experimental Weapons don't
+        # shift rows when OCR misses the label for those rows.
+        extended_order: list[str] = []
+        for s in slot_order:
+            extended_order.append(s)
+            if s == 'Deflector' and profile.get('Sec-Def', 0) > 0 and 'Sec-Def' not in extended_order:
+                extended_order.append('Sec-Def')
+            if s == 'Aft Weapons':
+                for opt in ('Experimental', 'Hangars'):
+                    if profile.get(opt, 0) > 0 and opt not in extended_order:
+                        extended_order.append(opt)
+
+        result: dict = {}
+        for i, cy in enumerate(geom.row_cys):
+            # cy_to_slot is authoritative (OCR-anchored). Fall back to
+            # positional extended_order only when no OCR mapping exists AND
+            # the row index fits within extended_order.
+            slot_name = cy_to_slot.get(cy)
+            if slot_name is None:
+                if i >= len(extended_order):
+                    continue
+                slot_name = extended_order[i]
+            y_top = max(0, cy - icon_h // 2)
+            y_bot = min(h, cy + icon_h // 2)
+            pixel_count, _ = self._count_icons_in_row(
+                img, y_top, y_bot, panel_right, cell_w, slot_name,
+                panel_x_start=panel_x_start)
+            profile_count = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
+            # ShipDB profile already includes tier bonuses (T6-X +1 Universal,
+            # T6-X2 +1 Device, etc.) via warp_importer. Trust profile_count;
+            # pixel_count is logged only for sanity-check / regression diag.
+            # Older code added +1 tolerance, which double-counted tier bonuses
+            # and dragged the decorative left-side sash into the grid as a
+            # phantom __empty__ slot on short rows (e.g. 3-slot Eng Cons).
+            n_icons = profile_count
+            if n_icons == 0:
+                continue
+            # Project cells right→left from panel_right. The grid itself is
+            # the constraint: any candidate whose left edge falls before
+            # panel_x_start lies outside the 6-cell matrix and is discarded.
+            bboxes = []
+            for j in range(n_icons):
+                # Float-domain positioning per cell — avoids 1-2 px overshoot
+                # past panel_x_start when round(final_dx) is just above the
+                # true float (e.g. final_dx=36.67 → cell_w=37 → 6×37=222 vs
+                # true panel width 220).
+                bx = int(round(panel_right - (j + 1) * geom.final_dx)) + 1
+                if bx < panel_x_start:
+                    break
+                bboxes.append((bx, cy - icon_h // 2, icon_w, icon_h))
+            if not bboxes:
+                continue
+            _slog.info(
+                f'LayoutDetector: row {i} [{slot_name}] '
+                f'pixel_count={pixel_count} profile={profile_count} → '
+                f'requested {n_icons}, kept {len(bboxes)} within grid')
+            bboxes.reverse()
+            result[slot_name] = bboxes
+        return result
+
+    def _detect_via_pixel_analysis_legacy(self, img, slot_order, profile):
+        """Brightness/row-separator fallback used when OCR-anchored geometry
+        cannot lock onto EQ labels (no usable text, BOFF-only screen, etc.)."""
+        h, w = img.shape[:2]
+        panel_right = self._find_panel_right_edge_brightness(img)
         if panel_right < w * 0.3: return {}
         row_seps = self._find_row_separators(img, max(0, panel_right - int(w * 0.25)), panel_right)
         if len(row_seps) < 3: return {}
@@ -1884,20 +2214,11 @@ class LayoutDetector:
         for i, (y_top, y_bot) in enumerate(row_bounds):
             if i >= len(slot_order): break
             slot_name = slot_order[i]
-            # Count icons by pixel brightness — more reliable than profile for unknown ships
             pixel_count, _ = self._count_icons_in_row(img, y_top, y_bot, panel_right, cell_w, slot_name)
             profile_count = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
-            if profile_count <= 1:
-                # Single mandatory slot (Deflector, Engines, Warp Core, Shield)
-                # Pixel count unreliable here — use profile exactly
-                n_icons = profile_count
-            else:
-                # Multi-slot row: pixel analysis can undercount (empty slots, misalignment)
-                # Use max of pixel count and profile count so ShipDB is the floor,
-                # but allow pixel count to exceed profile by 1 (T6-X tier upgrades)
-                n_icons = min(max(pixel_count, profile_count), profile_count + 1)
+            n_icons = profile_count
             if n_icons == 0: continue
-            _slog.info(f'LayoutDetector: row {i} [{slot_name}] pixel_count={pixel_count} profile={profile_count} → using {n_icons}')
+            _slog.info(f'LayoutDetector: row {i} [{slot_name}] pixel_count={pixel_count} profile={profile_count} → using {n_icons} (legacy)')
             iy, bboxes = (y_top + y_bot) // 2 - icon_h // 2, []
             for j in range(n_icons): bboxes.append((max(0, panel_right - (j + 1) * cell_w + 2), iy, icon_w, icon_h))
             bboxes.reverse()
@@ -1905,6 +2226,21 @@ class LayoutDetector:
         return result
 
     def _find_panel_right_edge(self, img: np.ndarray) -> int:
+        """Right edge of the equipment matrix in pixels.
+
+        Primary: OCR-anchored EQ geometry detector — uses single-slot icon
+        right-edges (Deflector/Engines/Warp Core/Shields) for pixel-accurate
+        anchoring. Falls back to a brightness-histogram scan when no EQ labels
+        are detected (e.g. BOFF-only or trait-only screens reaching deep
+        fallback paths)."""
+        geom = self._get_eq_geometry(img)
+        if geom is not None:
+            return geom.panel_right
+        return self._find_panel_right_edge_brightness(img)
+
+    def _find_panel_right_edge_brightness(self, img: np.ndarray) -> int:
+        """Legacy brightness-histogram fallback. Walks columns right→left and
+        returns the first x whose 10 horizontal bands are ≥7/10 bright."""
         h, w = img.shape[:2]
         y_bands = [(int(h * 0.03 + i * int(h * 0.87 / 10)), int(h * 0.03 + (i + 1) * int(h * 0.87 / 10))) for i in range(10)]
         for x in range(w - 2, max(w // 5, 50), -1):
@@ -1989,12 +2325,21 @@ class LayoutDetector:
             avg_cy = sum(g[1] for g in group) / len(group)
             merged.append((avg_cx, avg_cy, joined))
 
-        # Match joined texts to slot aliases
+        # Match joined texts to slot aliases. Track the longest text per slot:
+        # a single word like "Starship" aliases to "Starship Traits" and would
+        # overwrite the real "Starship Traits" hit if it came later in the
+        # iteration (e.g. fragment from "Starship Mastery" text near the BOFF
+        # panel). Prefer the longest matching text — more specific = correct label.
         labels: dict[str, tuple[float, float]] = {}
+        best_text_len: dict[str, int] = {}
         for cx, cy, text in merged:
             slot = self._match_label(text.lower())
-            if slot:
+            if not slot:
+                continue
+            tlen = len(text)
+            if tlen > best_text_len.get(slot, -1):
                 labels[slot] = (cx, cy)
+                best_text_len[slot] = tlen
         return labels
 
     def _detect_via_full_scan(self, img: np.ndarray, build_type: str,
@@ -2330,7 +2675,12 @@ class LayoutDetector:
             _slog.info('LayoutDetector OCRAnchored: no right_edge candidates')
             return {}
 
-        # Pass 2: generate bboxes using the global right edge for every row
+        # Pass 2: generate bboxes using the global right edge for every row.
+        # Borrow panel_x_start from the EQ geometry detector (cached) so the
+        # diagnostic count scan stops at the 6-cell matrix's left edge instead
+        # of bleeding into adjacent panels.
+        geom = self._get_eq_geometry(img)
+        diag_panel_x_start = geom.panel_x_start if geom is not None else None
         result: dict[str, list] = {}
         for slot_name, cx, cy, y_top, y_bot, _row_re in row_info:
             n_default = profile.get(slot_name, SLOT_DEFAULT_COUNTS.get(slot_name, 1))
@@ -2343,7 +2693,9 @@ class LayoutDetector:
             # T6-X tier bonuses are already applied to profile upstream.
             n_icons = n_default
             if n_default > 1:
-                self._count_icons_in_row(img, y_top, y_bot, global_right, cell_w, slot_name)  # log only
+                self._count_icons_in_row(img, y_top, y_bot, global_right, cell_w,
+                                          slot_name,
+                                          panel_x_start=diag_panel_x_start)  # log only
 
             bboxes = []
             for j in range(n_icons):
@@ -2486,13 +2838,21 @@ class LayoutDetector:
             'Active Ground Rep':       5,
         }
 
-        # Geometry: offsets and steps derived from cell_w/icon_h computed upstream.
-        # These scale with image size since cell_w is row_h-based.
-        x_off = -int(cell_w * 2.35)
-        y_off = int(icon_h * 0.80)
-        col_step = max(int(cell_w * 1.17), cell_w + 2)
-        row_step = max(int(icon_h * 1.10), icon_h + 2)
-        bbox_w = max(1, cell_w - 4)
+        # Geometry: bbox SIZE matches EQ icons per STO game rule — trait
+        # and EQ icons are rendered at identical pixel dimensions on both
+        # space and ground screens. Single calibration applies to both
+        # groups now that ground_eq_geometry returns correct cell dims
+        # (previously ground cell_w was doubled by a Body-label OCR bug;
+        # ground ratios then drifted to compensate. Fixed 2026-05-16 —
+        # multi-candidate scoring in ground_eq_geometry restores correct
+        # cell_w, and space-style ratios work uniformly).
+        is_ground = group_slots is ground_slots
+        x_off    = -int(cell_w * 2.27)
+        y_off    =  int(icon_h * 0.88)
+        col_step = max(int(cell_w * 1.135), cell_w + 2)
+        row_step = max(int(icon_h * 1.21), icon_h + 2)
+        bbox_w   = max(1, cell_w - 2)
+        bbox_h   = icon_h
         N_COLS = 5
 
         result: dict[str, list] = {}
@@ -2505,13 +2865,14 @@ class LayoutDetector:
                 col = i % N_COLS
                 row = i // N_COLS
                 bx = top_cx - bbox_w // 2 + col * col_step
-                by = top_cy - icon_h // 2 + row * row_step
-                if 0 <= bx <= w - bbox_w and 0 <= by <= h - icon_h:
-                    bboxes.append((bx, by, bbox_w, icon_h))
+                by = top_cy - bbox_h // 2 + row * row_step
+                if 0 <= bx <= w - bbox_w and 0 <= by <= h - bbox_h:
+                    bboxes.append((bx, by, bbox_w, bbox_h))
             if bboxes:
                 result[slot] = bboxes
                 _slog.info(f'  [{slot}] n={len(bboxes)} anchor=({lcx:.0f},{lcy:.0f}) '
-                           f'top=({top_cx},{top_cy})')
+                           f'top=({top_cx},{top_cy}) bbox={bbox_w}x{bbox_h} '
+                           f'step=({col_step},{row_step}) group={"ground" if is_ground else "space"}')
         return result
 
     def _detect_via_ocr(self, img, slot_order, profile):

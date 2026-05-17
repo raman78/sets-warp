@@ -332,7 +332,14 @@ Local training adds `"source": "local"`. `ModelUpdater` compares `trained_at` ti
 User confirms icon bbox in WARP CORE
   -> TrainingDataManager.add_annotation()
   -> annotations.json + crop PNG saved to warp/training_data/
+  -> Per-sha label cache (.sync_uploaded_labels.json) tracks last-sent
+     (slot|name) so corrections re-emit but no-ops don't rewrite the jsonl
   -> SyncWorker uploads crop + annotations.jsonl to HF (sets-sto/sto-icon-dataset)
+     at staging/<install_id>/, single commit per cycle, last-wins sha dedup
+
+User confirms BOFF slot (incl. virtual __empty__ / __inactive__)
+  -> Same path. Seat key embeds prof+spec code: Boff Seat L[T+P]_483
+  -> Virtual items: crops upload to HF (training signal) but SETS write is skipped
 
 User confirms Ship Type / Ship Tier bbox
   -> Same TrainingDataManager path — crop PNG + ml_name (OCR raw) also saved
@@ -341,18 +348,34 @@ User confirms Ship Type / Ship Tier bbox
 User confirms Ship Name bbox
   -> annotations.json updated (position only) — NO crop, NO upload
 
-GitHub Actions (hourly, admin_train.py)
-  -> Icon entries: trains EfficientNet-B0 on community icon crops
-  -> Text entries: collect_text_corrections() builds ship_type_corrections.json
-  -> uploads icon_classifier.pt + ship_type_corrections.json + model_version.json
-     to HF sets-sto/warp-knowledge
+User marks a screenshot Done (Alt+D)
+  -> learn_layout writes a normalised slot grid to anchors.json
+  -> Next sync uploads it as anchors_grid_<sha8>.json (only if not already sent)
 
-Background (every 15 min via WARP CORE sync timer)
-  -> ModelUpdater checks remote model_version.json on HF
-  -> If remote trained_at > local trained_at: downloads new icon_classifier.pt
-     and ship_type_corrections.json (optional)
-  -> icon_matcher.py loads new .pt on next import
-  -> text_extractor.py applies corrections from ship_type_corrections.json
+Background (every 10 min, started 15 s after app launch)
+  -> SyncManager.check_and_upload() — single cycle:
+       crops → staging/<install_id>/crops/<sha>.png
+       labels → staging/<install_id>/annotations.jsonl (per-sha dedup)
+       screen-type captures → staging/<install_id>/screen_types/<stype>/<sha>.png
+       anchor grids → staging/<install_id>/anchors_grid_<sha>.json
+  -> Rate limit: 1000 file uploads / install_id / UTC day (corrections are free)
+
+GitHub Actions (admin_train.py — hourly retrain)
+  -> Icon entries: trains EfficientNet-B0 on community icon crops
+  -> Embedder: admin_train_metric.py trains ArcFace embedder + builds embedding_index.npz
+  -> Text entries: collect_text_corrections() builds ship_type_corrections.json
+  -> Anchor grids: merged into community_anchors.json
+  -> Uploads icon_classifier.pt + icon_embedder.pt + community_anchors.json +
+     ship_type_corrections.json + model_version.json to HF sets-sto/warp-knowledge
+
+Background (every 15 min via ModelUpdater)
+  -> Polls backend GET /model/version (Render — has cold-start, 60s read timeout)
+  -> If remote trained_at > local trained_at OR embedder is stale: downloads
+     icon_classifier.pt + icon_embedder.pt + embedder_label_map.json +
+     embedding_index.npz + community_anchors.json + ship_type_corrections.json
+  -> Atomically swaps files, calls SETSIconMatcher.reset_ml_session()
+  -> text_extractor.py reloads ship_type_corrections.json
+  -> LayoutDetector.reset_community_anchors_cache()
 ```
 
 ---
