@@ -1321,13 +1321,35 @@ class WarpImporter:
                     continue
                 # Validate item type matches slot category
                 if not self._item_valid_for_slot(name, slot_name):
-                    _slog.info(f'  [{slot_name}][{idx}] SKIP — {name!r} wrong type for slot')
+                    _slog.info(f'  [{slot_name}][{idx}] WRONG-TYPE — {name!r} invalid for slot '
+                               f'(keep_bbox={KEEP_LOW_CONF_GRID_BBOXES})')
                     _stat_skip_type += 1
                     _stat_per_slot.setdefault(slot_name, {'ok': 0, 'skip': 0})['skip'] += 1
+                    if KEEP_LOW_CONF_GRID_BBOXES:
+                        result.items.append(RecognisedItem(
+                            slot        = slot_name,
+                            slot_index  = idx,
+                            name        = '',
+                            confidence  = 0.0,
+                            thumbnail   = None,
+                            source_file = source,
+                            bbox        = bbox,
+                        ))
                     continue
                 # Experimental slot: only Experimental Weapon items allowed
                 if slot_def['exp'] and not self._is_experimental(name):
-                    _slog.info(f'  [{slot_name}][{idx}] SKIP — not experimental weapon: {name!r}')
+                    _slog.info(f'  [{slot_name}][{idx}] NOT-EXPERIMENTAL — {name!r} '
+                               f'(keep_bbox={KEEP_LOW_CONF_GRID_BBOXES})')
+                    if KEEP_LOW_CONF_GRID_BBOXES:
+                        result.items.append(RecognisedItem(
+                            slot        = slot_name,
+                            slot_index  = idx,
+                            name        = '',
+                            confidence  = 0.0,
+                            thumbnail   = None,
+                            source_file = source,
+                            bbox        = bbox,
+                        ))
                     continue
                 final_slot_name = slot_name
 
