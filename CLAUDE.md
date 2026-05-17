@@ -1,5 +1,14 @@
 # SETS-WARP — Claude Code Context
 
+## Diagnostic scripts (`tests/diag_*.py`)
+
+These are **local-only developer benchmarks / ad-hoc probes** — ignored by
+git (`tests/diag_*.py` in `.gitignore`) and not part of the test suite.
+References to specific `diag_*.py` paths elsewhere in this doc are for
+on-disk reproduction by the maintainer, not a guarantee the file is in
+the repo. Anyone cloning fresh will not have them; ask the maintainer
+to share if needed.
+
 ## Language rules
 
 **All code must be in English** — comments, log messages, docstrings, variable names, string literals visible in logs. No Polish in source files. When editing existing code that contains Polish log messages or comments, translate them to English.
