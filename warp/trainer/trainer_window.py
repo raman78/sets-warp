@@ -227,7 +227,7 @@ SCREEN_TO_SLOT_GROUP: dict[str, str] = {
 
 FIXED_VALUE_SLOTS: frozenset[str] = frozenset(['Ship Tier', 'Ship Type'])
 from warp.trainer.training_data import NON_ICON_SLOTS, SINGLE_INSTANCE_SLOTS, VIRTUAL_ITEM_NAMES, TEXT_LEARNING_SLOTS
-SHIP_TIER_VALUES: list[str] = ['T1', 'T2', 'T3', 'T4', 'T5', 'T5-U', 'T5-X', 'T5-X2', 'T6', 'T6-X', 'T6-X2']
+from warp.recognition.text_extractor import SHIP_TIER_VALUES  # canonical list — single source of truth
 _SHIP_INFO_SLOTS = ['Ship Name', 'Ship Type', 'Ship Tier']
 
 # Build ALL_SLOTS as a flat deduplicated list of every slot across all groups
@@ -423,68 +423,18 @@ class OCRWorker(QThread):
         self.valid_types = valid_types
 
     def run(self):
+        # Delegates to TextExtractor.refine_single_crop — single shared mechanism
+        # with WARP's autodetection path (warp_importer.WarpImporter._process_image
+        # calls refine_ship_info, which uses the same refine_single_crop).
+        from src.setsdebug import log as _slog
         try:
-            from warp.recognition.text_extractor import TextExtractor, RE_TIER
-            import cv2
-            
-            # Upscale 2x for better small font recognition
-            crop_proc = cv2.resize(self.crop_bgr, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-            
+            from warp.recognition.text_extractor import TextExtractor
             extractor = TextExtractor()
-            result = extractor._get_ocr().readtext(crop_proc)
-            
-            if not result:
-                self.finished.emit(self.row, '', 0.0, self.crop_bgr, '')
-                return
-                
-            full_text = ' '.join([res[1] for res in result]).strip()
-            best_conf = max(res[2] for res in result)
-            ocr_raw = full_text
-            
-            # Apply community + in-session OCR corrections
-            try:
-                from warp.recognition.text_extractor import TextExtractor
-                if full_text in TextExtractor._corrections:
-                    full_text = TextExtractor._corrections[full_text]
-                    best_conf = 1.0
-            except Exception:
-                pass
-            
-            text = full_text
-            conf = best_conf
-            
-            if self.slot == 'Ship Tier':
-                import re
-                m = re.search(RE_TIER, full_text)
-                if m:
-                    extracted = m.group(1).upper()
-                    import difflib
-                    matches = difflib.get_close_matches(extracted, self.valid_tiers, n=1, cutoff=0.7)
-                    if matches:
-                        text = matches[0]
-                        conf = 1.0
-                    else:
-                        text = ''
-                        conf = 0.0
-                else:
-                    text = ''
-                    conf = 0.0
-            elif self.slot == 'Ship Type':
-                import difflib
-                matches = difflib.get_close_matches(full_text, self.valid_types, n=1, cutoff=0.6)
-                if matches:
-                    text = matches[0]
-                    conf = 1.0
-                else:
-                    text = ''
-                    conf = 0.0
-            
-            # Ship Name uses full_text directly
-            from src.setsdebug import log as _slog
+            text, conf, ocr_raw = extractor.refine_single_crop(
+                self.crop_bgr, self.slot, self.valid_tiers, self.valid_types)
             _slog.info(f"ocr_worker slot={self.slot!r} raw={ocr_raw!r} → final={text!r} conf={conf:.2f}")
             self.finished.emit(self.row, text, conf, self.crop_bgr, ocr_raw)
         except Exception as e:
-            from src.setsdebug import log as _slog
             _slog.warning(f'OCRWorker failed: {e}')
             self.finished.emit(self.row, '', 0.0, self.crop_bgr, '')
 
@@ -545,19 +495,11 @@ class RecognitionWorker(QThread):
             return
         _slog.info(f'RecognitionWorker: image loaded {img.shape[1]}x{img.shape[0]} px')
 
-        # Map trainer screen type → WarpImporter build_type
-        _STYPE_MAP = {
-            'SPACE_EQ':        'SPACE',
-            'GROUND_EQ':       'GROUND',
-            'TRAITS':          'SPACE_TRAITS',   # refined below via CNN
-            'BOFFS':           'BOFFS',
-            'SPACE_BOFFS':     'SPACE_BOFFS',
-            'GROUND_BOFFS':    'GROUND_BOFFS',
-            'SPECIALIZATIONS': 'SPEC',
-            'SPACE_MIXED':     'SPACE_MIXED',
-            'GROUND_MIXED':    'GROUND_MIXED',
-        }
-        importer_type = _STYPE_MAP.get(self._stype)   # None → UNKNOWN
+        # Map trainer screen type → WarpImporter build_type.
+        # Single source of truth lives in warp_importer.SCREEN_TYPE_TO_BUILD_TYPE
+        # so WARP and WARP CORE share the same mapping.
+        from warp.warp_importer import SCREEN_TYPE_TO_BUILD_TYPE
+        importer_type = SCREEN_TYPE_TO_BUILD_TYPE.get(self._stype)   # None → UNKNOWN
 
         # UNKNOWN screens default to SPACE; TRAITS screens stay as SPACE_TRAITS
         if importer_type is None:
@@ -1055,19 +997,11 @@ class WarpCoreWindow(QMainWindow):
         act('Auto-Detect Slots', 'Auto-detect icons', self._on_auto_detect)
 
     def _on_open(self):
+        from warp.folder_picker import pick_folder
         last = self._settings.value(_KEY_LAST_DIR, '')
-        dlg = QFileDialog(self)
-        dlg.setWindowTitle('Open Screenshots Folder')
-        dlg.setFileMode(QFileDialog.FileMode.Directory)
-        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        if last and Path(last).is_dir():
-            dlg.setDirectory(last)
-        from PySide6.QtWidgets import QListView, QTreeView
-        for view in dlg.findChildren(QListView) + dlg.findChildren(QTreeView):
-            view.setSelectionMode(view.SelectionMode.NoSelection)
-        if not dlg.exec():
+        folder = pick_folder(self, title='Open Screenshots Folder', start_dir=last)
+        if folder is None:
             return
-        folder = Path(dlg.selectedFiles()[0])
         self._settings.setValue(_KEY_LAST_DIR, str(folder))
         self._load_folder(folder)
 

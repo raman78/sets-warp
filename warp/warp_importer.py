@@ -29,6 +29,21 @@ except Exception:
 SCREENSHOT_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 TEMPLATE_CONF_THRESHOLD = 0.72
 
+# Single source of truth: ScreenTypeClassifier label → WarpImporter build_type.
+# Used both by the importer (per-image ML autodetection) and by the trainer's
+# folder-level pre-classification worker.
+SCREEN_TYPE_TO_BUILD_TYPE: dict[str, str] = {
+    'SPACE_EQ':        'SPACE',
+    'GROUND_EQ':       'GROUND',
+    'TRAITS':          'SPACE_TRAITS',
+    'BOFFS':           'BOFFS',
+    'SPACE_BOFFS':     'SPACE_BOFFS',
+    'GROUND_BOFFS':    'GROUND_BOFFS',
+    'SPECIALIZATIONS': 'SPEC',
+    'SPACE_MIXED':     'SPACE_MIXED',
+    'GROUND_MIXED':    'GROUND_MIXED',
+}
+
 # Virtual placeholders for empty/inactive slot positions. Mirrors
 # `warp.trainer.training_data.VIRTUAL_ITEM_NAMES`; defined locally so
 # warp_importer doesn't pull in the trainer package on the hot path.
@@ -434,6 +449,11 @@ class ShipDB:
         # displayprefix + displayclass + displaytype + name tokens.
         # Each entry: (words_frozenset, tier_int, ship_dict).
         self._display_index: list[tuple[frozenset, int, dict]] = []
+        # Parallel index of canonical display *strings* (lowercase) for fuzzy
+        # matching when OCR contains 1-2 letter typos that defeat exact word-
+        # subset matching (e.g. 'Legondary' / 'Battlocruiser'). Each entry:
+        # (lowercase_string, ship_dict).
+        self._display_strings: list[tuple[str, dict]] = []
         self._load(cargo_dir)
 
     def _load(self, cargo_dir: Path):
@@ -468,6 +488,13 @@ class ShipDB:
                     tier = 0
                 if disp_words:
                     self._display_index.append((disp_words, tier, ship))
+                    # Fuzzy index uses `name` alone — `displayprefix +
+                    # displayclass + displaytype` typically concatenates into
+                    # the same string as `name`, so combining them duplicates
+                    # tokens and inflates string length, sinking the similarity
+                    # ratio below the cutoff for 1-2 letter typos.
+                    if name:
+                        self._display_strings.append((name.lower(), ship))
             log.info(f'ShipDB: loaded {len(self._ships)} ships, '
                      f'{len(self._by_type)} unique types, '
                      f'{len(self._display_index)} display entries')
@@ -489,12 +516,18 @@ class ShipDB:
           2c. Fuzzy type match
           3. Keyword fallback
         """
+        # Reset match metadata — populated by _entry_to_profile when a real
+        # match is found. Read by callers (e.g. WarpImporter._process_image)
+        # for logging which ShipDB entry was actually selected.
+        self.last_match: dict | None = None
+        self.last_match_strategy: str = ''
         st = ship_type.lower().strip()
 
         # 1. Exact type match
         entry = self._by_type.get(st)
         if entry:
             log.debug(f'ShipDB exact type: {ship_type!r}')
+            self.last_match, self.last_match_strategy = entry, 'exact-type'
             return self._entry_to_profile(entry)
 
         # 2. Fuzzy type match — handles OCR errors and extra/missing words
@@ -509,12 +542,14 @@ class ShipDB:
             if len(subset_hits) == 1:
                 # Unique subset match — high confidence
                 log.debug(f'ShipDB subset match: {ship_type!r} → {subset_hits[0][0]!r}')
+                self.last_match, self.last_match_strategy = subset_hits[0][1], 'word-subset'
                 return self._entry_to_profile(subset_hits[0][1])
             elif len(subset_hits) > 1:
                 # Multiple subset matches — pick the one with fewest extra words
                 best = min(subset_hits, key=lambda x: len(set(x[0].split()) - ocr_words))
                 log.debug(f'ShipDB subset match (best of {len(subset_hits)}): '
                           f'{ship_type!r} → {best[0]!r}')
+                self.last_match, self.last_match_strategy = best[1], 'word-subset-best'
                 return self._entry_to_profile(best[1])
 
             # 2b. Display-name match — the `type` field in ship_list.json is
@@ -533,12 +568,14 @@ class ShipDB:
                 _, _, ship = disp_hits[0]
                 log.debug(f'ShipDB display match: {ship_type!r}+{ship_tier!r} '
                           f'→ {ship.get("name")!r}')
+                self.last_match, self.last_match_strategy = ship, 'display-name'
                 return self._entry_to_profile(ship)
             elif len(disp_hits) > 1:
                 # Prefer the entry with fewest extra words (closest to OCR text)
                 best = min(disp_hits, key=lambda h: len(h[0] - ocr_words))
                 log.debug(f'ShipDB display match (best of {len(disp_hits)}): '
                           f'{ship_type!r}+{ship_tier!r} → {best[2].get("name")!r}')
+                self.last_match, self.last_match_strategy = best[2], 'display-name-best'
                 return self._entry_to_profile(best[2])
 
             # 2c. Standard fuzzy match as fallback
@@ -546,10 +583,29 @@ class ShipDB:
             if type_matches:
                 entry = self._by_type[type_matches[0]]
                 log.debug(f'ShipDB fuzzy type: {ship_type!r} → {type_matches[0]!r}')
+                self.last_match, self.last_match_strategy = entry, 'fuzzy-type'
                 return self._entry_to_profile(entry)
+
+            # 2d. Fuzzy display-string match — handles OCR typos that defeat
+            # word-subset matching ('Legondary'/'Battlocruiser'/'IIl'/'IIIl').
+            # Cutoff 0.85 is tight enough that real-different ships do not
+            # collide; require ≥3 OCR words to avoid false positives on tiny
+            # strings ('Cruiser' would otherwise fuzzy-match dozens of ships).
+            if len(ocr_words) >= 3 and self._display_strings:
+                disp_candidates = [s for s, _ in self._display_strings]
+                disp_matches = get_close_matches(st, disp_candidates, n=1, cutoff=0.85)
+                if disp_matches:
+                    for s, ship in self._display_strings:
+                        if s == disp_matches[0]:
+                            log.debug(f'ShipDB fuzzy display: {ship_type!r} → '
+                                      f'{ship.get("name")!r}')
+                            self.last_match = ship
+                            self.last_match_strategy = 'fuzzy-display'
+                            return self._entry_to_profile(ship)
 
         # 3. Keyword fallback from type string
         log.debug(f'ShipDB: type {ship_type!r} not found — using keyword fallback')
+        self.last_match_strategy = 'keyword-fallback'
         return _type_keyword_profile(ship_type)
 
     def _entry_to_profile(self, e: dict) -> dict[str, int]:
@@ -693,6 +749,7 @@ class WarpImporter:
         self._text    = None
         self._shipdb  = None
         self._sync    = None   # WARPSyncClient — lazy init
+        self._screen_classifier = None  # ScreenTypeClassifier — lazy init
         # Per-match diagnostic log filled during pipeline(). Each entry:
         # {'slot', 'name', 'conf', 'src', 'stages': {embed, soft, session,
         # template, knowledge}}. Read by RecognitionWorker for summary table.
@@ -766,10 +823,32 @@ class WarpImporter:
         # OCR build_type upgrades — but ship_name/type/tier from OCR still feed
         # ShipDB so profile matches the actual ship (carrier vs standard, etc.).
         _is_trainer_call = self._from_trainer
-        text_info  = self._get_text().extract_ship_info(img)
+        _text = self._get_text()
+        text_info = _text.extract_ship_info(img)
+
+        # Single-crop OCR fallback for Ship Tier / Ship Type when the main
+        # scan found a bbox but failed to read a value. Shared by WARP and
+        # WARP CORE — same logic that the trainer's OCRWorker used to run
+        # inline for user-drawn bboxes.
+        try:
+            _valid_types = sorted(self._app.cache.ships.keys()) if (
+                self._app and getattr(self._app, 'cache', None)) else None
+        except Exception:
+            _valid_types = None
+        from warp.recognition.text_extractor import SHIP_TIER_VALUES
+        text_info = _text.refine_ship_info(
+            img, text_info, SHIP_TIER_VALUES, _valid_types)
+
         ship_name  = text_info.get('ship_name', '')
         ship_type  = text_info.get('ship_type', '')
         _ocr_bt = text_info.get('build_type', '')
+
+        # ML screen-type classifier — second autodetection signal (shared by
+        # WARP and WARP CORE). Used to upgrade generic build_type when OCR
+        # alone can't decide (e.g. MIXED screens where text labels are sparse).
+        _ml_stype, _ml_conf = self._classify_screen(img)
+        _ml_bt = SCREEN_TYPE_TO_BUILD_TYPE.get(_ml_stype, '') if _ml_stype else ''
+        _slog.info(f'WarpImporter: ML screen: stype={_ml_stype!r} conf={_ml_conf:.2f} → bt={_ml_bt!r}')
 
         if _is_trainer_call:
             # WARP CORE: user explicitly selected screen type in dropdown — that
@@ -801,8 +880,36 @@ class WarpImporter:
             elif build_type == 'GROUND' and _ocr_bt == 'GROUND_BOFFS':
                 build_type = 'GROUND_BOFFS'
                 _slog.info('WarpImporter: upgraded GROUND → GROUND_BOFFS (OCR detected ground boff screen)')
+
+            # ML upgrade — fires when OCR didn't upgrade and ML is confident.
+            # Mirrors the OCR ladder so WARP gets the same screen-type detection
+            # that WARP CORE's folder pre-classifier already provides.
+            if build_type == self._build_type and _ml_bt and _ml_bt != self._build_type:
+                if build_type == 'SPACE' and _ml_bt in ('SPACE_TRAITS', 'SPACE_MIXED'):
+                    build_type = 'SPACE_MIXED'
+                    _slog.info(f'WarpImporter: upgraded SPACE → SPACE_MIXED (ML classifier, conf={_ml_conf:.2f})')
+                elif build_type == 'SPACE' and _ml_bt in ('BOFFS', 'SPACE_BOFFS'):
+                    build_type = _ml_bt
+                    _slog.info(f'WarpImporter: upgraded SPACE → {build_type} (ML classifier, conf={_ml_conf:.2f})')
+                elif build_type == 'SPACE' and _ml_bt == 'GROUND_BOFFS':
+                    build_type = 'GROUND_BOFFS'
+                    _slog.info(f'WarpImporter: upgraded SPACE → GROUND_BOFFS (ML classifier, conf={_ml_conf:.2f})')
+                elif build_type == 'SPACE' and _ml_bt == 'SPEC':
+                    build_type = 'SPEC'
+                    _slog.info(f'WarpImporter: upgraded SPACE → SPEC (ML classifier, conf={_ml_conf:.2f})')
+                elif build_type == 'GROUND' and _ml_bt in ('GROUND_TRAITS', 'GROUND_MIXED'):
+                    build_type = 'GROUND_MIXED'
+                    _slog.info(f'WarpImporter: upgraded GROUND → GROUND_MIXED (ML classifier, conf={_ml_conf:.2f})')
+                elif build_type == 'GROUND' and _ml_bt == 'GROUND_BOFFS':
+                    build_type = 'GROUND_BOFFS'
+                    _slog.info(f'WarpImporter: upgraded GROUND → GROUND_BOFFS (ML classifier, conf={_ml_conf:.2f})')
         else:
             build_type = 'GROUND' if _ocr_bt == 'GROUND' else 'SPACE'
+            if _ml_bt:
+                # Fallback path (build_type wasn't a known generic) — let ML
+                # provide the specific type when OCR can't.
+                build_type = _ml_bt
+                _slog.info(f'WarpImporter: ML classifier sets build_type={build_type!r} (no OCR signal)')
         _slog.info(f'WarpImporter: OCR result: name={ship_name!r} type={ship_type!r} '
                    f'ocr_build={_ocr_bt!r} → using build_type={build_type!r}'
                    f'{" (trainer override)" if _is_trainer_call else ""}')
@@ -817,8 +924,16 @@ class WarpImporter:
             profile = {}
             _slog.info(f'WarpImporter: {build_type} build — skipping ShipDB lookup')
         else:
-            profile = self._get_shipdb().get_profile(ship_name, ship_type, ship_tier)
-            _slog.info(f'WarpImporter: ShipDB profile for {ship_name!r}/{ship_type!r}/{ship_tier!r}: {dict((k,v) for k,v in profile.items() if v)}')
+            _db = self._get_shipdb()
+            profile = _db.get_profile(ship_name, ship_type, ship_tier)
+            _m = _db.last_match
+            _strategy = _db.last_match_strategy or 'no-match'
+            _matched_name = _m.get('name', '?') if isinstance(_m, dict) else '—'
+            _matched_type = _m.get('type', '?') if isinstance(_m, dict) else '—'
+            _slog.info(
+                f'WarpImporter: ShipDB lookup name={ship_name!r} type={ship_type!r} tier={ship_tier!r} '
+                f'→ matched [{_strategy}] name={_matched_name!r} type={_matched_type!r}')
+            _slog.info(f'WarpImporter: ShipDB profile: {dict((k,v) for k,v in profile.items() if v)}')
 
         # Game caps for Traits / Rep / Active Rep / BOFF fallbacks (both paths).
         # BOFF counts from _boff_profile_from_shipdb already set above; these
@@ -2045,6 +2160,22 @@ class WarpImporter:
             if corrections_path.exists():
                 TextExtractor.load_corrections(corrections_path)
         return self._text
+
+    def _classify_screen(self, img: np.ndarray) -> tuple[str, float]:
+        """
+        Run MobileNetV3 screen-type classifier on the given image.
+        Returns (stype_label, confidence) — ('', 0.0) on any failure.
+        Single autodetection mechanism — shared by WARP and WARP CORE.
+        """
+        try:
+            if self._screen_classifier is None:
+                from warp.recognition.screen_classifier import ScreenTypeClassifier
+                models_dir = Path(__file__).resolve().parent / 'models'
+                self._screen_classifier = ScreenTypeClassifier(models_dir)
+            return self._screen_classifier.classify(img)
+        except Exception as e:
+            _slog.debug(f'WarpImporter: screen classifier unavailable — {e}')
+            return '', 0.0
 
     def _get_shipdb(self) -> ShipDB:
         if self._shipdb is None:
