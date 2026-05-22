@@ -182,16 +182,14 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
     """
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    # EXPERIMENT: fixed marker size floor (decoupled from estimate_icon_dims,
-    # which mis-scales on PicCollage composites and cropped panels).
-    abs_min_w, abs_min_h = 30, 28
+    # Fixed size floor (decoupled from estimate_icon_dims, which mis-scales
+    # on PicCollage composites and cropped panels). Floor is intentionally
+    # permissive (22x22) — Strategy 0 already gates false positives via
+    # v_std_FULL ≤ 45, fill_ratio, edge_frac, and HSV-uniformity checks.
+    # Real markers range 23x24 (overview-broadside) to 60x60 (Collage).
+    abs_min_w, abs_min_h = 22, 22
     abs_max_w, abs_max_h = 90, 70
     min_w = abs_min_w
-    # Original formula (kept for reference — to be restored if the fixed
-    # floor regresses on standard STO screens):
-    #   abs_min_w, abs_min_h = 10, 12
-    #   min_w = max(abs_min_w, int(icon_w * 0.45))
-    #   min_h = max(abs_min_h, int(icon_h * 0.45))
     # Empirical max marker_w in GT baseline = 43 px; UI scale is user-set
     # and not proportional to resolution, so cap must accommodate the full
     # observed range regardless of icon_w estimate. On cropped-panel inputs
@@ -247,11 +245,21 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
                 raw, gap_x=gap_x, overlap_y_frac=0.55))
 
         for x, y, w, h, area in merged:
-            if w < min_w or w > max_w:
+            # Extend total width through any trailing spec stripe (MW
+            # lime, INT purple, etc.) so the size filter sees the full
+            # bar, not just the main-band core. Small Craft seats with
+            # an MW stripe split the bar into 28-29 px main + 4 px
+            # stripe + 3-4 px gap — main alone fails min_w. The main-
+            # band width (`w`) and bbox stay unchanged; only `full_w`
+            # is used for the size/aspect gate.
+            full_w, has_spec, _stripe_w = full_bar_extent(
+                hsv, (x, y, w, h, code))
+            gate_w = full_w if has_spec else w
+            if gate_w < min_w or gate_w > max_w:
                 continue
             if h < min_h or h > max_h:
                 continue
-            ar = w / max(h, 1)
+            ar = gate_w / max(h, 1)
             if ar < ar_min or ar > ar_max:
                 continue
             sel = m[y:y + h, x:x + w] > 0
