@@ -53,9 +53,10 @@ MAIN_BANDS: list[tuple[str, int, int, int, int, int, int, str]] = [
     # name, H_lo, H_hi, S_lo, S_hi, V_lo, V_hi, code
     ('TAC',   0,   6,   125, 255,  85, 255, 'T'),  # red
     ('TAC', 174, 180,   125, 255,  85, 255, 'T'),  # red wrap
-    ('ENG',  18,  30,   100, 220, 140, 255, 'E'),  # saturated gold (V_lo: 160->140)
+    ('ENG',  18,  33,   100, 220, 140, 255, 'E'),  # saturated gold (V_lo: 160->140, H_hi: 30->33 for brighter renderings)
     ('SCI', 102, 114,   160, 255,  90, 255, 'S'),  # blue (V_lo: 140->90 for dark UI)
-    ('UNI',  18,  30,    25,  95, 145, 255, 'U'),  # pale cream (V_lo: 195->145)
+    ('UNI',  18,  33,    25,  95, 145, 255, 'U'),  # pale cream (V_lo: 195->145, H_hi: 30->33 for darker-tinted bars in compressed UI)
+    ('UNI',  10,  35,     0,  25, 220, 255, 'U'),  # near-white variant — selection-highlighted Universal bars (S near 0, V blown to 255)
 ]
 
 # Spec-stripe bands (narrow right edge, 5-25% of bar width). NOT used
@@ -71,7 +72,7 @@ STRIPE_BANDS: list[tuple[str, int, int, int, int, int, int, str]] = [
     ('INT', 120, 135,   130, 200, 150, 220, 'Int'),  # Intelligence — purple
     ('TMP',  25,  35,   140, 255, 215, 255, 'Tem'),  # Temporal — bright gold
     ('PIL',  86, 100,    80, 140, 215, 255, 'Plt'),  # Pilot — light cyan
-    ('MW',   32,  44,   220, 255, 195, 255, 'MW'),   # Miracle Worker — lime
+    ('MW',   32,  44,   170, 255, 195, 255, 'MW'),   # Miracle Worker — lime (S_lo 220→170 for muted/desaturated lime on darker UI)
 ]
 
 
@@ -184,10 +185,10 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
 
     # Fixed size floor (decoupled from estimate_icon_dims, which mis-scales
     # on PicCollage composites and cropped panels). Floor is intentionally
-    # permissive (22x22) — Strategy 0 already gates false positives via
+    # permissive (13x10) — Strategy 0 already gates false positives via
     # v_std_FULL ≤ 45, fill_ratio, edge_frac, and HSV-uniformity checks.
-    # Real markers range 23x24 (overview-broadside) to 60x60 (Collage).
-    abs_min_w, abs_min_h = 22, 22
+    # Real markers range 13x10 (compressed Stations panel) to 60x60 (Collage).
+    abs_min_w, abs_min_h = 13, 10
     abs_max_w, abs_max_h = 90, 70
     min_w = abs_min_w
     # Empirical max marker_w in GT baseline = 43 px; UI scale is user-set
@@ -252,7 +253,7 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
             # stripe + 3-4 px gap — main alone fails min_w. The main-
             # band width (`w`) and bbox stay unchanged; only `full_w`
             # is used for the size/aspect gate.
-            full_w, has_spec, _stripe_w = full_bar_extent(
+            full_w, has_spec, stripe_w = full_bar_extent(
                 hsv, (x, y, w, h, code))
             gate_w = full_w if has_spec else w
             if gate_w < min_w or gate_w > max_w:
@@ -268,13 +269,21 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
             crop_v = hsv[y:y + h, x:x + w, 2][sel]
             crop_h = hsv[y:y + h, x:x + w, 0][sel]
             v_std = float(np.std(crop_v))
-            if v_std > uni_v_max:
-                continue
             h_std = min(
                 float(np.std(crop_h)),
                 float(np.std((crop_h.astype(np.int32) + 90) % 180)),
             )
             if h_std > uni_h_max:
+                continue
+            # Very-strong hue uniformity (h_std ≤ 2.0) bypasses the
+            # brightness checks. When all masked pixels share an almost
+            # identical hue, the bar IS a coloured marker even if the
+            # rendering has a selection highlight or a row-separator
+            # tear-up that pushes v_std above the nominal limits. Random
+            # noise blobs never reach this hue stability.
+            hue_locked = h_std <= 2.0
+            v_max_eff = 35 if hue_locked else uni_v_max
+            if v_std > v_max_eff:
                 continue
             # Full-bbox uniformity check. False positives like slot icons
             # have a dark glyph in the centre that the mask-only v_std misses.
@@ -311,16 +320,26 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
             if left_rest_mean - right_mean > 60:
                 excl[:, w - right_w:] = False
             v_std_full = float(np.std(v_full[excl])) if excl.sum() > 0 else 0.0
-            if v_std_full > 45:
+            v_full_max_eff = 80 if hue_locked else 45
+            if v_std_full > v_full_max_eff:
                 continue
             # Strong-uniformity bypass for fill/edge: a flat colour bar
             # (low v_std, low h_std) IS a marker. Spec stripes (e.g. MW
             # lime on Engineering) break the main-zone CC short and add
             # a transition that bumps Canny edge_frac just past the
             # baseline — relax both thresholds when uniformity is high.
-            strong_uniform = v_std <= 20 and h_std <= 4
+            # hue_locked (h_std ≤ 2) is a stricter form of uniformity and
+            # also implies strong_uniform.
+            strong_uniform = (v_std <= 20 and h_std <= 4) or hue_locked
             fill_thr = 0.60 if strong_uniform else fill_min
             edge_thr = 0.12 if strong_uniform else edge_max
+            # When a spec stripe is present inside the bbox, the main-
+            # colour mask cannot cover the stripe columns and the stripe
+            # transition bumps edge_frac. Relax both thresholds by a fixed
+            # amount that matches the typical 3-5 px stripe footprint.
+            if has_spec:
+                fill_thr -= 0.10
+                edge_thr += 0.05
             if area < (w * h) * fill_thr:
                 continue
             ix0 = x + edge_inset; iy0 = y + edge_inset
@@ -458,9 +477,49 @@ def annotate_specs(img, markers):
 # Panel selection — RANSAC-style 3+2 grid search
 # ---------------------------------------------------------------------------
 
-def best_panel(markers, icon_w, icon_h):
+def _slot_evidence(gray, edges, marker, scale_k):
+    """Score in [0, 1]: does the region right of `marker` look like an
+    STO ability slot? Used to disambiguate real BOFF panels from noise
+    markers (avatar skin, item icons, etc.) when many candidates compete.
+
+    Geometry from bible: slot starts `3*k` px right of marker, is `29*k`
+    wide and `37*k` tall (k = marker_w / 29). The slot is centred
+    vertically on the marker.
+
+    Heuristic:
+      - edge density in slot region: 0.03 < e < 0.45  (frame + glyph)
+      - mean grey ≤ 200                              (not blown-out skin)
+      - the score scales with edge density up to 0.15 → 1.0.
+    """
+    x, y, w, h, _ = marker
+    gap = max(1, int(round(3 * scale_k)))
+    sw = max(8, int(round(29 * scale_k)))
+    sh = max(10, int(round(37 * scale_k)))
+    cy = y + h // 2
+    sx = x + w + gap
+    sy = cy - sh // 2
+    H, W = gray.shape[:2]
+    if sx < 0 or sy < 0 or sx + sw > W or sy + sh > H:
+        return 0.0
+    e = edges[sy:sy + sh, sx:sx + sw]
+    edge_frac = float(e.sum() / 255.0) / max(1, sw * sh)
+    if edge_frac < 0.03 or edge_frac > 0.45:
+        return 0.0
+    if float(gray[sy:sy + sh, sx:sx + sw].mean()) > 200:
+        return 0.0
+    return min(1.0, edge_frac / 0.15)
+
+
+def best_panel(markers, icon_w, icon_h, img=None):
     """Pick the best 2-column anchor grid. Returns (col_a, col_b, score)
-    or None if no plausible panel was found."""
+    or None if no plausible panel was found.
+
+    When `img` is provided, candidate panels also receive a slot-evidence
+    bonus: each selected marker contributes `[0,1]` based on whether an
+    STO ability slot is visible to its right at the bible-predicted
+    position. This breaks ties on collages where multiple loose markers
+    compete with the real grid.
+    """
     if len(markers) < 4:
         return None
 
@@ -475,6 +534,13 @@ def best_panel(markers, icon_w, icon_h):
         max(icon_h * 3.0, 50),
         max(icon_h * 3.6, 70),
     ]
+
+    if img is not None:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 80, 160)
+    else:
+        gray = edges = None
+
     x_tol = max(icon_w * 0.7, 8)
 
     best = None
@@ -485,9 +551,15 @@ def best_panel(markers, icon_w, icon_h):
             if abs(cy_arr[i] - cy_arr[j]) > max(icon_h * 0.7, 12):
                 continue
             xa, xb = cx_arr[i], cx_arr[j]
-            if xb <= xa + 3 * icon_w:
+            # Local anchor width: large markers anchor wider columns even
+            # when the global icon_w estimate is small (e.g. a collage
+            # where most markers are tiny but one cluster is 60-80 px).
+            # x_tol stays based on global icon_w to keep column-membership
+            # strict (otherwise noise markers drift in on wide anchors).
+            local_w = max(icon_w, markers[i][2], markers[j][2])
+            if xb <= xa + 3 * local_w:
                 continue
-            if xb - xa > 9 * icon_w:
+            if xb - xa > 9 * local_w:
                 continue
 
             for pitch_y in pitch_y_candidates:
@@ -547,7 +619,17 @@ def best_panel(markers, icon_w, icon_h):
                         d = st.stdev(diffs)
                         pitch_score = 0.4 * (1.0 - min(d / max(m, 1), 1.0))
 
-                score = (0.6 * aligned + canon + div + layout + pitch_score)
+                slot_score = 0.0
+                if gray is not None:
+                    sel = col_a + col_b
+                    med_w = sorted(m[2] for m in sel)[len(sel) // 2]
+                    sk = med_w / _BIBLE_MARKER_W
+                    ev = [_slot_evidence(gray, edges, m, sk) for m in sel]
+                    avg_ev = sum(ev) / max(1, len(ev))
+                    slot_score = 0.8 * avg_ev
+
+                score = (0.6 * aligned + canon + div + layout
+                         + pitch_score + slot_score)
                 if best is None or score > best[2]:
                     best = (col_a, col_b, score)
     return best
@@ -642,7 +724,7 @@ def detect_panel(img: np.ndarray) -> Optional[dict]:
         return None
 
     icon_w, icon_h = _refine_dims_from_markers(markers, icon_w, icon_h)
-    panel = best_panel(markers, icon_w, icon_h)
+    panel = best_panel(markers, icon_w, icon_h, img=img)
     if panel is None:
         return None
 
