@@ -53,9 +53,9 @@ MAIN_BANDS: list[tuple[str, int, int, int, int, int, int, str]] = [
     # name, H_lo, H_hi, S_lo, S_hi, V_lo, V_hi, code
     ('TAC',   0,   6,   125, 255,  85, 255, 'T'),  # red
     ('TAC', 174, 180,   125, 255,  85, 255, 'T'),  # red wrap
-    ('ENG',  18,  30,   100, 220, 160, 255, 'E'),  # saturated gold
-    ('SCI', 102, 114,   160, 255, 140, 255, 'S'),  # blue
-    ('UNI',  18,  30,    25,  95, 195, 255, 'U'),  # pale cream
+    ('ENG',  18,  30,   100, 220, 140, 255, 'E'),  # saturated gold (V_lo: 160->140)
+    ('SCI', 102, 114,   160, 255,  90, 255, 'S'),  # blue (V_lo: 140->90 for dark UI)
+    ('UNI',  18,  30,    25,  95, 145, 255, 'U'),  # pale cream (V_lo: 195->145)
 ]
 
 # Spec-stripe bands (narrow right edge, 5-25% of bar width). NOT used
@@ -182,15 +182,28 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
     """
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    abs_min_w, abs_min_h = 10, 12
-    abs_max_w, abs_max_h = 90, 90
-    min_w = max(abs_min_w, int(icon_w * 0.45))
+    # EXPERIMENT: fixed marker size floor (decoupled from estimate_icon_dims,
+    # which mis-scales on PicCollage composites and cropped panels).
+    abs_min_w, abs_min_h = 30, 28
+    abs_max_w, abs_max_h = 90, 70
+    min_w = abs_min_w
+    # Original formula (kept for reference — to be restored if the fixed
+    # floor regresses on standard STO screens):
+    #   abs_min_w, abs_min_h = 10, 12
+    #   min_w = max(abs_min_w, int(icon_w * 0.45))
+    #   min_h = max(abs_min_h, int(icon_h * 0.45))
     # Empirical max marker_w in GT baseline = 43 px; UI scale is user-set
     # and not proportional to resolution, so cap must accommodate the full
-    # observed range regardless of icon_w estimate.
-    max_w = min(abs_max_w, max(int(icon_w * 1.6), 44))
-    min_h = max(abs_min_h, int(icon_h * 0.45))
-    max_h = min(abs_max_h, max(int(icon_h * 1.35), 44))
+    # observed range regardless of icon_w estimate. On cropped-panel inputs
+    # (image IS the panel, not the whole screen) markers occupy a larger
+    # fraction of image height (~7%) than on full-screen GT (~4%), so add
+    # an image-relative floor: 8.5% of image height covers up to 57-px
+    # markers on a 670-px panel crop.
+    h_im = img.shape[0]
+    img_rel_max = int(h_im * 0.085)
+    max_w = abs_max_w
+    min_h = abs_min_h
+    max_h = abs_max_h
     ar_min, ar_max = 0.30, 1.8
     fill_min = 0.70
 
@@ -254,6 +267,43 @@ def detect_markers(img: np.ndarray, icon_w: int, icon_h: int):
                 float(np.std((crop_h.astype(np.int32) + 90) % 180)),
             )
             if h_std > uni_h_max:
+                continue
+            # Full-bbox uniformity check. False positives like slot icons
+            # have a dark glyph in the centre that the mask-only v_std misses.
+            # Real markers MAY have dark regions that should NOT be part of
+            # the colour/brightness estimate:
+            #   1) Always exclude the inner 35%x35% lower-left (rank badge).
+            #   2) If the lower-left half is much darker than the rest of the
+            #      bbox (mean V diff > 60), the badge is bigger — widen
+            #      exclusion to the lower-left 50%x50% quadrant.
+            #   3) If the right-edge ~20% strip is much darker than the
+            #      rest, the spec-stripe slot is empty (dark UI showing
+            #      through) — exclude it too.
+            v_full = hsv[y:y + h, x:x + w, 2].astype(np.float32)
+            excl = np.ones((h, w), dtype=bool)
+            base_excl_w = int(w * 0.35); base_excl_h = int(h * 0.35)
+            excl[h - base_excl_h:, :base_excl_w] = False
+            half_h0 = int(h * 0.5); half_w1 = int(w * 0.5)
+            ll_half = v_full[half_h0:, :half_w1]
+            rest_mask = np.ones((h, w), dtype=bool)
+            rest_mask[half_h0:, :half_w1] = False
+            ll_mean = float(ll_half.mean()) if ll_half.size > 0 else 0.0
+            rest_mean = float(v_full[rest_mask].mean()) \
+                if rest_mask.sum() > 0 else 0.0
+            if rest_mean - ll_mean > 60:
+                excl[half_h0:, :half_w1] = False
+            right_w = max(1, int(w * 0.2))
+            right_strip = v_full[:, w - right_w:]
+            left_only = np.ones((h, w), dtype=bool)
+            left_only[:, w - right_w:] = False
+            right_mean = float(right_strip.mean()) \
+                if right_strip.size > 0 else 0.0
+            left_rest_mean = float(v_full[left_only].mean()) \
+                if left_only.sum() > 0 else 0.0
+            if left_rest_mean - right_mean > 60:
+                excl[:, w - right_w:] = False
+            v_std_full = float(np.std(v_full[excl])) if excl.sum() > 0 else 0.0
+            if v_std_full > 45:
                 continue
             # Strong-uniformity bypass for fill/edge: a flat colour bar
             # (low v_std, low h_std) IS a marker. Spec stripes (e.g. MW
