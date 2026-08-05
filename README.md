@@ -1,5 +1,16 @@
 # SETS-WARP
 
+> ## ⚠️ Discontinued — no longer maintained
+>
+> **As of 6 August 2026 this project is closed.** There will be no further releases,
+> bug fixes, or support, and issues and pull requests are no longer being handled.
+>
+> The source stays online and remains available under its existing licence, so anyone
+> is welcome to fork it and continue the work.
+>
+> The screenshot-recognition half lives on as a standalone project:
+> **[sto-warp](https://github.com/raman78/sto-warp)**.
+
 A build planning and screenshot recognition tool for Star Trek Online.
 
 > **Status:** v2.0b — tested on **Linux** and **Windows**. macOS support is present but untested.
