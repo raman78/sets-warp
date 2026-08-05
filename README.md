@@ -10,10 +10,10 @@
 >
 > The screenshot-recognition half lives on as a standalone project:
 > **[sto-warp](https://github.com/raman78/sto-warp)**.
+>
+> Final release: **[v3.0](https://github.com/raman78/sets-warp/releases/tag/v3.0)** (17 May 2026).
 
 A build planning and screenshot recognition tool for Star Trek Online.
-
-> **Status:** v2.0b — tested on **Linux** and **Windows**. macOS support is present but untested.
 
 ---
 
